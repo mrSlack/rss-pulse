@@ -1,0 +1,18 @@
+FROM golang:1.27.3-alpine3.24 AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/pulse-reader ./cmd/api
+
+FROM alpine:3.24.3
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S -g 10001 pulse \
+    && adduser -S -D -H -u 10001 -G pulse pulse
+COPY --from=builder /out/pulse-reader /usr/local/bin/pulse-reader
+
+USER 10001:10001
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/pulse-reader"]

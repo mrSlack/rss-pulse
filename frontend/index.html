@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7f4" />
+    <meta name="description" content="Pulse — read all your RSS feeds in one place." />
+    <title>Pulse — your RSS reader</title>
+    <script>
+      (() => {
+        let prefersDark = false;
+        let savedTheme = null;
+        try { prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch {}
+        try { savedTheme = window.localStorage.getItem('pulse-theme'); } catch {}
+        document.documentElement.dataset.theme = savedTheme === 'light' || savedTheme === 'dark'
+          ? savedTheme
+          : prefersDark ? 'dark' : 'light';
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

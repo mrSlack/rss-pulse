@@ -1,0 +1,149 @@
+# Pulse — собственный RSS-ридер
+
+**Языки:** [English](README.md) · [Deutsch](README.de.md) · [Русский](README.ru.md)
+
+Pulse — многопользовательское веб-приложение для чтения RSS и Atom. Оно работает локально на React и TypeScript, API на Go/Chi, PostgreSQL и Nginx. Фронтенд, бэкенд и база данных запускаются отдельными файлами Docker Compose.
+
+## Требования
+
+- Docker Engine с плагином `docker compose`
+- Исходящий HTTP/HTTPS-доступ сервера к публичным RSS-адресам
+
+Устанавливать Go и Node.js на хосте не нужно: инструменты сборки находятся в контейнерах. Версии закреплены в манифестах и lock-файлах.
+
+## Локальный запуск
+
+Все команды выполняются из корня проекта. Создайте локальные настройки и общую Docker-сеть один раз:
+
+```sh
+cp .env.example .env
+docker network create rss-reader-net
+```
+
+До первого запуска API с пустой базой укажите в `.env` `INITIAL_ADMIN_EMAIL` и уникальный `INITIAL_ADMIN_PASSWORD` длиной не менее 12 символов. Они используются только для создания первого администратора. Для локального HTTP оставьте `SESSION_COOKIE_SECURE=false`.
+
+Запускайте базу, API и веб-сервер именно в таком порядке:
+
+```sh
+docker compose -f compose.database.yml up -d
+docker compose -f compose.backend.yml up -d --build
+docker compose -f compose.frontend.yml up -d --build
+```
+
+Откройте <http://localhost:8090>. Если порт занят, измените `WEB_PORT` в `.env`. Для доступа из локальной сети задайте `WEB_BIND=0.0.0.0`. Если на хосте уже работает Nginx, оставьте `WEB_BIND=127.0.0.1` и настройте прокси на `http://127.0.0.1:8090`.
+
+Исходники фронтенда подключены к контейнеру. В режиме разработки контейнер проверяет TypeScript и запускает Vite в watch-mode. При изменении исходников `frontend/dist/` пересобирается автоматически, а Nginx отдаёт обновлённую сборку. Чтобы увидеть изменения, обновите страницу в браузере. Пересобирать вручную после правок исходников не нужно. Пересоздайте контейнер после изменения зависимостей или Docker-образа:
+
+```sh
+docker compose -f compose.frontend.yml up -d --build
+```
+
+Исходники бэкенда подключены к API-контейнеру. После изменений Go перезапустите API:
+
+```sh
+docker compose -f compose.backend.yml restart api
+```
+
+## Тесты фронтенда
+
+Запускайте компонентные и браузерные тесты Playwright во фронтенд-контейнере:
+
+```sh
+docker compose -f compose.frontend.yml exec frontend npm run test -- --run
+docker compose -f compose.frontend.yml exec frontend npm run test:e2e
+```
+
+Playwright запускает локальный Vite-сервер и использует детерминированные API-фикстуры. Эталонные снимки хранятся в `frontend/test/e2e/`. После намеренного изменения интерфейса просмотрите снимки и обновите их командой:
+
+```sh
+docker compose -f compose.frontend.yml exec frontend npm run test:e2e:update
+```
+
+Файлы Compose используют внешнюю сеть `rss-reader-net`, поэтому группы сервисов можно запускать и останавливать отдельно. PostgreSQL должна запуститься до API; при старте API ожидает готовность базы.
+
+## Языки интерфейса
+
+Интерфейс доступен на английском, немецком и русском языках. При первом посещении используется английский. Выберите язык в панели инструментов или на экране входа; выбор сохраняется в локальном хранилище браузера. JSON-файлы переводов расположены в `frontend/src/locales/`.
+
+Чтобы добавить язык, создайте JSON-файл на основе ключей `en.json`, добавьте код языка в `supportedLanguages` и `resources` файла `frontend/src/i18n.ts`, а его самоназвание — в `frontend/src/LanguageSelector.tsx`. Английский каталог является исходным и резервным.
+
+## Скилы для AI-агентов
+
+Проектные скилы хранятся в `.agents/skills/` и входят в репозиторий. После клонирования откройте корневую директорию проекта в Codex — глобальная установка не требуется. В `skills-lock.json` указаны скилы с upstream-источниками. Скрипт проекта использует Node.js 24 для восстановления или обновления таких скилов:
+
+```sh
+bash scripts/sync-skills.sh install  # восстановить скилы из lock-файла при необходимости
+bash scripts/sync-skills.sh update   # обновить скилы, отслеживаемые через lock
+```
+
+После восстановления или обновления скрипт добавляет специальные правила Pulse обратно в проектный скил `handoff`. Рабочие скилы Superpowers взяты из актуального источника `obra/superpowers-skills`. `diagnosing-superpowers` оставлен, потому что его больше нет в upstream; старое имя `using-superpowers` сохранено рядом с его преемником `using-skills`. Не устанавливайте проектные скилы глобально.
+
+## Production-сборка и развёртывание
+
+Для production используется `compose.production.yml`. Он собирает release-образы без монтирования исходников. Создайте файл настроек и замените все значения `CHANGE_ME`:
+
+```sh
+cp .env.production.example .env.production
+```
+
+Укажите начальные данные администратора. Используйте HTTPS через TLS reverse proxy, оставьте `SESSION_COOKIE_SECURE=true` и не публикуйте внутренний HTTP-порт в недоверенную сеть. По умолчанию веб-сервис доступен только на `127.0.0.1:8090`.
+
+Проверьте конфигурацию, соберите образы и запустите сервисы:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml config -q
+docker compose --env-file .env.production -f compose.production.yml build --pull
+docker compose --env-file .env.production -f compose.production.yml up -d
+docker compose --env-file .env.production -f compose.production.yml ps
+```
+
+API применяет миграции при запуске. После создания администратора удалите `INITIAL_ADMIN_EMAIL` и `INITIAL_ADMIN_PASSWORD` из `.env.production` и пересоздайте API-контейнер:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml up -d --force-recreate api
+```
+
+Перед обновлением production сделайте резервную копию базы, затем пересоберите и запустите образы командами выше. Также доступен скрипт:
+
+```sh
+./scripts/update-production.sh
+```
+
+Он требует чистую копию репозитория на ветке `master`, сохраняет дамп в `backups/production/`, выполняет fast-forward из `origin/master`, проверяет конфигурацию Compose, пересобирает сервисы и ждёт health checks. Не подключайте локальный Compose базы к каталогу production-данных.
+
+## Данные, пользователи и обновление лент
+
+Первый Administrator получает существующую общую библиотеку при миграции. Администратор может создавать пользователей с ролями `Administrator` или `Reader`; публичной регистрации нет. У каждого пользователя собственные папки, подписки, статусы чтения и сохранённые статьи. Нормализованные адреса фидов и их статьи общие, а состояние чтения остаётся личным. Администратор не может просматривать библиотеки других пользователей.
+
+TTL общих фидов по умолчанию равен 15 минутам; допустимо от 5 до 1440 минут. Сейчас фоновое расписание запускается каждые 15 минут. Интервалы планировщика и пользователей сохраняются в панели администрирования, но пока не влияют на расписание. API обновляет уникальные фиды параллельно ограниченным пулом Go-воркеров. Параметр `RSS_REFRESH_CONCURRENCY` в `.env` задаёт от 1 до 32 параллельных обновлений (по умолчанию 4). Блокировки базы и TTL предотвращают повторный запрос во время обновления и до окончания TTL.
+
+Разрешены только публичные HTTP/HTTPS RSS- и Atom-адреса. Loopback-, приватные и локальные сетевые адреса блокируются. Pulse хранит метаданные и краткие описания; полный текст статьи остаётся на сайте источника.
+
+Для сессий используется случайная HttpOnly-cookie с `SameSite=Strict`, срок действия — 14 дней. Пароли хранятся как Argon2id-хэши. Вне локальной loopback-разработки включите HTTPS и `SESSION_COOKIE_SECURE=true`.
+
+## Резервные копии, журналы и остановка
+
+Перед переносом или обновлением сделайте дамп базы:
+
+```sh
+docker compose -f compose.database.yml exec -T db pg_dump -U pulse pulse > pulse-backup.sql
+```
+
+Если в `.env` заданы другие `POSTGRES_USER` или `POSTGRES_DB`, используйте их. Журналы доступны командой `docker compose -f <compose-файл> logs -f`. Остановка локальных сервисов:
+
+```sh
+docker compose -f compose.frontend.yml down
+docker compose -f compose.backend.yml down
+docker compose -f compose.database.yml down
+```
+
+Данные PostgreSQL остаются в `data/postgres/`. Не удаляйте этот каталог, если хотите сохранить аккаунты и подписки.
+
+## Структура проекта
+
+- `frontend/` — React/TypeScript-приложение, конфигурация Nginx и контейнер.
+- `backend/` — Go API, RSS/Atom-парсер и миграции PostgreSQL.
+- `frontend/test/` и `backend/test/` — тесты, сгруппированные по компонентам.
+- `data/postgres/` — локально подключённые данные PostgreSQL.
+- `compose.frontend.yml`, `compose.backend.yml`, `compose.database.yml` — независимые локальные группы сервисов.
+- `compose.production.yml` — production-сборка и развёртывание.

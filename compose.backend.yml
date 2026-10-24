@@ -1,0 +1,39 @@
+name: rss-reader-backend
+
+services:
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    working_dir: /workspace/backend
+    command: ["sh", "-c", "go mod tidy && go run ./cmd/api"]
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-pulse}
+      POSTGRES_USER: ${POSTGRES_USER:-pulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulse-local-only}
+      DATABASE_URL: ${DATABASE_URL:-}
+      RSS_REFRESH_CONCURRENCY: ${RSS_REFRESH_CONCURRENCY:-4}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    expose:
+      - "8080"
+    volumes:
+      - ./backend:/workspace/backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 70s
+    networks:
+      rss-reader-net:
+        aliases:
+          - api
+
+networks:
+  rss-reader-net:
+    name: rss-reader-net
+    external: true

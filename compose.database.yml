@@ -1,0 +1,29 @@
+name: rss-reader-database
+
+services:
+  db:
+    image: postgres:18.6-alpine3.24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pulse}
+      POSTGRES_USER: ${POSTGRES_USER:-pulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulse-local-only}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulse} -d ${POSTGRES_DB:-pulse}"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    networks:
+      rss-reader-net:
+        aliases:
+          - db
+
+networks:
+  rss-reader-net:
+    name: rss-reader-net
+    external: true
