@@ -37,3 +37,9 @@ Never commit credentials, tokens, or machine-specific configuration. `.env.examp
 ## Changes
 
 Use short, imperative commit subjects when Git metadata is available. Describe the reason for each change and list verification performed; include screenshots for visual changes.
+
+## Session Handoffs
+
+Save handoffs in `SESSION_HANDOFF.md` at the repository root, including when using the `handoff` skill. This project-specific user preference overrides the skill's temporary-directory default. Prepend each new entry with the current date (and time when useful), keeping entries in reverse chronological order. Preserve all existing entries. Write handoff content in English and reference existing documentation and diffs rather than duplicating them.
+
+Keep each entry concise: a few bullets covering current project state, work completed, what is verified or broken/unverified, remaining work, and decisions with brief reasons. Include only what the next agent needs to continue; omit conversational history, repeated instructions, and long descriptions.

@@ -1,9 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, extractArticleImages, folderColorClass, folderColorStyle } from '../../src/api';
+import i18n from '../../src/i18n';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('authenticated API', () => {
+  it.each(['null', '[]', '42', '{"error":{"message":"bad"},"code":42}', '<html>Bad Gateway</html>'])(
+    'uses the status fallback for an unexpected error response: %s', async (body) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 502 })));
+      await expect(api.currentUser()).rejects.toThrow(i18n.t('apiErrors.request_failed', { status: 502 }));
+    },
+  );
+
+  it('preserves a server error message when its code is unknown', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 'unknown_code', error: 'Please retry later.' }), { status: 503 })));
+    await expect(api.currentUser()).rejects.toThrow('Please retry later.');
+  });
+
   it('loads the current user with same-origin cookies', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 7, email: 'reader@example.com', role: 'Reader' }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

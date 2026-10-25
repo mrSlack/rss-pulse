@@ -65,7 +65,15 @@ export type AdminSettings = {
   users: SessionUser[];
 };
 
-type ApiError = { code?: string; error?: string };
+
+function parseApiError(value: unknown): { code?: string; error?: string } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const body = value as Record<string, unknown>;
+  return {
+    code: typeof body.code === 'string' ? body.code : undefined,
+    error: typeof body.error === 'string' ? body.error : undefined,
+  };
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let response: Response;
@@ -83,7 +91,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as ApiError;
+    const body = parseApiError(await response.json().catch(() => null));
     const fallback = body.error || i18n.t('apiErrors.request_failed', { status: response.status });
     const message = body.code
       ? i18n.t(`apiErrors.${body.code}`, { defaultValue: fallback, status: response.status })

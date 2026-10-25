@@ -1,3 +1,15 @@
+# Session handoff — 2026-10-25
+
+- **Done:** fixed backend acceptance of JSON `null` (could clear a profile) and frontend crashes on malformed API errors; added regression tests. Added EditorConfig, Prettier, VS Code settings, and English documentation.
+- **Verified:** Go tests including PostgreSQL integration, `go vet`, 33 frontend tests, and frontend build passed. E2E not run this session; current runtime health is unverified. Temporary test database removed.
+- **Decisions:** UI unchanged per user request. Use `gofmt` for Go and Prettier for frontend to keep IDE formatting consistent; no bulk reformatting. Test with isolated PostgreSQL to protect application data.
+- **Remaining:** scheduler checks every 15 minutes despite a minimum TTL of 5 minutes; user intervals do not affect scheduling. Shutdown lease cleanup has no timeout. These are follow-up opportunities, not assigned work.
+- **State:** assistant did not commit or push; inspect the working tree before continuing. No implementation task pending.
+- **References:** `docs/2026-10-25-reliability-review.md`, `docs/code-formatting.md`, `AGENTS.md`.
+- **Suggested skills:** Verification Before Completion; Systematic Debugging and TDD for further fixes.
+
+---
+
 # Pulse RSS reader — project handoff
 
 ## Project overview
