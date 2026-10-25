@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+test/e2e/**/*-snapshots/
+package-lock.json
+*.tsbuildinfo
+.last-run.json

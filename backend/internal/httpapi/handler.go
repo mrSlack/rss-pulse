@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -471,13 +472,25 @@ func (h *Handler) refreshStatus(w http.ResponseWriter, _ *http.Request) {
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
+	var body json.RawMessage
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "request.invalid_json", "Check the format of the submitted data.")
+		return false
+	}
+	// Every API payload is an object. In particular, decoding null into a
+	// struct succeeds without setting fields and can silently clear a profile.
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' {
 		writeError(w, http.StatusBadRequest, "request.invalid_json", "Check the format of the submitted data.")
 		return false
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "request.multiple_json_values", "The request must contain exactly one JSON value.")
+		return false
+	}
+	objectDecoder := json.NewDecoder(bytes.NewReader(body))
+	objectDecoder.DisallowUnknownFields()
+	if err := objectDecoder.Decode(target); err != nil {
+		writeError(w, http.StatusBadRequest, "request.invalid_json", "Check the format of the submitted data.")
 		return false
 	}
 	return true
