@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/text/encoding/htmlindex"
 )
 
 type Item struct {
@@ -69,6 +71,13 @@ type atomEntry struct {
 func Parse(data []byte, base *url.URL) (Document, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.Strict = true
+	decoder.CharsetReader = func(label string, input io.Reader) (io.Reader, error) {
+		encoding, err := htmlindex.Get(label)
+		if err != nil {
+			return nil, err
+		}
+		return encoding.NewDecoder().Reader(input), nil
+	}
 	var raw rawFeed
 	if err := decoder.Decode(&raw); err != nil {
 		return Document{}, errors.New("the response is not a valid RSS or Atom feed")

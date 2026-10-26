@@ -4,6 +4,9 @@ import (
 	"net/url"
 	"testing"
 
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/transform"
+
 	"github.com/pulse-reader/app/internal/feeds"
 )
 
@@ -61,5 +64,21 @@ func TestParseDoesNotTreatMissingDateAsPublishedDate(t *testing.T) {
 	}
 	if document.Items[0].HasPublishedAt {
 		t.Fatal("HasPublishedAt = true, want false for an undated item")
+	}
+}
+
+func TestParseDecodesKOI8RFeed(t *testing.T) {
+	base, _ := url.Parse("http://example.com/feed.rss")
+	data := []byte(`<?xml version="1.0" encoding="KOI8-R"?><rss><channel><title>Новости</title><item><guid>one</guid><title>Обновление</title><description>Описание</description></item></channel></rss>`)
+	encoded, _, err := transform.Bytes(charmap.KOI8R.NewEncoder(), data)
+	if err != nil {
+		t.Fatalf("encode KOI8-R fixture: %v", err)
+	}
+	document, err := feeds.Parse(encoded, base)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if document.Title != "Новости" || len(document.Items) != 1 || document.Items[0].Title != "Обновление" || document.Items[0].Summary != "Описание" {
+		t.Fatalf("Parse() = %#v, want Russian feed title and item decoded from KOI8-R", document)
 	}
 }
