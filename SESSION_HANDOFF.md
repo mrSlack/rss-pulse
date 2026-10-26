@@ -1,3 +1,13 @@
+# Session handoff — 2026-10-26 (feed article quarantine)
+
+- **Done:** Added stop-word article quarantine with complete feed payloads, reversible Administrator decisions, and promotion to the shared source article table at the original publication time. Visibility remains limited to users subscribed to that source. Added moderation API/UI, translations, migration history, and an admin Playwright screenshot.
+- **Verified:** Merged into `master` through `726ff3d`. Go suite passed; frontend unit tests 41/41; production build passed; isolated E2E suite 14/14 serially; `git diff --check` passed. Admin screenshot is `frontend/test/e2e/admin-workspace.spec.ts-snapshots/blocked-article-moderation-linux.png`.
+- **Decision:** Rejected items remain available for later approval. Historical log rows without retained content/publication time remain visible but non-moderatable; the migration does not invent dates for them.
+- **Remaining / environment:** Running application containers were not rebuilt/restarted after merge. Migrations `009_feed_article_quarantine.sql` and `010_quarantine_eligibility.sql` apply when the API starts. Feature worktree is preserved at `/tmp/rss-pulse-feed-quarantine` on `codex/feed-article-quarantine`; its last feature commit is `13951a8`, while the merged `master` also has the build fix `726ff3d`.
+- **References:** `docs/PROJECT.md`, `docs/superpowers/specs/2026-10-26-feed-article-quarantine-design.md`, `docs/superpowers/plans/2026-10-26-feed-article-quarantine.md`, final review report in `/tmp/rss-pulse-feed-quarantine/.superpowers/sdd/2026-10-26-feed-article-quarantine/final-fix-report.md`.
+
+---
+
 # Session handoff — 2026-10-26 (E2E accounts and feed filtering)
 
 - **Done:** Added stop-word filtering for incoming feed articles, an administrator dictionary and blocked-article log, and split admin sections behind a submenu. Added an isolated browser-test Compose stack with admin and reader accounts, global reader seeding, real login/workflow coverage, and browser checks for HTTP/network/JS/layout errors. Added the missing SVG favicon discovered by the browser run.
