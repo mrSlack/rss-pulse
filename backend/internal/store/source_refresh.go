@@ -99,7 +99,11 @@ func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, docu
 	} else if err != nil {
 		return err
 	}
-	if err := upsertSourceItems(ctx, tx, lease.ID, document.Items); err != nil {
+	allowedItems, err := filterAndLogBlockedItems(ctx, tx, lease.ID, document.Title, document.Items)
+	if err != nil {
+		return err
+	}
+	if err := upsertSourceItems(ctx, tx, lease.ID, allowedItems); err != nil {
 		return err
 	}
 	command, err := tx.Exec(ctx, `UPDATE feed_sources SET title=$3,site_url=$4,last_checked_at=NOW(),last_success_at=NOW(),last_error=NULL,lease_token=NULL,lease_expires_at=NULL WHERE id=$1 AND lease_token=$2 AND lease_expires_at>NOW()`, lease.ID, lease.Token, document.Title, document.SiteURL)
@@ -150,7 +154,7 @@ func (s *Store) EnsureFeedSourceForUser(ctx context.Context, userID int64, rawUR
 	parsed, _ := url.Parse(normalizedURL)
 	fallbackTitle := parsed.Hostname()
 	var id int64
-	err = s.pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url) VALUES ($1,$2,$1) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, fallbackTitle).Scan(&id)
+	err = s.pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,added_by_user_id) VALUES ($1,$2,$1,$3) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, fallbackTitle, userID).Scan(&id)
 	if err == nil {
 		return id, true, nil
 	}

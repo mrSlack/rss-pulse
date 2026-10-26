@@ -153,7 +153,7 @@ func TestAdministratorCanCreateUsersAndCannotDemoteLastAdministrator(t *testing.
 
 func TestFeedRequestsAreNotFetchedOrStoredUntilAdministratorApproval(t *testing.T) {
 	ctx := context.Background()
-	pool, _, _ := isolatedAPIDatabase(t)
+	pool, _, readerID := isolatedAPIDatabase(t)
 	handler := httpapi.New(store.New(pool), syncer.NewControl(), false)
 	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
 	adminCookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
@@ -196,6 +196,56 @@ func TestFeedRequestsAreNotFetchedOrStoredUntilAdministratorApproval(t *testing.
 	}
 	if subscriptionCount != 1 {
 		t.Fatalf("approved feed subscription count = %d, want requester subscription", subscriptionCount)
+	}
+	var addedByUserID int64
+	if err := pool.QueryRow(ctx, `SELECT fs.added_by_user_id FROM feed_sources fs WHERE fs.normalized_url='https://unapproved.example/rss'`).Scan(&addedByUserID); err != nil {
+		t.Fatal(err)
+	}
+	if addedByUserID != readerID {
+		t.Fatalf("approved source added_by_user_id = %d, want requester %d", addedByUserID, readerID)
+	}
+}
+
+func TestAdministratorManagesFeedStopWordsAndBlockedArticleLog(t *testing.T) {
+	pool, _, _ := isolatedAPIDatabase(t)
+	handler := httpapi.New(store.New(pool), syncer.NewControl(), false)
+	adminCookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+
+	listed := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/stop-words", "", adminCookie)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), "pornography") || !strings.Contains(listed.Body.String(), "порно") {
+		t.Fatalf("list seeded stop words = %d %s", listed.Code, listed.Body.String())
+	}
+	blocked := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/blocked-articles", "", adminCookie)
+	if blocked.Code != http.StatusOK || strings.TrimSpace(blocked.Body.String()) != "[]" {
+		t.Fatalf("list empty blocked article log = %d %s", blocked.Code, blocked.Body.String())
+	}
+	for _, path := range []string{"/api/admin/stop-words", "/api/admin/blocked-articles"} {
+		response := authenticatedRequest(t, handler, http.MethodGet, path, "", readerCookie)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("Reader GET %s = %d, want 403", path, response.Code)
+		}
+	}
+
+	added := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/stop-words", `{"term":"  BAD&nbsp;PHRASE "}`, adminCookie)
+	if added.Code != http.StatusCreated || !strings.Contains(added.Body.String(), "bad phrase") {
+		t.Fatalf("add stop word = %d %s, want normalized term", added.Code, added.Body.String())
+	}
+	var created store.StopWord
+	if err := json.Unmarshal(added.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created stop word: %v", err)
+	}
+	duplicate := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/stop-words", `{"term":"BAD phrase"}`, adminCookie)
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("add duplicate stop word = %d, want 409", duplicate.Code)
+	}
+	invalid := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/stop-words", `{"term":"<b></b>"}`, adminCookie)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("add empty stop word = %d, want 400", invalid.Code)
+	}
+	deleted := authenticatedRequest(t, handler, http.MethodDelete, "/api/admin/stop-words/"+intString(created.ID), "", adminCookie)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete stop word = %d %s, want 204", deleted.Code, deleted.Body.String())
 	}
 }
 

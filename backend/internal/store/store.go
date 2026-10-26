@@ -29,6 +29,7 @@ var (
 	ErrInvalidFolderOperation = errors.New("invalid folder deletion operation")
 	ErrFeedLimitReached       = errors.New("the user has reached the feed subscription limit")
 	ErrLastAdministrator      = errors.New("cannot demote the last Administrator")
+	ErrInvalidStopWord        = errors.New("stop word must contain between 1 and 80 letters or digits")
 )
 
 const (

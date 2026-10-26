@@ -1,10 +1,11 @@
 import { useTranslation } from 'react-i18next';
 import './i18n';
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, type AdminSettings, type FeedRequest, type UserRole } from './api';
+import { api, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type StopWord, type UserRole } from './api';
 import { ErrorToast } from './ErrorToast';
 
 const intervalChoices = [5, 10, 15, 30, 60, 120, 360, 720, 1440];
+type AdminSection = 'settings' | 'feedRequests' | 'filter' | 'blocked' | 'users';
 
 function intervalOptions(current: number | null) {
   return [...new Set([...intervalChoices, ...(current === null ? [] : [current])])].sort((a, b) => a - b);
@@ -13,7 +14,10 @@ function intervalOptions(current: number | null) {
 export function AdminPanel() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<AdminSettings | null>(null);
+  const [activeSection, setActiveSection] = useState<AdminSection>('settings');
   const [feedRequests, setFeedRequests] = useState<FeedRequest[]>([]);
+  const [stopWords, setStopWords] = useState<StopWord[]>([]);
+  const [blockedArticles, setBlockedArticles] = useState<BlockedFeedArticle[]>([]);
   const [refreshInterval, setRefreshInterval] = useState('15');
   const [sharedTTL, setSharedTTL] = useState('15');
   const [email, setEmail] = useState('');
@@ -23,22 +27,37 @@ export function AdminPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [stopWordInput, setStopWordInput] = useState('');
+
+  const sections: { id: AdminSection; label: string; icon: string; count?: number }[] = [
+    { id: 'settings', label: t('admin.sectionSettings'), icon: '◷' },
+    { id: 'feedRequests', label: t('admin.sectionFeedRequests'), icon: '⌁', count: feedRequests.length },
+    { id: 'filter', label: t('admin.sectionFilter'), icon: '⊘', count: stopWords.length },
+    { id: 'blocked', label: t('admin.sectionBlocked'), icon: '≡', count: blockedArticles.length },
+    { id: 'users', label: t('admin.sectionUsers'), icon: '◎', count: settings?.users.length || 0 },
+  ];
 
   async function loadSettings() {
-    const [next, requests] = await Promise.all([api.getAdminSettings(), api.getFeedRequests()]);
+    const [next, requests, words, blocked] = await Promise.all([
+      api.getAdminSettings(), api.getFeedRequests(), api.getStopWords(), api.getBlockedFeedArticles(),
+    ]);
     setSettings(next);
     setFeedRequests(requests);
+    setStopWords(words);
+    setBlockedArticles(blocked);
     setRefreshInterval(String(next.refreshIntervalMinutes));
     setSharedTTL(String(next.sharedFeedTTLMinutes));
   }
 
   useEffect(() => {
     let active = true;
-    Promise.all([api.getAdminSettings(), api.getFeedRequests()])
-      .then(([next, requests]) => {
+    Promise.all([api.getAdminSettings(), api.getFeedRequests(), api.getStopWords(), api.getBlockedFeedArticles()])
+      .then(([next, requests, words, blocked]) => {
         if (!active) return;
         setSettings(next);
         setFeedRequests(requests);
+        setStopWords(words);
+        setBlockedArticles(blocked);
         setRefreshInterval(String(next.refreshIntervalMinutes));
         setSharedTTL(String(next.sharedFeedTTLMinutes));
       })
@@ -46,6 +65,32 @@ export function AdminPanel() {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
+
+  async function addStopWord(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setNotice('');
+    try {
+      const word = await api.addStopWord(stopWordInput);
+      setStopWords((current) => [...current, word].sort((a, b) => a.term.localeCompare(b.term)));
+      setStopWordInput('');
+      setNotice(t('admin.stopWordAdded'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('errors.stopWordSave'));
+    }
+  }
+
+  async function removeStopWord(word: StopWord) {
+    setError('');
+    setNotice('');
+    try {
+      await api.deleteStopWord(word.id);
+      setStopWords((current) => current.filter((item) => item.id !== word.id));
+      setNotice(t('admin.stopWordRemoved'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('errors.stopWordSave'));
+    }
+  }
 
   async function createAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -143,66 +188,110 @@ export function AdminPanel() {
       <ErrorToast message={error} onDismiss={() => setError('')} />
       {notice && <div className="admin-notice" role="status">{notice}</div>}
       {loading ? <div className="admin-loading">{t('states.loadingSettings')}</div> : <>
-        <div className="admin-settings-grid">
-          <form className="admin-card" onSubmit={(event) => void saveSettings(event)}>
-            <div className="admin-card-heading"><span className="admin-card-icon">◷</span><div><h2>{t('admin.refreshTitle')}</h2><p>{t('admin.refreshDescription')}</p></div></div>
-            <div className="admin-interval-grid">
-              <div className="admin-setting-block">
-                <div className="admin-setting-heading">
-                  <label className="admin-field-label" htmlFor="scheduler-interval">{t('admin.schedulerInterval')}</label>
-                  <span className="admin-setting-status pending">{t('admin.pending')}</span>
-                </div>
-                <div className="admin-number-wrap"><input id="scheduler-interval" type="number" min="5" max="1440" step="1" value={refreshInterval} onChange={(event) => setRefreshInterval(event.target.value)} /><span>{t('common.minutesShort')}</span></div>
-                <p className="admin-field-note">{t('admin.defaultForUsers')}</p>
-              </div>
-              <div className="admin-setting-block">
-                <div className="admin-setting-heading">
-                  <label className="admin-field-label" htmlFor="shared-ttl">{t('admin.sharedTTL')}</label>
-                  <span className="admin-setting-status active">{t('admin.active')}</span>
-                </div>
-                <div className="admin-number-wrap"><input id="shared-ttl" type="number" min="5" max="1440" step="1" value={sharedTTL} onChange={(event) => setSharedTTL(event.target.value)} /><span>{t('common.minutesShort')}</span></div>
-                <p className="admin-field-note">{t('admin.ttlDescription')}</p>
-              </div>
-            </div>
-            <button className="primary-button admin-save" type="submit" disabled={saving}>{saving ? t('states.saving') : t('admin.saveIntervals')}</button>
-          </form>
+        <div className="admin-workspace">
+          <nav className="admin-subnav" aria-label={t('admin.sections')}>
+            <p className="admin-subnav-title">{t('admin.sections')}</p>
+            {sections.map((section) => <button
+              key={section.id}
+              className={`admin-subnav-item${activeSection === section.id ? ' active' : ''}`}
+              type="button"
+              aria-current={activeSection === section.id ? 'page' : undefined}
+              onClick={() => setActiveSection(section.id)}
+            >
+              <span className="admin-subnav-icon" aria-hidden="true">{section.icon}</span>
+              <span className="admin-subnav-label">{section.label}</span>
+              {section.count !== undefined && <span className="admin-subnav-count" aria-hidden="true">{section.count}</span>}
+            </button>)}
+          </nav>
 
-          <form className="admin-card account-card" onSubmit={(event) => void createAccount(event)}>
-            <div className="admin-card-heading"><span className="admin-card-icon account-icon">＋</span><div><h2>{t('admin.newUser')}</h2><p>{t('admin.newUserDescription')}</p></div></div>
-            <label className="admin-field-label" htmlFor="new-user-email">{t('admin.newUserEmail')}</label>
-            <input className="admin-text-input" id="new-user-email" type="email" autoComplete="off" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="reader@example.com" />
-            <label className="admin-field-label admin-field-spaced" htmlFor="new-user-password">{t('admin.initialPassword')}</label>
-            <input className="admin-text-input" id="new-user-password" type="password" autoComplete="new-password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t('profile.passwordHint')} />
-            <label className="admin-field-label admin-field-spaced" htmlFor="new-user-role">{t('admin.newUserRole')}</label>
-            <select className="admin-select" id="new-user-role" value={role} onChange={(event) => setRole(event.target.value as UserRole)}><option value="Reader">{t('roles.reader')}</option><option value="Administrator">{t('roles.administrator')}</option></select>
-            <p className="admin-field-note">{t('admin.passwordNotice')}</p>
-            <button className="primary-button admin-save" type="submit" disabled={saving}>{saving ? t('states.creating') : t('admin.createUser')}</button>
-          </form>
+          <div className="admin-section-content">
+            {activeSection === 'settings' && <form className="admin-card" onSubmit={(event) => void saveSettings(event)}>
+              <div className="admin-card-heading"><span className="admin-card-icon">◷</span><div><h2>{t('admin.refreshTitle')}</h2><p>{t('admin.refreshDescription')}</p></div></div>
+              <div className="admin-interval-grid">
+                <div className="admin-setting-block">
+                  <div className="admin-setting-heading">
+                    <label className="admin-field-label" htmlFor="scheduler-interval">{t('admin.schedulerInterval')}</label>
+                    <span className="admin-setting-status pending">{t('admin.pending')}</span>
+                  </div>
+                  <div className="admin-number-wrap"><input id="scheduler-interval" type="number" min="5" max="1440" step="1" value={refreshInterval} onChange={(event) => setRefreshInterval(event.target.value)} /><span>{t('common.minutesShort')}</span></div>
+                  <p className="admin-field-note">{t('admin.defaultForUsers')}</p>
+                </div>
+                <div className="admin-setting-block">
+                  <div className="admin-setting-heading">
+                    <label className="admin-field-label" htmlFor="shared-ttl">{t('admin.sharedTTL')}</label>
+                    <span className="admin-setting-status active">{t('admin.active')}</span>
+                  </div>
+                  <div className="admin-number-wrap"><input id="shared-ttl" type="number" min="5" max="1440" step="1" value={sharedTTL} onChange={(event) => setSharedTTL(event.target.value)} /><span>{t('common.minutesShort')}</span></div>
+                  <p className="admin-field-note">{t('admin.ttlDescription')}</p>
+                </div>
+              </div>
+              <button className="primary-button admin-save" type="submit" disabled={saving}>{saving ? t('states.saving') : t('admin.saveIntervals')}</button>
+            </form>}
+
+            {activeSection === 'feedRequests' && <section className="admin-card" aria-labelledby="feed-requests-title">
+              <div className="admin-card-heading"><span className="admin-card-icon users-icon">⌁</span><div><h2 id="feed-requests-title">{t('admin.feedRequests')}</h2><p>{t('admin.feedRequestsDescription')}</p></div><span className="admin-user-count">{feedRequests.length}</span></div>
+              {feedRequests.length === 0 ? <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
+                {feedRequests.map((request) => <tr key={request.id}>
+                  <td><a href={request.url} target="_blank" rel="noreferrer">{request.url}</a></td>
+                  <td>{request.requestedBy}</td>
+                  <td>{request.folderName || t('folder.none')}</td>
+                  <td><div className="admin-request-actions"><button className="primary-button" type="button" onClick={() => void decideFeedRequest(request, true)}>{t('admin.approveFeed')}</button><button className="secondary-button" type="button" onClick={() => void decideFeedRequest(request, false)}>{t('admin.rejectFeed')}</button></div></td>
+                </tr>)}
+              </tbody></table></div>}
+            </section>}
+
+            {activeSection === 'filter' && <section className="admin-card" aria-labelledby="stop-words-title">
+              <div className="admin-card-heading"><span className="admin-card-icon">⊘</span><div><h2 id="stop-words-title">{t('admin.stopWords')}</h2><p>{t('admin.stopWordsDescription')}</p></div><span className="admin-user-count">{stopWords.length}</span></div>
+              <form className="admin-stop-word-form" onSubmit={(event) => void addStopWord(event)}>
+                <label className="visually-hidden" htmlFor="new-stop-word">{t('admin.stopWordInput')}</label>
+                <input className="admin-text-input" id="new-stop-word" maxLength={160} required value={stopWordInput} onChange={(event) => setStopWordInput(event.target.value)} placeholder={t('admin.stopWordPlaceholder')} />
+                <button className="primary-button" type="submit">{t('admin.addStopWord')}</button>
+              </form>
+              {stopWords.length === 0 ? <p className="admin-schedule-notice">{t('admin.noStopWords')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.stopWordTerm')}</th><th scope="col">{t('admin.stopWordActions')}</th></tr></thead><tbody>
+                {stopWords.map((word) => <tr key={word.id}><td>{word.term}</td><td><button className="secondary-button" type="button" onClick={() => void removeStopWord(word)}>{t('admin.removeStopWord')}</button></td></tr>)}
+              </tbody></table></div>}
+            </section>}
+
+            {activeSection === 'blocked' && <section className="admin-card" aria-labelledby="blocked-articles-title">
+              <div className="admin-card-heading"><span className="admin-card-icon users-icon">≡</span><div><h2 id="blocked-articles-title">{t('admin.blockedArticles')}</h2><p>{t('admin.blockedArticlesDescription')}</p></div><span className="admin-user-count">{blockedArticles.length}</span></div>
+              {blockedArticles.length === 0 ? <p className="admin-schedule-notice">{t('admin.noBlockedArticles')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.blockedArticle')}</th><th scope="col">{t('admin.blockedFeed')}</th><th scope="col">{t('admin.feedAddedBy')}</th><th scope="col">{t('admin.matchedTerm')}</th><th scope="col">{t('admin.blockedAt')}</th></tr></thead><tbody>
+                {blockedArticles.map((item) => <tr key={item.id}>
+                  <td>{item.articleUrl ? <a href={item.articleUrl} target="_blank" rel="noreferrer">{item.articleTitle}</a> : item.articleTitle}</td>
+                  <td><a href={item.feedUrl} target="_blank" rel="noreferrer">{item.feedTitle}</a></td>
+                  <td>{item.addedBy || t('admin.unknownFeedOwner')}</td>
+                  <td><code>{item.matchedTerm}</code></td>
+                  <td><time dateTime={item.lastBlockedAt}>{new Date(item.lastBlockedAt).toLocaleString()}</time></td>
+                </tr>)}
+              </tbody></table></div>}
+            </section>}
+
+            {activeSection === 'users' && <div className="admin-user-management">
+              <form className="admin-card" onSubmit={(event) => void createAccount(event)}>
+                <div className="admin-card-heading"><span className="admin-card-icon account-icon">＋</span><div><h2>{t('admin.newUser')}</h2><p>{t('admin.newUserDescription')}</p></div></div>
+                <label className="admin-field-label" htmlFor="new-user-email">{t('admin.newUserEmail')}</label>
+                <input className="admin-text-input" id="new-user-email" type="email" autoComplete="off" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="reader@example.com" />
+                <label className="admin-field-label admin-field-spaced" htmlFor="new-user-password">{t('admin.initialPassword')}</label>
+                <input className="admin-text-input" id="new-user-password" type="password" autoComplete="new-password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t('profile.passwordHint')} />
+                <label className="admin-field-label admin-field-spaced" htmlFor="new-user-role">{t('admin.newUserRole')}</label>
+                <select className="admin-select" id="new-user-role" value={role} onChange={(event) => setRole(event.target.value as UserRole)}><option value="Reader">{t('roles.reader')}</option><option value="Administrator">{t('roles.administrator')}</option></select>
+                <p className="admin-field-note">{t('admin.passwordNotice')}</p>
+                <button className="primary-button admin-save" type="submit" disabled={saving}>{saving ? t('states.creating') : t('admin.createUser')}</button>
+              </form>
+
+              <section className="admin-card" aria-labelledby="users-title">
+                <div className="admin-card-heading"><span className="admin-card-icon users-icon">◎</span><div><h2 id="users-title">{t('admin.users')}</h2><p>{t('admin.usersDescription')}</p></div><span className="admin-user-count" aria-label={t('admin.userCount', { count: settings?.users.length || 0 })}>{settings?.users.length || 0}</span></div>
+                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.userColumn')}</th><th scope="col">{t('admin.roleColumn')}</th><th scope="col">{t('admin.intervalColumn')}</th></tr></thead><tbody>
+                  {settings?.users.map((user) => <tr key={user.id}>
+                    <td><span className="admin-user-avatar">{user.email.slice(0, 1).toUpperCase()}</span><span className="admin-user-email">{user.email}</span></td>
+                    <td><label className="visually-hidden" htmlFor={`role-${user.id}`}>{t('admin.roleFor', { email: user.email })}</label><select id={`role-${user.id}`} className="admin-select table-select" value={user.role} onChange={(event) => void updateRole(user.id, event.target.value as UserRole)}><option value="Reader">{t('roles.reader')}</option><option value="Administrator">{t('roles.administrator')}</option></select></td>
+                    <td><label className="visually-hidden" htmlFor={`interval-${user.id}`}>{t('admin.intervalFor', { email: user.email })}</label><select id={`interval-${user.id}`} className="admin-select table-select" value={user.refreshIntervalMinutes === null ? '' : String(user.refreshIntervalMinutes)} onChange={(event) => void updateUserInterval(user.id, event.target.value)}><option value="">{t('admin.defaultInterval', { minutes: settings.refreshIntervalMinutes })}</option>{intervalOptions(user.refreshIntervalMinutes).map((value) => <option key={value} value={value}>{t('admin.minutes', { count: value })}</option>)}</select></td>
+                  </tr>)}
+                </tbody></table></div>
+                <p className="admin-schedule-notice">{t('admin.scheduleNotice')}</p>
+              </section>
+            </div>}
+          </div>
         </div>
-
-        <section className="admin-card admin-users-card" aria-labelledby="feed-requests-title">
-          <div className="admin-card-heading"><span className="admin-card-icon users-icon">⌁</span><div><h2 id="feed-requests-title">{t('admin.feedRequests')}</h2><p>{t('admin.feedRequestsDescription')}</p></div><span className="admin-user-count">{feedRequests.length}</span></div>
-          {feedRequests.length === 0 ? <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
-            {feedRequests.map((request) => <tr key={request.id}>
-              <td><a href={request.url} target="_blank" rel="noreferrer">{request.url}</a></td>
-              <td>{request.requestedBy}</td>
-              <td>{request.folderName || t('folder.none')}</td>
-              <td><div className="admin-request-actions"><button className="primary-button" type="button" onClick={() => void decideFeedRequest(request, true)}>{t('admin.approveFeed')}</button><button className="secondary-button" type="button" onClick={() => void decideFeedRequest(request, false)}>{t('admin.rejectFeed')}</button></div></td>
-            </tr>)}
-          </tbody></table></div>}
-        </section>
-
-        <section className="admin-card admin-users-card" aria-labelledby="users-title">
-          <div className="admin-card-heading"><span className="admin-card-icon users-icon">◎</span><div><h2 id="users-title">{t('admin.users')}</h2><p>{t('admin.usersDescription')}</p></div><span className="admin-user-count" aria-label={t('admin.userCount', { count: settings?.users.length || 0 })}>{settings?.users.length || 0}</span></div>
-          <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.userColumn')}</th><th scope="col">{t('admin.roleColumn')}</th><th scope="col">{t('admin.intervalColumn')}</th></tr></thead><tbody>
-            {settings?.users.map((user) => <tr key={user.id}>
-              <td><span className="admin-user-avatar">{user.email.slice(0, 1).toUpperCase()}</span><span className="admin-user-email">{user.email}</span></td>
-              <td><label className="visually-hidden" htmlFor={`role-${user.id}`}>{t('admin.roleFor', { email: user.email })}</label><select id={`role-${user.id}`} className="admin-select table-select" value={user.role} onChange={(event) => void updateRole(user.id, event.target.value as UserRole)}><option value="Reader">{t('roles.reader')}</option><option value="Administrator">{t('roles.administrator')}</option></select></td>
-              <td><label className="visually-hidden" htmlFor={`interval-${user.id}`}>{t('admin.intervalFor', { email: user.email })}</label><select id={`interval-${user.id}`} className="admin-select table-select" value={user.refreshIntervalMinutes === null ? '' : String(user.refreshIntervalMinutes)} onChange={(event) => void updateUserInterval(user.id, event.target.value)}><option value="">{t('admin.defaultInterval', { minutes: settings.refreshIntervalMinutes })}</option>{intervalOptions(user.refreshIntervalMinutes).map((value) => <option key={value} value={value}>{t('admin.minutes', { count: value })}</option>)}</select></td>
-            </tr>)}
-          </tbody></table></div>
-          <p className="admin-schedule-notice">{t('admin.scheduleNotice')}</p>
-        </section>
       </>}
     </section>
   );

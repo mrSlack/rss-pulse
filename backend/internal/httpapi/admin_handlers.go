@@ -200,4 +200,70 @@ func (h *Handler) rejectFeedRequest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) listFeedStopWords(w http.ResponseWriter, r *http.Request) {
+	words, err := h.store.ListStopWords(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin.stop_words_load_failed", "The stop-word dictionary could not be loaded.")
+		return
+	}
+	writeJSON(w, http.StatusOK, words)
+}
+
+func (h *Handler) addFeedStopWord(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Term string `json:"term"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	word, err := h.store.AddStopWord(r.Context(), request.Term)
+	if errors.Is(err, store.ErrInvalidStopWord) {
+		writeError(w, http.StatusBadRequest, "admin.stop_word_invalid", "A stop word or phrase must contain 1 to 80 letters or digits.")
+		return
+	}
+	if errors.Is(err, store.ErrDuplicate) {
+		writeError(w, http.StatusConflict, "admin.stop_word_exists", "That stop word or phrase is already in the dictionary.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin.stop_word_add_failed", "The stop word could not be added.")
+		return
+	}
+	writeJSON(w, http.StatusCreated, word)
+}
+
+func (h *Handler) deleteFeedStopWord(w http.ResponseWriter, r *http.Request) {
+	id, ok := optionalID(chi.URLParam(r, "id"))
+	if !ok || id == nil {
+		writeError(w, http.StatusBadRequest, "admin.stop_word_id_invalid", "The stop-word ID is invalid.")
+		return
+	}
+	if err := h.store.DeleteStopWord(r.Context(), *id); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "admin.stop_word_not_found", "The stop word was not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin.stop_word_delete_failed", "The stop word could not be deleted.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) listBlockedFeedArticles(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "admin.blocked_articles_limit_invalid", "The log limit must be between 1 and 200.")
+			return
+		}
+		limit = parsed
+	}
+	items, err := h.store.ListBlockedFeedArticles(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin.blocked_articles_load_failed", "The blocked-article log could not be loaded.")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func validRole(role string) bool { return role == "Administrator" || role == "Reader" }

@@ -8,6 +8,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     watch: { usePolling: true },
+    proxy: process.env.PLAYWRIGHT_API_PROXY_TARGET
+      ? { '/api': { target: process.env.PLAYWRIGHT_API_PROXY_TARGET } }
+      : undefined,
   },
   test: {
     environment: 'jsdom',

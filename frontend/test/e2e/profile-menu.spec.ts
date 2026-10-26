@@ -149,6 +149,7 @@ test('a reader feed request can be rejected or approved by an administrator', as
   async function openAdminQueue() {
     await page.locator('.profile-menu-sidebar > summary').click();
     await page.getByRole('button', { name: 'Administration' }).click();
+    await page.getByRole('button', { name: 'Feed requests' }).click();
     await expect(page.getByRole('heading', { name: 'Feed requests' })).toBeVisible();
   }
 

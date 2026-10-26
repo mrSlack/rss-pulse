@@ -82,6 +82,8 @@ The background scheduler currently runs on its existing 15-minute cadence. Globa
 
 Only public HTTP/HTTPS feed URLs are accepted. Loopback, private, and local network targets are blocked to prevent a feed request from reaching internal services. The API stores article metadata and summaries; the full article remains on the source website.
 
+Before article upserts, each fetched item's title and summary are checked against the administrator-managed stop-word dictionary. Matching is case-insensitive and uses whole words; punctuation and HTML markup separate words, so phrases can match across punctuation. Blocked items are omitted from the shared article table while clean items from the same feed continue to be stored. The seeded dictionary includes Russian, English, and German spam/fraud and erotic/pornographic terms. Administrators can add or remove words and review the latest 100 blocked items in the administration panel. The log includes the article, feed, matched term, and account that first added the shared feed. A blocked item encountered again refreshes its log entry instead of creating a duplicate. Previously stored matching articles are removed when encountered again during refresh; deleting a word does not restore blocked articles.
+
 ## Administrative settings
 
 Administrators can create users with an email address, initial password, and either supported role. The password is presented only during account creation and must be shared separately. Administrators can edit the global scheduler default, a nullable per-user interval override, and the shared-source TTL. A user with no explicit interval inherits the global value; an explicit override is unaffected by changes to the default.
@@ -104,7 +106,7 @@ The API is served under `/api/`. It includes a public health endpoint; authentic
 - `/api/folders` and `/api/feeds` for the signed-in user's library, including `PATCH /api/feeds/{id}` for personal subscription edits and `DELETE /api/folders/{id}` for folder removal. The delete body uses `{"action":"delete_sources"}` to remove the user's subscriptions and their article state, or `{"action":"move_sources","targetFolderId":<id>}` to move subscriptions into another folder owned by the same user. The folder deletion and subscription changes occur in one transaction; shared source and article records are retained.
 - `/api/articles` and `/api/articles/{id}` for filtered article listing and per-user read/saved updates.
 - `/api/refresh` for refresh control and status.
-- `/api/admin/users`, `/api/admin/users/{id}`, `/api/admin/settings`, and `/api/admin/feed-requests` (including approve and reject actions) for administrator operations.
+- `/api/admin/users`, `/api/admin/users/{id}`, `/api/admin/settings`, and `/api/admin/feed-requests` (including approve and reject actions) for administrator operations. `/api/admin/stop-words` supports listing and adding terms; `/api/admin/stop-words/{id}` removes a term; `/api/admin/blocked-articles` returns the latest blocked-item log.
 - `/api/health` for service health.
 
 API errors use an object with a stable `code` and an English `error` message. Existing HTTP status codes communicate request outcome; localized text is resolved in the frontend.

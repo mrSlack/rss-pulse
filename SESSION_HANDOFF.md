@@ -1,3 +1,13 @@
+# Session handoff — 2026-10-26 (E2E accounts and feed filtering)
+
+- **Done:** Added stop-word filtering for incoming feed articles, an administrator dictionary and blocked-article log, and split admin sections behind a submenu. Added an isolated browser-test Compose stack with admin and reader accounts, global reader seeding, real login/workflow coverage, and browser checks for HTTP/network/JS/layout errors. Added the missing SVG favicon discovered by the browser run.
+- **Verified:** Full Playwright suite on the isolated E2E stack: 14 passed. Real-account scenario rerun: 1 passed. Frontend production build, E2E Compose config, and `git diff --check` passed. Test credentials and the run command are in `frontend/test/e2e/README.md`.
+- **Environment:** `compose.e2e.yml` uses a separate PostgreSQL container with temporary storage and no published ports or development database mount. Its services may still be running. Stop them with `docker compose -f compose.e2e.yml down`; this discards the test database.
+- **Remaining / unverified:** All work is uncommitted alongside earlier feed-approval changes. The Go suite was not rerun during this E2E-account work. Review `git status` and the diff before committing; preserve the existing approval work and all tests under dedicated test directories.
+- **References:** `frontend/test/e2e/README.md`, `frontend/test/e2e/real-accounts.spec.ts`, `frontend/test/e2e/admin-workspace.spec.ts`, `compose.e2e.yml`, `docs/PROJECT.md`, current working-tree diff.
+
+---
+
 # Session handoff — 2026-10-26
 
 - **Done:** Added pre-fetch approval for new feed URLs. Readers submit requests; Administrators can approve or reject them. Approved feeds are subscribed for the requester and enter shared refresh. URL changes wait for approval and preserve the current subscription. Redirects stay on the approved host and port, with HTTPS downgrade blocked.

@@ -19,6 +19,10 @@ const apiMock = vi.hoisted(() => ({
   refreshStatus: vi.fn(),
   getAdminSettings: vi.fn(),
   getFeedRequests: vi.fn(),
+  getStopWords: vi.fn(),
+  addStopWord: vi.fn(),
+  deleteStopWord: vi.fn(),
+  getBlockedFeedArticles: vi.fn(),
   updateAdminSettings: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
@@ -39,6 +43,10 @@ beforeEach(() => {
   apiMock.getArticles.mockResolvedValue({ items: [], hasMore: false });
   apiMock.getAdminSettings.mockResolvedValue({ refreshIntervalMinutes: 15, sharedFeedTTLMinutes: 15, users: [] });
   apiMock.getFeedRequests.mockResolvedValue([]);
+  apiMock.getStopWords.mockResolvedValue([]);
+  apiMock.addStopWord.mockResolvedValue({ id: 1, term: 'blocked', createdAt: '2026-10-26T09:00:00Z' });
+  apiMock.deleteStopWord.mockResolvedValue(undefined);
+  apiMock.getBlockedFeedArticles.mockResolvedValue([]);
 });
 
 afterEach(() => cleanup());

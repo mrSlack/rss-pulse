@@ -223,8 +223,8 @@ func (s *Store) PrepareFeedUpdate(ctx context.Context, userID, feedID int64, raw
 	}
 	parsed, _ := url.Parse(normalizedURL)
 	var sourceID int64
-	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url) VALUES ($1,$2,$1)
-		ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, parsed.Hostname()).Scan(&sourceID)
+	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,added_by_user_id) VALUES ($1,$2,$1,$3)
+		ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, parsed.Hostname(), userID).Scan(&sourceID)
 	created := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&sourceID)
@@ -303,8 +303,8 @@ func (s *Store) SubscribeFeed(ctx context.Context, userID int64, rawURL string, 
 		}
 	}
 	var sourceID int64
-	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url, title, url, site_url, last_checked_at, last_success_at)
-		VALUES ($1, $2, $1, $3, NOW(), NOW()) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, document.Title, document.SiteURL).Scan(&sourceID)
+	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url, title, url, site_url, last_checked_at, last_success_at, added_by_user_id)
+		VALUES ($1, $2, $1, $3, NOW(), NOW(), $4) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, document.Title, document.SiteURL, userID).Scan(&sourceID)
 	newSource := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url = $1`, normalizedURL).Scan(&sourceID)
@@ -313,7 +313,11 @@ func (s *Store) SubscribeFeed(ctx context.Context, userID int64, rawURL string, 
 		return Feed{}, err
 	}
 	if newSource {
-		if err := upsertSourceItems(ctx, tx, sourceID, document.Items); err != nil {
+		allowedItems, err := filterAndLogBlockedItems(ctx, tx, sourceID, document.Title, document.Items)
+		if err != nil {
+			return Feed{}, err
+		}
+		if err := upsertSourceItems(ctx, tx, sourceID, allowedItems); err != nil {
 			return Feed{}, err
 		}
 	}

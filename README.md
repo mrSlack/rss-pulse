@@ -121,6 +121,8 @@ The shared feed TTL defaults to 15 minutes (allowed range 5–1,440 minutes). Th
 
 Only public HTTP/HTTPS RSS and Atom URLs are accepted. The API blocks loopback, private, and local network addresses. Pulse stores feed metadata and summaries; the full article remains on its source website.
 
+Before storing a fetched article, Pulse checks its title and summary against the administrator-managed blocked-word dictionary. Matching is case-insensitive and respects whole words; phrases also match across punctuation. Matching articles are skipped and shown in the administration panel with their feed, the matched term, and the account that first added the feed. Other articles from that feed continue to load. The initial Russian, English, and German dictionary covers spam/fraud and erotic/pornographic terms; administrators can add or remove words. The panel shows the 100 most recently blocked articles. Removing a dictionary entry does not restore previously blocked articles.
+
 Sessions use a random HttpOnly cookie with `SameSite=Strict` and expire after 14 days. Passwords are stored as Argon2id hashes. Use HTTPS and `SESSION_COOKIE_SECURE=true` outside local loopback development.
 
 ## Backups, logs, and shutdown

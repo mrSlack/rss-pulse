@@ -1,0 +1,73 @@
+name: rss-reader-e2e
+
+services:
+  db:
+    image: postgres:18.6-alpine3.24
+    environment:
+      POSTGRES_DB: pulse_e2e
+      POSTGRES_USER: pulse_e2e
+      POSTGRES_PASSWORD: pulse-e2e-only-password
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse_e2e -d pulse_e2e"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    networks:
+      - e2e
+
+  api:
+    build:
+      context: ./backend
+    working_dir: /workspace/backend
+    command: ["sh", "-c", "go run ./cmd/api"]
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      POSTGRES_DB: pulse_e2e
+      POSTGRES_USER: pulse_e2e
+      POSTGRES_PASSWORD: pulse-e2e-only-password
+      INITIAL_ADMIN_EMAIL: admin@pulse.test
+      INITIAL_ADMIN_PASSWORD: test-only-admin-password-2026
+      SESSION_COOKIE_SECURE: "false"
+    volumes:
+      - ./backend:/workspace/backend
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+    networks:
+      - e2e
+
+  e2e:
+    build:
+      context: ./frontend
+    working_dir: /workspace/frontend
+    volumes:
+      - ./frontend:/workspace/frontend
+      - e2e_node_modules:/workspace/frontend/node_modules
+    environment:
+      PLAYWRIGHT_API_URL: http://api:8080
+      PLAYWRIGHT_API_PROXY_TARGET: http://api:8080
+      PLAYWRIGHT_SEED_TEST_USERS: "true"
+      PLAYWRIGHT_REAL_E2E: "true"
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/chromium
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - e2e
+
+networks:
+  e2e:
+    name: rss-reader-e2e
+
+volumes:
+  e2e_node_modules:

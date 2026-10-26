@@ -144,8 +144,8 @@ func (s *Store) ApproveFeedRequest(ctx context.Context, requestID int64) (int64,
 	}
 	parsed, _ := url.Parse(normalizedURL)
 	var sourceID int64
-	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url) VALUES ($1,$2,$1)
-		ON CONFLICT (normalized_url) DO UPDATE SET normalized_url=EXCLUDED.normalized_url RETURNING id`, normalizedURL, parsed.Hostname()).Scan(&sourceID)
+	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,added_by_user_id) VALUES ($1,$2,$1,$3)
+		ON CONFLICT (normalized_url) DO UPDATE SET normalized_url=EXCLUDED.normalized_url RETURNING id`, normalizedURL, parsed.Hostname(), userID).Scan(&sourceID)
 	if err != nil {
 		return 0, err
 	}

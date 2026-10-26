@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './test/e2e',
+  globalSetup: process.env.PLAYWRIGHT_SEED_TEST_USERS === 'true' ? './test/e2e/global-setup.ts' : undefined,
   fullyParallel: true,
   reporter: 'list',
   expect: {
