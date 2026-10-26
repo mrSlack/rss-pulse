@@ -32,6 +32,7 @@ async function expectNoHorizontalOverflow(page: import('@playwright/test').Page)
 }
 
 test('admin workspace visits every section without API, script, or layout errors', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
   const liveAPI = process.env.PLAYWRIGHT_API_URL || 'http://api:8080';
   const apiRouteResponse = await request.get(`${liveAPI}/api/admin/stop-words`);
 
@@ -68,8 +69,14 @@ test('admin workspace visits every section without API, script, or layout errors
     { id: 12, url: 'https://two.example/rss', requestedBy: 'reader@example.com', folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:01:00Z' },
   ];
   let stopWords = [{ id: 21, term: 'pornography', createdAt: '2026-10-26T10:00:00Z' }];
-  const blockedArticles = [{
+  let blockedArticles = [{
     id: 31,
+    articleGuid: 'quarantine-31',
+    summary: '<p>A matching article retained for administrator review.</p>',
+    publishedAt: '2026-10-25T09:00:00Z',
+    status: 'pending',
+    canModerate: true,
+    decidedAt: null,
     articleTitle: 'Blocked sample article',
     articleUrl: 'https://news.example/story',
     feedTitle: 'Sample feed',
@@ -127,6 +134,10 @@ test('admin workspace visits every section without API, script, or layout errors
       return route.fulfill({ status: 204 });
     }
     if (path === '/api/admin/blocked-articles' && method === 'GET') return json(blockedArticles);
+    if (path === '/api/admin/blocked-articles/31/allow' && method === 'POST') {
+      blockedArticles = [{ ...blockedArticles[0], id: 32, articleGuid: 'quarantine-32', articleTitle: 'Next pending article' }];
+      return route.fulfill({ status: 204 });
+    }
     if (path === '/api/admin/users' && method === 'POST') {
       const body = route.request().postDataJSON() as { email: string; role: TestUser['role'] };
       const user = { id: 3, email: body.email, role: body.role, refreshIntervalMinutes: null };
@@ -176,6 +187,14 @@ test('admin workspace visits every section without API, script, or layout errors
   await expect(page.getByRole('heading', { name: 'Blocked articles log' })).toBeVisible();
   await expect(page.getByText('Blocked sample article')).toBeVisible();
   await expect(page.getByText('reader@example.com')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Allow', exact: true })).toBeVisible();
+  await expect(page.getByText('Pending review', { exact: true })).toBeVisible();
+  const screenshotLayout = await page.addStyleTag({ content: '.admin-workspace { grid-template-columns: minmax(0, 1fr) !important; } .admin-subnav { display: none !important; }' });
+  await expect(page.locator('section[aria-labelledby="blocked-articles-title"]')).toHaveScreenshot('blocked-article-moderation.png');
+  await screenshotLayout.evaluate((style) => style.remove());
+  await page.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(page.getByText('Next pending article')).toBeVisible();
+  await expect(page.getByText('Blocked sample article')).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole('button', { name: 'Users' }).click();

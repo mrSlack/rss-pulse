@@ -360,6 +360,7 @@
   "admin.articleRejected": "Article rejected. You can allow it later.",
   "admin.articleAlreadyAllowed": "Allowed articles are available to feed subscribers.",
   "admin.legacyBlockedArticle": "Legacy record: article content is unavailable for moderation.",
+  "errors.articleQueueRefresh": "Decision saved, but the article list could not be refreshed. Reload to see the latest queue.",
   "errors.articleModeration": "Could not moderate the article.",
   "apiErrors.admin.blocked_article_id_invalid": "The blocked-article ID is invalid.",
   "apiErrors.admin.blocked_article_not_found": "The blocked article was not found or is unavailable for moderation.",

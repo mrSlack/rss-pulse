@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pulse-reader/app/internal/feeds"
 	"github.com/pulse-reader/app/internal/httpapi"
 	"github.com/pulse-reader/app/internal/store"
 	"github.com/pulse-reader/app/internal/syncer"
@@ -21,8 +22,8 @@ func TestQuarantineAdministratorModeration(t *testing.T) {
 	published := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	var id, legacyID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO blocked_feed_articles
-		(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,matched_term,summary,published_at)
-		SELECT id,'quarantine','Blocked title','https://example.com/blocked','Admin feed',url,'adult','Full summary',$1
+		(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,matched_term,summary,published_at,moderation_eligible)
+		SELECT id,'quarantine','Blocked title','https://example.com/blocked','Admin feed',url,'adult','Full summary',$1,TRUE
 		FROM feed_sources WHERE normalized_url='https://example.com/rss' RETURNING id`, published).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +93,17 @@ func TestQuarantineAdministratorModeration(t *testing.T) {
 	rows = list("1")
 	if len(rows) != 1 || rows[0].ID != legacyID || rows[0].Status != "pending" {
 		t.Fatalf("pending-first limited listing = %+v", rows)
+	}
+	// A complete dated refresh must not enable either endpoint for legacy history.
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `UPDATE feed_sources SET lease_token='legacy-refresh',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE normalized_url='https://example.com/rss' RETURNING id`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.New(pool).CommitSourceRefresh(ctx, store.SourceLease{ID: sourceID, Token: "legacy-refresh"}, feeds.Document{Title: "Admin feed", Items: []feeds.Item{{GUID: "legacy", Title: "Legacy title", Summary: "Complete dated payload", PublishedAt: published, HasPublishedAt: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if rows := list("1"); len(rows) != 1 || rows[0].ID != legacyID || rows[0].CanModerate {
+		t.Fatalf("refreshed legacy listing=%+v", rows)
 	}
 	for _, action := range []string{"allow", "reject"} {
 		for _, item := range []struct {

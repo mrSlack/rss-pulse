@@ -189,3 +189,49 @@ func TestQuarantinePreservesPublicationTimeOnUndatedRefresh(t *testing.T) {
 		t.Fatalf("promoted publication time=%v, want %v", promoted, original)
 	}
 }
+
+func TestHistoricalQuarantineRemainsUnavailableAfterDatedRefresh(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedPostgres(t)
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.EnsureInitialAdministrator(ctx, pool, "admin@example.com", "long-bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateSharedSources(ctx, pool, admin); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the schema immediately before migration 010.
+	if _, err := pool.Exec(ctx, `ALTER TABLE blocked_feed_articles DROP COLUMN IF EXISTS moderation_eligible; DELETE FROM schema_migrations WHERE name='010_quarantine_eligibility.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	var source, legacy int64
+	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources(normalized_url,url,title,lease_token,lease_expires_at) VALUES ('https://example.com/rss','https://example.com/rss','News','test',NOW()+INTERVAL '1 minute') RETURNING id`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO blocked_feed_articles(feed_source_id,article_guid,article_title,feed_title,feed_url,matched_term,summary,published_at) VALUES ($1,'legacy','Legacy','News','https://example.com/rss','adult content','Already complete before eligibility tracking',$2) RETURNING id`, source, time.Date(2019, 2, 3, 4, 5, 6, 0, time.UTC)).Scan(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateSharedSources(ctx, pool, admin); err != nil {
+		t.Fatal(err)
+	}
+	s := store.New(pool)
+	item := feeds.Item{GUID: "legacy", Title: "adult content", Summary: "Recovered complete content", PublishedAt: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), HasPublishedAt: true}
+	if err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListBlockedFeedArticles(ctx, 100)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if rows[0].CanModerate {
+		t.Error("historical row became moderatable after dated refresh")
+	}
+	for _, allow := range []bool{false, true} {
+		if err := s.ModerateBlockedFeedArticle(ctx, legacy, allow, admin); err != store.ErrQuarantineUnavailable {
+			t.Errorf("legacy allow=%v error=%v, want ErrQuarantineUnavailable", allow, err)
+		}
+	}
+}

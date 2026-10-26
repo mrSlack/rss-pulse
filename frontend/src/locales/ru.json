@@ -364,6 +364,7 @@
   "admin.articleRejected": "Новость отклонена. Её можно разрешить позже.",
   "admin.articleAlreadyAllowed": "Разрешённые новости доступны подписчикам ленты.",
   "admin.legacyBlockedArticle": "Старая запись: содержимое новости недоступно для модерации.",
+  "errors.articleQueueRefresh": "Решение сохранено, но список новостей не удалось обновить. Перезагрузите страницу, чтобы увидеть актуальную очередь.",
   "errors.articleModeration": "Не удалось выполнить модерацию новости.",
   "apiErrors.admin.blocked_article_id_invalid": "Некорректный ID заблокированной новости.",
   "apiErrors.admin.blocked_article_not_found": "Заблокированная новость не найдена или недоступна для модерации.",

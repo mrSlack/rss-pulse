@@ -360,6 +360,7 @@
   "admin.articleRejected": "Artikel abgelehnt. Er kann später freigegeben werden.",
   "admin.articleAlreadyAllowed": "Freigegebene Artikel sind für Abonnenten des Feeds verfügbar.",
   "admin.legacyBlockedArticle": "Alter Protokolleintrag: Der Artikelinhalt ist für die Moderation nicht verfügbar.",
+  "errors.articleQueueRefresh": "Entscheidung gespeichert, aber die Artikelliste konnte nicht aktualisiert werden. Lade die Seite neu, um die aktuelle Warteschlange zu sehen.",
   "errors.articleModeration": "Der Artikel konnte nicht moderiert werden.",
   "apiErrors.admin.blocked_article_id_invalid": "Die ID des blockierten Artikels ist ungültig.",
   "apiErrors.admin.blocked_article_not_found": "Der blockierte Artikel wurde nicht gefunden oder ist nicht zur Moderation verfügbar.",

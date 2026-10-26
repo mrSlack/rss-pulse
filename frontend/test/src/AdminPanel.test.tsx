@@ -25,7 +25,7 @@ vi.mock('../../src/api', async (importOriginal) => ({
 }));
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   apiMock.getAdminSettings.mockResolvedValue({
     refreshIntervalMinutes: 15,
     sharedFeedTTLMinutes: 15,
@@ -102,12 +102,15 @@ describe('AdminPanel', () => {
   it('shows quarantine context and offers both decisions for pending and rejected rows only', async () => {
     const user = userEvent.setup();
     const base = { articleGuid: 'guid', articleUrl: 'https://news.example/story', feedTitle: 'News feed', feedUrl: 'https://news.example/rss', addedBy: 'reader@example.com', matchedTerm: 'phrase', firstBlockedAt: '2026-10-26T09:00:00Z', lastBlockedAt: '2026-10-26T09:00:00Z', summary: '<p>Summary context</p>', publishedAt: '2020-01-02T03:04:05Z', decidedAt: null };
-    apiMock.getBlockedFeedArticles.mockResolvedValueOnce([
+    const initialRows = [
       { ...base, id: 1, articleTitle: 'Pending story', status: 'pending', canModerate: true },
       { ...base, id: 2, articleTitle: 'Rejected story', status: 'rejected', canModerate: true },
       { ...base, id: 3, articleTitle: 'Allowed story', status: 'allowed', canModerate: false },
       { ...base, id: 4, articleTitle: 'Legacy story', status: 'pending', canModerate: false, publishedAt: null, summary: '' },
-    ]);
+    ];
+    apiMock.getBlockedFeedArticles.mockResolvedValueOnce(initialRows)
+      .mockResolvedValueOnce(initialRows.map((row) => row.id === 1 ? { ...row, status: 'rejected' } : row))
+      .mockResolvedValueOnce(initialRows.map((row) => row.id === 1 ? { ...row, status: 'rejected' } : row.id === 2 ? { ...row, status: 'allowed', canModerate: false } : row));
     apiMock.allowBlockedFeedArticle.mockResolvedValue(undefined);
     apiMock.rejectBlockedFeedArticle.mockResolvedValue(undefined);
     render(<AdminPanel />);
@@ -148,6 +151,33 @@ describe('AdminPanel', () => {
     expect(screen.getByText('Retry story')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
     expect(screen.getByText('Pending review')).toBeTruthy();
+  });
+
+  it('refetches the bounded queue after allowing an article to show the next pending item', async () => {
+    const user = userEvent.setup();
+    const row = { id: 7, articleTitle: 'Current story', articleUrl: '', feedTitle: 'News', feedUrl: 'https://news.example/rss', matchedTerm: 'phrase', status: 'pending', canModerate: true, summary: '', publishedAt: null, lastBlockedAt: '2026-10-26T09:00:00Z' };
+    apiMock.getBlockedFeedArticles.mockResolvedValueOnce([row]).mockResolvedValueOnce([{ ...row, id: 8, articleTitle: 'Next pending story' }]);
+    apiMock.allowBlockedFeedArticle.mockResolvedValueOnce(undefined);
+    render(<AdminPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Blocked log' }));
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(await screen.findByText('Next pending story')).toBeTruthy();
+    expect(screen.queryByText('Current story')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+  });
+
+  it('keeps a successful decision when refreshing the queue fails', async () => {
+    const user = userEvent.setup();
+    apiMock.getBlockedFeedArticles.mockResolvedValueOnce([{ id: 7, articleTitle: 'Allowed story', articleUrl: '', feedTitle: 'News', feedUrl: 'https://news.example/rss', matchedTerm: 'phrase', status: 'pending', canModerate: true, summary: '', publishedAt: null, lastBlockedAt: '2026-10-26T09:00:00Z' }]).mockRejectedValueOnce(new Error('Network unavailable'));
+    apiMock.allowBlockedFeedArticle.mockResolvedValueOnce(undefined);
+    render(<AdminPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Blocked log' }));
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Decision saved, but the article list could not be refreshed. Reload to see the latest queue.'));
+    expect(screen.getByText('Article allowed. It is now available to feed subscribers.')).toBeTruthy();
+    expect(screen.getByText('Allowed')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+    expect(apiMock.allowBlockedFeedArticle).toHaveBeenCalledTimes(1);
   });
 
   it('manages blocked words and displays the blocked article audit log', async () => {

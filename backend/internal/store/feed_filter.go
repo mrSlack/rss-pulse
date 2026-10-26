@@ -86,7 +86,7 @@ func (s *Store) ListBlockedFeedArticles(ctx context.Context, limit int) ([]Block
 	}
 	rows, err := s.pool.Query(ctx, `SELECT ba.id,ba.article_title,ba.article_url,ba.feed_title,ba.feed_url,
 		COALESCE(u.email,''),ba.matched_term,ba.first_blocked_at::text,ba.last_blocked_at::text,ba.article_guid,COALESCE(ba.summary,''),ba.published_at,ba.status,ba.decided_at,
- (ba.status IN ('pending','rejected') AND ba.summary IS NOT NULL AND ba.published_at IS NOT NULL AND ba.article_guid<>'')
+ (ba.moderation_eligible AND ba.status IN ('pending','rejected') AND ba.summary IS NOT NULL AND ba.published_at IS NOT NULL AND ba.article_guid<>'')
 		FROM blocked_feed_articles ba LEFT JOIN users u ON u.id=ba.added_by_user_id
 		ORDER BY (ba.status='pending') DESC,ba.last_blocked_at DESC,ba.id DESC LIMIT $1`, limit)
 	if err != nil {
@@ -148,8 +148,8 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 			continue
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO blocked_feed_articles
-			(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,added_by_user_id,matched_term,summary,published_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,added_by_user_id,matched_term,summary,published_at,moderation_eligible)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TRUE)
 			ON CONFLICT (feed_source_id,article_guid) DO UPDATE SET article_title=EXCLUDED.article_title,
 				article_url=EXCLUDED.article_url,feed_title=EXCLUDED.feed_title,feed_url=EXCLUDED.feed_url,
 				added_by_user_id=COALESCE(blocked_feed_articles.added_by_user_id,EXCLUDED.added_by_user_id),
@@ -195,7 +195,8 @@ func (s *Store) ModerateBlockedFeedArticle(ctx context.Context, id int64, allow 
 	var summary *string
 	var published *time.Time
 	var status string
-	err = tx.QueryRow(ctx, `SELECT article_guid,article_title,article_url,summary,published_at,status FROM blocked_feed_articles WHERE id=$1 FOR UPDATE`, id).Scan(&item.GUID, &item.Title, &item.URL, &summary, &published, &status)
+	var eligible bool
+	err = tx.QueryRow(ctx, `SELECT article_guid,article_title,article_url,summary,published_at,status,moderation_eligible FROM blocked_feed_articles WHERE id=$1 FOR UPDATE`, id).Scan(&item.GUID, &item.Title, &item.URL, &summary, &published, &status, &eligible)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -208,7 +209,7 @@ func (s *Store) ModerateBlockedFeedArticle(ctx context.Context, id int64, allow 
 		}
 		return ErrQuarantineUnavailable
 	}
-	if summary == nil || published == nil || item.GUID == "" {
+	if !eligible || summary == nil || published == nil || item.GUID == "" {
 		return ErrQuarantineUnavailable
 	}
 	status = "rejected"

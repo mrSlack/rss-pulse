@@ -135,6 +135,11 @@ export function AdminPanel() {
         ? { ...article, status: allow ? 'allowed' : 'rejected', canModerate: !allow }
         : article));
       setNotice(t(allow ? 'admin.articleAllowed' : 'admin.articleRejected'));
+      try {
+        setBlockedArticles(await api.getBlockedFeedArticles());
+      } catch {
+        setError(t('errors.articleQueueRefresh'));
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('errors.articleModeration'));
     } finally {
