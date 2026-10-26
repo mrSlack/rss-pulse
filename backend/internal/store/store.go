@@ -20,6 +20,7 @@ import (
 var migrations embed.FS
 
 var (
+	ErrQuarantineUnavailable  = errors.New("quarantined article cannot be moderated")
 	ErrNotFound               = errors.New("record not found")
 	ErrDuplicate              = errors.New("an object with that name or URL already exists")
 	ErrInvalidFeedURL         = errors.New("feed URL must be an absolute HTTP or HTTPS URL")

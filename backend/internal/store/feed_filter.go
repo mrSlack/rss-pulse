@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -17,15 +18,21 @@ type StopWord struct {
 }
 
 type BlockedFeedArticle struct {
-	ID           int64  `json:"id"`
-	ArticleTitle string `json:"articleTitle"`
-	ArticleURL   string `json:"articleUrl"`
-	FeedTitle    string `json:"feedTitle"`
-	FeedURL      string `json:"feedUrl"`
-	AddedBy      string `json:"addedBy"`
-	MatchedTerm  string `json:"matchedTerm"`
-	FirstBlocked string `json:"firstBlockedAt"`
-	LastBlocked  string `json:"lastBlockedAt"`
+	ArticleGUID  string     `json:"articleGuid"`
+	Summary      string     `json:"summary"`
+	PublishedAt  *time.Time `json:"publishedAt"`
+	Status       string     `json:"status"`
+	DecidedAt    *time.Time `json:"decidedAt"`
+	CanModerate  bool       `json:"canModerate"`
+	ID           int64      `json:"id"`
+	ArticleTitle string     `json:"articleTitle"`
+	ArticleURL   string     `json:"articleUrl"`
+	FeedTitle    string     `json:"feedTitle"`
+	FeedURL      string     `json:"feedUrl"`
+	AddedBy      string     `json:"addedBy"`
+	MatchedTerm  string     `json:"matchedTerm"`
+	FirstBlocked string     `json:"firstBlockedAt"`
+	LastBlocked  string     `json:"lastBlockedAt"`
 }
 
 func (s *Store) ListStopWords(ctx context.Context) ([]StopWord, error) {
@@ -78,9 +85,10 @@ func (s *Store) ListBlockedFeedArticles(ctx context.Context, limit int) ([]Block
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `SELECT ba.id,ba.article_title,ba.article_url,ba.feed_title,ba.feed_url,
-		COALESCE(u.email,''),ba.matched_term,ba.first_blocked_at::text,ba.last_blocked_at::text
+		COALESCE(u.email,''),ba.matched_term,ba.first_blocked_at::text,ba.last_blocked_at::text,ba.article_guid,COALESCE(ba.summary,''),ba.published_at,ba.status,ba.decided_at,
+ (ba.status IN ('pending','rejected') AND ba.summary IS NOT NULL AND ba.published_at IS NOT NULL AND ba.article_guid<>'')
 		FROM blocked_feed_articles ba LEFT JOIN users u ON u.id=ba.added_by_user_id
-		ORDER BY ba.last_blocked_at DESC,ba.id DESC LIMIT $1`, limit)
+		ORDER BY (ba.status='pending') DESC,ba.last_blocked_at DESC,ba.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +97,8 @@ func (s *Store) ListBlockedFeedArticles(ctx context.Context, limit int) ([]Block
 	for rows.Next() {
 		var item BlockedFeedArticle
 		if err := rows.Scan(&item.ID, &item.ArticleTitle, &item.ArticleURL, &item.FeedTitle, &item.FeedURL,
-			&item.AddedBy, &item.MatchedTerm, &item.FirstBlocked, &item.LastBlocked); err != nil {
+			&item.AddedBy, &item.MatchedTerm, &item.FirstBlocked, &item.LastBlocked,
+			&item.ArticleGUID, &item.Summary, &item.PublishedAt, &item.Status, &item.DecidedAt, &item.CanModerate); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -128,23 +137,28 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 	}
 	allowed := make([]feeds.Item, 0, len(items))
 	for _, item := range items {
+		var status string
+		err := tx.QueryRow(ctx, `SELECT status FROM blocked_feed_articles WHERE feed_source_id=$1 AND article_guid=$2`, sourceID, item.GUID).Scan(&status)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
 		matchedTerm := feeds.FindStopWordMatch(item.Title+" "+item.Summary, terms)
-		if matchedTerm == "" {
+		if matchedTerm == "" && status == "" {
 			allowed = append(allowed, item)
 			continue
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO blocked_feed_articles
-			(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,added_by_user_id,matched_term)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,added_by_user_id,matched_term,summary,published_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			ON CONFLICT (feed_source_id,article_guid) DO UPDATE SET article_title=EXCLUDED.article_title,
 				article_url=EXCLUDED.article_url,feed_title=EXCLUDED.feed_title,feed_url=EXCLUDED.feed_url,
 				added_by_user_id=COALESCE(blocked_feed_articles.added_by_user_id,EXCLUDED.added_by_user_id),
-				matched_term=EXCLUDED.matched_term,last_blocked_at=NOW()`,
-			sourceID, item.GUID, item.Title, item.URL, feedTitle, feedURL, addedByUserID, matchedTerm); err != nil {
+				matched_term=CASE WHEN EXCLUDED.matched_term<>'' THEN EXCLUDED.matched_term ELSE blocked_feed_articles.matched_term END,summary=EXCLUDED.summary,published_at=EXCLUDED.published_at,last_blocked_at=NOW()`,
+			sourceID, item.GUID, item.Title, item.URL, feedTitle, feedURL, addedByUserID, matchedTerm, item.Summary, item.PublishedAt); err != nil {
 			return nil, err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM articles WHERE feed_source_id=$1 AND (guid=$2 OR ($3<>'' AND url=$3))`, sourceID, item.GUID, item.URL); err != nil {
-			return nil, err
+		if status == "allowed" {
+			allowed = append(allowed, item)
 		}
 	}
 	return allowed, nil
@@ -156,4 +170,59 @@ func normalizeStopWordInput(raw string) (string, error) {
 		return "", ErrInvalidStopWord
 	}
 	return term, err
+}
+
+// ModerateBlockedFeedArticle records a decision and promotion atomically. Source locking
+// serializes decisions with refreshes, using the same lock order as refresh commits.
+func (s *Store) ModerateBlockedFeedArticle(ctx context.Context, id int64, allow bool, moderatorID int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var sourceID int64
+	err = tx.QueryRow(ctx, `SELECT feed_source_id FROM blocked_feed_articles WHERE id=$1`, id).Scan(&sourceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `SELECT id FROM feed_sources WHERE id=$1 FOR UPDATE`, sourceID); err != nil {
+		return err
+	}
+	var item feeds.Item
+	var summary *string
+	var published *time.Time
+	var status string
+	err = tx.QueryRow(ctx, `SELECT article_guid,article_title,article_url,summary,published_at,status FROM blocked_feed_articles WHERE id=$1 FOR UPDATE`, id).Scan(&item.GUID, &item.Title, &item.URL, &summary, &published, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status == "allowed" {
+		if allow {
+			return tx.Commit(ctx)
+		}
+		return ErrQuarantineUnavailable
+	}
+	if summary == nil || published == nil || item.GUID == "" {
+		return ErrQuarantineUnavailable
+	}
+	status = "rejected"
+	if allow {
+		item.Summary = *summary
+		item.PublishedAt = *published
+		item.HasPublishedAt = true
+		if err := upsertSourceItems(ctx, tx, sourceID, []feeds.Item{item}); err != nil {
+			return err
+		}
+		status = "allowed"
+	}
+	if _, err = tx.Exec(ctx, `UPDATE blocked_feed_articles SET status=$2,decided_at=NOW(),decided_by_user_id=$3 WHERE id=$1`, id, status, moderatorID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

@@ -53,8 +53,8 @@ func TestSourceRefreshLogsAndSkipsBlockedArticles(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM articles WHERE feed_source_id=$1`, sourceID).Scan(&articleCount); err != nil {
 		t.Fatal(err)
 	}
-	if articleCount != 1 {
-		t.Fatalf("stored article count = %d, want only the clean article", articleCount)
+	if articleCount != 2 {
+		t.Fatalf("stored article count = %d, want the clean and previously stored articles", articleCount)
 	}
 	var articleTitle, feedTitle, feedURL, addedBy, term string
 	if err := pool.QueryRow(ctx, `SELECT ba.article_title,ba.feed_title,ba.feed_url,u.email,ba.matched_term
