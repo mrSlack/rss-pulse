@@ -191,7 +191,7 @@ test('admin workspace visits every section without API, script, or layout errors
   await expect(page.getByText('Pending review', { exact: true })).toBeVisible();
   const screenshotLayout = await page.addStyleTag({ content: '.admin-workspace { grid-template-columns: minmax(0, 1fr) !important; } .admin-subnav { display: none !important; }' });
   await expect(page.locator('section[aria-labelledby="blocked-articles-title"]')).toHaveScreenshot('blocked-article-moderation.png');
-  await screenshotLayout.evaluate((style) => style.remove());
+  await screenshotLayout.evaluate((style) => style.parentNode?.removeChild(style));
   await page.getByRole('button', { name: 'Allow', exact: true }).click();
   await expect(page.getByText('Next pending article')).toBeVisible();
   await expect(page.getByText('Blocked sample article')).toHaveCount(0);
