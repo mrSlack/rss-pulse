@@ -56,6 +56,8 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool) ht
 	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/stop-words", handler.addFeedStopWord)
 	router.With(handler.authenticate, handler.requireAdministrator).Delete("/api/admin/stop-words/{id}", handler.deleteFeedStopWord)
 	router.With(handler.authenticate, handler.requireAdministrator).Get("/api/admin/blocked-articles", handler.listBlockedFeedArticles)
+	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/blocked-articles/{id}/allow", handler.allowBlockedFeedArticle)
+	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/blocked-articles/{id}/reject", handler.rejectBlockedFeedArticle)
 	return router
 }
 

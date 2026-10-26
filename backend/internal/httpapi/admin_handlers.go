@@ -266,4 +266,31 @@ func (h *Handler) listBlockedFeedArticles(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (h *Handler) allowBlockedFeedArticle(w http.ResponseWriter, r *http.Request) {
+	h.moderateBlockedFeedArticle(w, r, true)
+}
+
+func (h *Handler) rejectBlockedFeedArticle(w http.ResponseWriter, r *http.Request) {
+	h.moderateBlockedFeedArticle(w, r, false)
+}
+
+func (h *Handler) moderateBlockedFeedArticle(w http.ResponseWriter, r *http.Request, allow bool) {
+	id, ok := optionalID(chi.URLParam(r, "id"))
+	if !ok || id == nil {
+		writeError(w, http.StatusBadRequest, "admin.blocked_article_id_invalid", "The blocked-article ID is invalid.")
+		return
+	}
+	user, _ := currentUser(r)
+	err := h.store.ModerateBlockedFeedArticle(r.Context(), *id, allow, user.ID)
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrQuarantineUnavailable) {
+		writeError(w, http.StatusNotFound, "admin.blocked_article_not_found", "The blocked article was not found or is unavailable for moderation.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin.blocked_article_moderate_failed", "The blocked article could not be moderated.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func validRole(role string) bool { return role == "Administrator" || role == "Reader" }
