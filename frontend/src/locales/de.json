@@ -346,5 +346,22 @@
   "reader.readTime_few": "{{count}} Min. Lesezeit",
   "reader.readTime_many": "{{count}} Min. Lesezeit",
   "admin.minutes_few": "{{count}} Minuten",
-  "admin.minutes_many": "{{count}} Minuten"
+  "admin.minutes_many": "{{count}} Minuten",
+  "admin.publishedAt": "Ursprüngliche Veröffentlichung",
+  "admin.publicationUnknown": "Unbekannt",
+  "admin.articleStatus": "Status",
+  "admin.articleActions": "Aktionen",
+  "admin.articleStatus.pending": "Prüfung ausstehend",
+  "admin.articleStatus.rejected": "Abgelehnt",
+  "admin.articleStatus.allowed": "Freigegeben",
+  "admin.allowArticle": "Freigeben",
+  "admin.rejectArticle": "Ablehnen",
+  "admin.articleAllowed": "Artikel freigegeben. Er ist jetzt für Abonnenten des Feeds verfügbar.",
+  "admin.articleRejected": "Artikel abgelehnt. Er kann später freigegeben werden.",
+  "admin.articleAlreadyAllowed": "Freigegebene Artikel sind für Abonnenten des Feeds verfügbar.",
+  "admin.legacyBlockedArticle": "Alter Protokolleintrag: Der Artikelinhalt ist für die Moderation nicht verfügbar.",
+  "errors.articleModeration": "Der Artikel konnte nicht moderiert werden.",
+  "apiErrors.admin.blocked_article_id_invalid": "Die ID des blockierten Artikels ist ungültig.",
+  "apiErrors.admin.blocked_article_not_found": "Der blockierte Artikel wurde nicht gefunden oder ist nicht zur Moderation verfügbar.",
+  "apiErrors.admin.blocked_article_moderate_failed": "Der blockierte Artikel konnte nicht moderiert werden."
 }

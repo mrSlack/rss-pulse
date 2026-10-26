@@ -816,3 +816,6 @@ a { color: inherit; text-decoration: none; }
   .topbar-actions { gap: 3px; }
   .topbar-actions .theme-toggle { width: 32px; height: 32px; }
 }
+
+.admin-quarantine-table td:first-child { display: table-cell; min-width: 240px; max-width: 360px; overflow-wrap: anywhere; }
+.admin-quarantine-table .admin-field-note { margin: 6px 0 0; }

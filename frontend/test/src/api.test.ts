@@ -17,6 +17,14 @@ describe('authenticated API', () => {
     await expect(api.currentUser()).rejects.toThrow('Please retry later.');
   });
 
+  it.each(['allow', 'reject'] as const)('posts a quarantine %s decision with same-origin cookies', async (decision) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    if (decision === 'allow') await api.allowBlockedFeedArticle(7);
+    else await api.rejectBlockedFeedArticle(7);
+    expect(fetchMock).toHaveBeenCalledWith(`/api/admin/blocked-articles/7/${decision}`, expect.objectContaining({ method: 'POST', credentials: 'same-origin' }));
+  });
+
   it('loads the current user with same-origin cookies', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 7, email: 'reader@example.com', role: 'Reader' }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

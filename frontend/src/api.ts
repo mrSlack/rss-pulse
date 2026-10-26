@@ -78,6 +78,7 @@ export type FeedRequest = {
 export type FeedRequestResult = { requestId: number; status: 'pending' };
 
 export type StopWord = { id: number; term: string; createdAt: string };
+export type QuarantineStatus = 'pending' | 'rejected' | 'allowed';
 export type BlockedFeedArticle = {
   id: number;
   articleTitle: string;
@@ -86,6 +87,12 @@ export type BlockedFeedArticle = {
   feedUrl: string;
   addedBy: string;
   matchedTerm: string;
+  articleGuid: string;
+  summary: string;
+  publishedAt: string | null;
+  status: QuarantineStatus;
+  decidedAt: string | null;
+  canModerate: boolean;
   firstBlockedAt: string;
   lastBlockedAt: string;
 };
@@ -200,6 +207,8 @@ export const api = {
   addStopWord: (term: string) => request<StopWord>('/admin/stop-words', { method: 'POST', body: JSON.stringify({ term }) }),
   deleteStopWord: (id: number) => request<void>(`/admin/stop-words/${id}`, { method: 'DELETE' }),
   getBlockedFeedArticles: () => request<BlockedFeedArticle[]>('/admin/blocked-articles?limit=100'),
+  allowBlockedFeedArticle: (id: number) => request<void>(`/admin/blocked-articles/${id}/allow`, { method: 'POST' }),
+  rejectBlockedFeedArticle: (id: number) => request<void>(`/admin/blocked-articles/${id}/reject`, { method: 'POST' }),
 };
 
 export function stripMarkup(value: string): string {

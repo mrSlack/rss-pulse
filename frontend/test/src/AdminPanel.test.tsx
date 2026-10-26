@@ -12,6 +12,8 @@ const apiMock = vi.hoisted(() => ({
   addStopWord: vi.fn(),
   deleteStopWord: vi.fn(),
   getBlockedFeedArticles: vi.fn(),
+  allowBlockedFeedArticle: vi.fn(),
+  rejectBlockedFeedArticle: vi.fn(),
   updateAdminSettings: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
@@ -95,6 +97,57 @@ describe('AdminPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(apiMock.approveFeedRequest).toHaveBeenCalledWith(12));
     expect(await screen.findByText('Feed approved. It will be fetched after approval.')).toBeTruthy();
+  });
+
+  it('shows quarantine context and offers both decisions for pending and rejected rows only', async () => {
+    const user = userEvent.setup();
+    const base = { articleGuid: 'guid', articleUrl: 'https://news.example/story', feedTitle: 'News feed', feedUrl: 'https://news.example/rss', addedBy: 'reader@example.com', matchedTerm: 'phrase', firstBlockedAt: '2026-10-26T09:00:00Z', lastBlockedAt: '2026-10-26T09:00:00Z', summary: '<p>Summary context</p>', publishedAt: '2020-01-02T03:04:05Z', decidedAt: null };
+    apiMock.getBlockedFeedArticles.mockResolvedValueOnce([
+      { ...base, id: 1, articleTitle: 'Pending story', status: 'pending', canModerate: true },
+      { ...base, id: 2, articleTitle: 'Rejected story', status: 'rejected', canModerate: true },
+      { ...base, id: 3, articleTitle: 'Allowed story', status: 'allowed', canModerate: false },
+      { ...base, id: 4, articleTitle: 'Legacy story', status: 'pending', canModerate: false, publishedAt: null, summary: '' },
+    ]);
+    apiMock.allowBlockedFeedArticle.mockResolvedValue(undefined);
+    apiMock.rejectBlockedFeedArticle.mockResolvedValue(undefined);
+    render(<AdminPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Blocked log' }));
+    const pending = screen.getByText('Pending story').closest('tr')!;
+    const rejected = screen.getByText('Rejected story').closest('tr')!;
+    expect(within(pending).getByText('Summary context')).toBeTruthy();
+    expect(within(pending).getByText('News feed')).toBeTruthy();
+    expect(within(pending).getByText('phrase')).toBeTruthy();
+    expect(pending.querySelector('time[datetime="2020-01-02T03:04:05Z"]')).toBeTruthy();
+    expect(within(pending).getByText('Pending review')).toBeTruthy();
+    expect(within(rejected).getByText('Rejected')).toBeTruthy();
+    for (const row of [pending, rejected]) {
+      expect(within(row).getByRole('button', { name: 'Allow' })).toBeTruthy();
+      expect(within(row).getByRole('button', { name: 'Reject' })).toBeTruthy();
+    }
+    for (const title of ['Allowed story', 'Legacy story']) {
+      expect(within(screen.getByText(title).closest('tr')!).queryByRole('button')).toBeNull();
+    }
+    expect(screen.getByText('Legacy record: article content is unavailable for moderation.')).toBeTruthy();
+    await user.click(within(pending).getByRole('button', { name: 'Reject' }));
+    await waitFor(() => expect(apiMock.rejectBlockedFeedArticle).toHaveBeenCalledWith(1));
+    expect(within(pending).getByText('Rejected')).toBeTruthy();
+    await user.click(within(rejected).getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(apiMock.allowBlockedFeedArticle).toHaveBeenCalledWith(2));
+    expect(within(rejected).getByText('Allowed')).toBeTruthy();
+    expect(within(rejected).queryByRole('button')).toBeNull();
+  });
+
+  it('preserves the quarantine row and shows an API error when a decision fails', async () => {
+    const user = userEvent.setup();
+    apiMock.getBlockedFeedArticles.mockResolvedValueOnce([{ id: 7, articleTitle: 'Retry story', articleUrl: '', feedTitle: 'News', feedUrl: 'https://news.example/rss', matchedTerm: 'phrase', status: 'pending', canModerate: true, summary: '', publishedAt: null, lastBlockedAt: '2026-10-26T09:00:00Z' }]);
+    apiMock.allowBlockedFeedArticle.mockRejectedValueOnce(new Error('Decision failed. Try again.'));
+    render(<AdminPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Blocked log' }));
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Decision failed. Try again.'));
+    expect(screen.getByText('Retry story')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+    expect(screen.getByText('Pending review')).toBeTruthy();
   });
 
   it('manages blocked words and displays the blocked article audit log', async () => {

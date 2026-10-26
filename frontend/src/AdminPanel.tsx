@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import './i18n';
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type StopWord, type UserRole } from './api';
+import { api, stripMarkup, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type StopWord, type UserRole } from './api';
 import { ErrorToast } from './ErrorToast';
 
 const intervalChoices = [5, 10, 15, 30, 60, 120, 360, 720, 1440];
@@ -12,7 +12,7 @@ function intervalOptions(current: number | null) {
 }
 
 export function AdminPanel() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [activeSection, setActiveSection] = useState<AdminSection>('settings');
   const [feedRequests, setFeedRequests] = useState<FeedRequest[]>([]);
@@ -28,6 +28,7 @@ export function AdminPanel() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [stopWordInput, setStopWordInput] = useState('');
+  const [moderatingIDs, setModeratingIDs] = useState<number[]>([]);
 
   const sections: { id: AdminSection; label: string; icon: string; count?: number }[] = [
     { id: 'settings', label: t('admin.sectionSettings'), icon: '◷' },
@@ -120,6 +121,24 @@ export function AdminPanel() {
       setNotice(approve ? t('admin.feedApproved') : t('admin.feedRejected'));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('errors.feedRequest'));
+    }
+  }
+
+  async function decideBlockedArticle(item: BlockedFeedArticle, allow: boolean) {
+    setError('');
+    setNotice('');
+    setModeratingIDs((current) => [...current, item.id]);
+    try {
+      if (allow) await api.allowBlockedFeedArticle(item.id);
+      else await api.rejectBlockedFeedArticle(item.id);
+      setBlockedArticles((current) => current.map((article) => article.id === item.id
+        ? { ...article, status: allow ? 'allowed' : 'rejected', canModerate: !allow }
+        : article));
+      setNotice(t(allow ? 'admin.articleAllowed' : 'admin.articleRejected'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('errors.articleModeration'));
+    } finally {
+      setModeratingIDs((current) => current.filter((id) => id !== item.id));
     }
   }
 
@@ -254,13 +273,19 @@ export function AdminPanel() {
 
             {activeSection === 'blocked' && <section className="admin-card" aria-labelledby="blocked-articles-title">
               <div className="admin-card-heading"><span className="admin-card-icon users-icon">≡</span><div><h2 id="blocked-articles-title">{t('admin.blockedArticles')}</h2><p>{t('admin.blockedArticlesDescription')}</p></div><span className="admin-user-count">{blockedArticles.length}</span></div>
-              {blockedArticles.length === 0 ? <p className="admin-schedule-notice">{t('admin.noBlockedArticles')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.blockedArticle')}</th><th scope="col">{t('admin.blockedFeed')}</th><th scope="col">{t('admin.feedAddedBy')}</th><th scope="col">{t('admin.matchedTerm')}</th><th scope="col">{t('admin.blockedAt')}</th></tr></thead><tbody>
+              {blockedArticles.length === 0 ? <p className="admin-schedule-notice">{t('admin.noBlockedArticles')}</p> : <div className="admin-table-wrap"><table className="admin-table admin-quarantine-table"><thead><tr><th scope="col">{t('admin.blockedArticle')}</th><th scope="col">{t('admin.blockedFeed')}</th><th scope="col">{t('admin.feedAddedBy')}</th><th scope="col">{t('admin.matchedTerm')}</th><th scope="col">{t('admin.publishedAt')}</th><th scope="col">{t('admin.blockedAt')}</th><th scope="col">{t('admin.articleStatus')}</th><th scope="col">{t('admin.articleActions')}</th></tr></thead><tbody>
                 {blockedArticles.map((item) => <tr key={item.id}>
-                  <td>{item.articleUrl ? <a href={item.articleUrl} target="_blank" rel="noreferrer">{item.articleTitle}</a> : item.articleTitle}</td>
+                  <td>{item.articleUrl ? <a href={item.articleUrl} target="_blank" rel="noreferrer">{item.articleTitle}</a> : item.articleTitle}{item.summary && <p className="admin-field-note">{stripMarkup(item.summary)}</p>}</td>
                   <td><a href={item.feedUrl} target="_blank" rel="noreferrer">{item.feedTitle}</a></td>
                   <td>{item.addedBy || t('admin.unknownFeedOwner')}</td>
                   <td><code>{item.matchedTerm}</code></td>
-                  <td><time dateTime={item.lastBlockedAt}>{new Date(item.lastBlockedAt).toLocaleString()}</time></td>
+                  <td>{item.publishedAt ? <time dateTime={item.publishedAt}>{new Date(item.publishedAt).toLocaleString(i18n.resolvedLanguage)}</time> : t('admin.publicationUnknown')}</td>
+                  <td><time dateTime={item.lastBlockedAt}>{new Date(item.lastBlockedAt).toLocaleString(i18n.resolvedLanguage)}</time></td>
+                  <td>{t(`admin.articleStatus.${item.status || 'pending'}`)}</td>
+                  <td>{item.canModerate && (item.status === 'pending' || item.status === 'rejected') ? <div className="admin-request-actions">
+                    <button className="primary-button" type="button" disabled={moderatingIDs.includes(item.id)} onClick={() => void decideBlockedArticle(item, true)}>{t('admin.allowArticle')}</button>
+                    <button className="secondary-button" type="button" disabled={moderatingIDs.includes(item.id)} onClick={() => void decideBlockedArticle(item, false)}>{t('admin.rejectArticle')}</button>
+                  </div> : <span className="admin-field-note">{t(item.status === 'allowed' ? 'admin.articleAlreadyAllowed' : 'admin.legacyBlockedArticle')}</span>}</td>
                 </tr>)}
               </tbody></table></div>}
             </section>}

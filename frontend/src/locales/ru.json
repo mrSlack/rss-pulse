@@ -350,5 +350,22 @@
   "reader.readTime_many": "{{count}} минут чтения",
   "admin.minutes_few": "{{count}} минуты",
   "admin.minutes_many": "{{count}} минут",
-  "signin.email": "Email"
+  "signin.email": "Email",
+  "admin.publishedAt": "Исходная дата публикации",
+  "admin.publicationUnknown": "Неизвестно",
+  "admin.articleStatus": "Статус",
+  "admin.articleActions": "Действия",
+  "admin.articleStatus.pending": "Ожидает проверки",
+  "admin.articleStatus.rejected": "Отклонено",
+  "admin.articleStatus.allowed": "Разрешено",
+  "admin.allowArticle": "Разрешить",
+  "admin.rejectArticle": "Отклонить",
+  "admin.articleAllowed": "Новость разрешена. Теперь она доступна подписчикам ленты.",
+  "admin.articleRejected": "Новость отклонена. Её можно разрешить позже.",
+  "admin.articleAlreadyAllowed": "Разрешённые новости доступны подписчикам ленты.",
+  "admin.legacyBlockedArticle": "Старая запись: содержимое новости недоступно для модерации.",
+  "errors.articleModeration": "Не удалось выполнить модерацию новости.",
+  "apiErrors.admin.blocked_article_id_invalid": "Некорректный ID заблокированной новости.",
+  "apiErrors.admin.blocked_article_not_found": "Заблокированная новость не найдена или недоступна для модерации.",
+  "apiErrors.admin.blocked_article_moderate_failed": "Не удалось выполнить модерацию заблокированной новости."
 }
