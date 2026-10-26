@@ -52,6 +52,9 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool) ht
 	router.With(handler.authenticate, handler.requireAdministrator).Patch("/api/admin/users/{id}", handler.updateAdminUser)
 	router.With(handler.authenticate, handler.requireAdministrator).Get("/api/admin/settings", handler.getAdminSettings)
 	router.With(handler.authenticate, handler.requireAdministrator).Put("/api/admin/settings", handler.updateAdminSettings)
+	router.With(handler.authenticate, handler.requireAdministrator).Get("/api/admin/feed-requests", handler.listFeedRequests)
+	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/feed-requests/{id}/approve", handler.approveFeedRequest)
+	router.With(handler.authenticate, handler.requireAdministrator).Delete("/api/admin/feed-requests/{id}", handler.rejectFeedRequest)
 	return router
 }
 
@@ -208,42 +211,42 @@ func (h *Handler) createFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := currentUser(r)
-	sourceID, _, err := h.store.EnsureFeedSourceForUser(r.Context(), user.ID, request.URL, request.FolderID)
+	result, err := h.store.RequestFeedApproval(r.Context(), user.ID, request.URL, "", request.FolderID, nil)
 	if err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
 			writeError(w, http.StatusConflict, "feed.already_added", "This feed has already been added.")
+			return
+		}
+		if errors.Is(err, store.ErrFeedLimitReached) {
+			writeError(w, http.StatusConflict, "feed.limit_reached", "You have reached the maximum of 100 feeds.")
 			return
 		}
 		if errors.Is(err, store.ErrFolderUnavailable) {
 			writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
-		return
-	}
-	lease, claimed, err := h.store.ClaimSource(r.Context(), sourceID, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "feed.refresh_claim_failed", "The feed could not be claimed for refresh.")
-		return
-	}
-	if claimed {
-		feedContext, cancel := timeBoundContext(r)
-		document, fetchErr := feeds.Fetch(feedContext, lease.URL)
-		cancel()
-		if fetchErr != nil {
-			_ = h.store.ReleaseSourceLease(r.Context(), lease, fetchErr.Error())
-			_ = h.store.DiscardEmptySource(r.Context(), sourceID)
-			writeError(w, http.StatusUnprocessableEntity, "feed.fetch_failed", "The feed could not be fetched. Check the URL and try again.")
+		if errors.Is(err, store.ErrInvalidFeedURL) {
+			writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
 			return
 		}
-		if err := h.store.CommitSourceRefresh(r.Context(), lease, document); err != nil {
-			writeError(w, http.StatusInternalServerError, "feed.articles_save_failed", "Feed articles could not be saved.")
+		if errors.Is(err, store.ErrFeedRequestPending) {
+			writeError(w, http.StatusConflict, "feed.request_pending", "A request for this feed is already pending.")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "feed.save_failed", "The feed could not be saved.")
+		return
 	}
-	feed, err := h.store.SubscribeSource(r.Context(), user.ID, sourceID, request.FolderID)
+	if !result.Approved {
+		writeJSON(w, http.StatusAccepted, map[string]any{"requestId": result.RequestID, "status": "pending"})
+		return
+	}
+	feed, err := h.store.SubscribeSource(r.Context(), user.ID, result.SourceID, request.FolderID)
 	if errors.Is(err, store.ErrDuplicate) {
 		writeError(w, http.StatusConflict, "feed.already_added", "This feed has already been added.")
+		return
+	}
+	if errors.Is(err, store.ErrFeedLimitReached) {
+		writeError(w, http.StatusConflict, "feed.limit_reached", "You have reached the maximum of 100 feeds.")
 		return
 	}
 	if err != nil {
@@ -286,6 +289,31 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := currentUser(r)
+	result, err := h.store.RequestFeedApproval(r.Context(), user.ID, request.URL, request.Title, request.FolderID, feedID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "feed.not_found", "The feed could not be found.")
+		return
+	}
+	if errors.Is(err, store.ErrFeedRequestPending) {
+		writeError(w, http.StatusConflict, "feed.request_pending", "A request for this feed is already pending.")
+		return
+	}
+	if errors.Is(err, store.ErrFolderUnavailable) {
+		writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
+		return
+	}
+	if errors.Is(err, store.ErrInvalidFeedURL) {
+		writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "feed.update_failed", "The feed could not be updated.")
+		return
+	}
+	if !result.Approved {
+		writeJSON(w, http.StatusAccepted, map[string]any{"requestId": result.RequestID, "status": "pending"})
+		return
+	}
 	sourceID, sourceCreated, urlChanged, err := h.store.PrepareFeedUpdate(r.Context(), user.ID, *feedID, request.URL, request.FolderID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "feed.not_found", "The feed could not be found.")

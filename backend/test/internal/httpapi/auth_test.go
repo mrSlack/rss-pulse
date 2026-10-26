@@ -57,6 +57,10 @@ func TestAuthenticationRolesAndSameOriginProtection(t *testing.T) {
 	if readerUsers.Code != http.StatusForbidden {
 		t.Fatalf("Reader GET /api/admin/users = %d, want 403", readerUsers.Code)
 	}
+	readerRequests := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests", "", readerCookie)
+	if readerRequests.Code != http.StatusForbidden {
+		t.Fatalf("Reader GET /api/admin/feed-requests = %d, want 403", readerRequests.Code)
+	}
 	readerSelf := authenticatedRequest(t, handler, http.MethodGet, "/api/auth/me", "", readerCookie)
 	var self struct {
 		ID    int64  `json:"id"`
@@ -96,6 +100,35 @@ func TestAuthenticationRolesAndSameOriginProtection(t *testing.T) {
 	}
 }
 
+func TestChangingFeedURLToUnapprovedSourceKeepsCurrentSubscriptionUntilApproval(t *testing.T) {
+	ctx := context.Background()
+	pool, _, readerID := isolatedAPIDatabase(t)
+	handler := httpapi.New(store.New(pool), syncer.NewControl(), false)
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url='https://example.com/rss'`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	feed, err := store.New(pool).SubscribeSource(ctx, readerID, sourceID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := authenticatedRequest(t, handler, http.MethodPatch, "/api/feeds/"+intString(feed.ID), `{"title":"Replacement","url":"https://unapproved.example/replacement.xml","folderId":null}`, readerCookie)
+	if changed.Code != http.StatusAccepted {
+		t.Fatalf("change to unapproved URL = %d %s, want 202", changed.Code, changed.Body.String())
+	}
+	var unapprovedSources, activeSubscriptions int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources WHERE normalized_url='https://unapproved.example/replacement.xml'`).Scan(&unapprovedSources); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_feeds WHERE id=$1 AND user_id=$2 AND feed_source_id=$3`, feed.ID, readerID, sourceID).Scan(&activeSubscriptions); err != nil {
+		t.Fatal(err)
+	}
+	if unapprovedSources != 0 || activeSubscriptions != 1 {
+		t.Fatalf("unapproved source records=%d, retained old subscriptions=%d; want 0 and 1", unapprovedSources, activeSubscriptions)
+	}
+}
+
 func TestAdministratorCanCreateUsersAndCannotDemoteLastAdministrator(t *testing.T) {
 	pool, adminID, _ := isolatedAPIDatabase(t)
 	handler := httpapi.New(store.New(pool), syncer.NewControl(), false)
@@ -115,6 +148,54 @@ func TestAdministratorCanCreateUsersAndCannotDemoteLastAdministrator(t *testing.
 	demote := authenticatedRequest(t, handler, http.MethodPatch, "/api/admin/users/"+intString(adminID), `{"role":"Reader"}`, adminCookie)
 	if demote.Code != http.StatusConflict {
 		t.Fatalf("last Administrator demotion = %d, want 409", demote.Code)
+	}
+}
+
+func TestFeedRequestsAreNotFetchedOrStoredUntilAdministratorApproval(t *testing.T) {
+	ctx := context.Background()
+	pool, _, _ := isolatedAPIDatabase(t)
+	handler := httpapi.New(store.New(pool), syncer.NewControl(), false)
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+	adminCookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
+
+	requested := authenticatedRequest(t, handler, http.MethodPost, "/api/feeds", `{"url":"https://unapproved.example/rss","folderId":null}`, readerCookie)
+	if requested.Code != http.StatusAccepted {
+		t.Fatalf("request unapproved feed = %d %s, want 202", requested.Code, requested.Body.String())
+	}
+	var sourceCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources WHERE normalized_url='https://unapproved.example/rss'`).Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if sourceCount != 0 {
+		t.Fatalf("unapproved request created %d feed sources, want none", sourceCount)
+	}
+
+	requests := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests", "", adminCookie)
+	if requests.Code != http.StatusOK {
+		t.Fatalf("list pending requests = %d %s", requests.Code, requests.Body.String())
+	}
+	var pending []struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(requests.Body.Bytes(), &pending); err != nil || len(pending) != 1 {
+		t.Fatalf("pending requests = %s, error %v", requests.Body.String(), err)
+	}
+	approved := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/feed-requests/"+intString(pending[0].ID)+"/approve", "{}", adminCookie)
+	if approved.Code != http.StatusNoContent {
+		t.Fatalf("approve request = %d %s, want 204", approved.Code, approved.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources WHERE normalized_url='https://unapproved.example/rss'`).Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if sourceCount != 1 {
+		t.Fatalf("approved feed source count = %d, want 1", sourceCount)
+	}
+	var subscriptionCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_feeds uf JOIN feed_sources fs ON fs.id=uf.feed_source_id WHERE fs.normalized_url='https://unapproved.example/rss'`).Scan(&subscriptionCount); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptionCount != 1 {
+		t.Fatalf("approved feed subscription count = %d, want requester subscription", subscriptionCount)
 	}
 }
 
@@ -288,6 +369,39 @@ func TestManualRefreshReturnsConflictWhenRefreshSlotIsBusy(t *testing.T) {
 	response := authenticatedRequest(t, handler, http.MethodPost, "/api/refresh", "", cookie)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("manual refresh while controller is occupied = %d %s, want 409", response.Code, response.Body.String())
+	}
+}
+
+func TestAddingFeedAtUserLimitReturnsConflictBeforeCreatingSource(t *testing.T) {
+	ctx := context.Background()
+	pool, _, readerID := isolatedAPIDatabase(t)
+	handler := httpapi.New(store.New(pool), syncer.NewControl(), false)
+	if _, err := pool.Exec(ctx, `INSERT INTO feed_sources (normalized_url,title,url)
+		SELECT 'https://limit.example/feed/' || n, 'Feed ' || n, 'https://limit.example/feed/' || n
+		FROM generate_series(1,$1) AS n`, store.MaxFeedsPerUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_feeds (user_id,feed_source_id)
+		SELECT $1,id FROM feed_sources WHERE normalized_url LIKE 'https://limit.example/feed/%'`, readerID); err != nil {
+		t.Fatal(err)
+	}
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+	response := authenticatedRequest(t, handler, http.MethodPost, "/api/feeds", `{"url":"https://blocked-by-limit.example/rss","folderId":null}`, readerCookie)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("POST /api/feeds at the subscription limit = %d %s, want 409", response.Code, response.Body.String())
+	}
+	var apiError struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &apiError); err != nil || apiError.Code != "feed.limit_reached" {
+		t.Fatalf("limit response = %s, decode error %v; want code feed.limit_reached", response.Body.String(), err)
+	}
+	var newSourceCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources WHERE normalized_url='https://blocked-by-limit.example/rss'`).Scan(&newSourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if newSourceCount != 0 {
+		t.Fatalf("new source count at the limit = %d, want 0", newSourceCount)
 	}
 }
 

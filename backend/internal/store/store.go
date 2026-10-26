@@ -28,10 +28,14 @@ var (
 	ErrLeaseLost              = errors.New("refresh lease is no longer owned by this worker")
 	ErrFolderUnavailable      = errors.New("selected folder is unavailable")
 	ErrInvalidFolderOperation = errors.New("invalid folder deletion operation")
+	ErrFeedLimitReached       = errors.New("the user has reached the feed subscription limit")
 	ErrLastAdministrator      = errors.New("cannot demote the last Administrator")
 )
 
-const DefaultFolderColor = "amber"
+const (
+	DefaultFolderColor = "amber"
+	MaxFeedsPerUser    = 100
+)
 
 func IsValidFolderColor(color string) bool {
 	switch color {

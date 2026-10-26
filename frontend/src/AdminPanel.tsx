@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import './i18n';
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, type AdminSettings, type UserRole } from './api';
+import { api, type AdminSettings, type FeedRequest, type UserRole } from './api';
 import { ErrorToast } from './ErrorToast';
 
 const intervalChoices = [5, 10, 15, 30, 60, 120, 360, 720, 1440];
@@ -13,6 +13,7 @@ function intervalOptions(current: number | null) {
 export function AdminPanel() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<AdminSettings | null>(null);
+  const [feedRequests, setFeedRequests] = useState<FeedRequest[]>([]);
   const [refreshInterval, setRefreshInterval] = useState('15');
   const [sharedTTL, setSharedTTL] = useState('15');
   const [email, setEmail] = useState('');
@@ -24,18 +25,20 @@ export function AdminPanel() {
   const [notice, setNotice] = useState('');
 
   async function loadSettings() {
-    const next = await api.getAdminSettings();
+    const [next, requests] = await Promise.all([api.getAdminSettings(), api.getFeedRequests()]);
     setSettings(next);
+    setFeedRequests(requests);
     setRefreshInterval(String(next.refreshIntervalMinutes));
     setSharedTTL(String(next.sharedFeedTTLMinutes));
   }
 
   useEffect(() => {
     let active = true;
-    api.getAdminSettings()
-      .then((next) => {
+    Promise.all([api.getAdminSettings(), api.getFeedRequests()])
+      .then(([next, requests]) => {
         if (!active) return;
         setSettings(next);
+        setFeedRequests(requests);
         setRefreshInterval(String(next.refreshIntervalMinutes));
         setSharedTTL(String(next.sharedFeedTTLMinutes));
       })
@@ -59,6 +62,19 @@ export function AdminPanel() {
       setError(reason instanceof Error ? reason.message : t('errors.userCreate'));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function decideFeedRequest(request: FeedRequest, approve: boolean) {
+    setError('');
+    setNotice('');
+    try {
+      if (approve) await api.approveFeedRequest(request.id);
+      else await api.rejectFeedRequest(request.id);
+      setFeedRequests((current) => current.filter((item) => item.id !== request.id));
+      setNotice(approve ? t('admin.feedApproved') : t('admin.feedRejected'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('errors.feedRequest'));
     }
   }
 
@@ -163,6 +179,18 @@ export function AdminPanel() {
             <button className="primary-button admin-save" type="submit" disabled={saving}>{saving ? t('states.creating') : t('admin.createUser')}</button>
           </form>
         </div>
+
+        <section className="admin-card admin-users-card" aria-labelledby="feed-requests-title">
+          <div className="admin-card-heading"><span className="admin-card-icon users-icon">⌁</span><div><h2 id="feed-requests-title">{t('admin.feedRequests')}</h2><p>{t('admin.feedRequestsDescription')}</p></div><span className="admin-user-count">{feedRequests.length}</span></div>
+          {feedRequests.length === 0 ? <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
+            {feedRequests.map((request) => <tr key={request.id}>
+              <td><a href={request.url} target="_blank" rel="noreferrer">{request.url}</a></td>
+              <td>{request.requestedBy}</td>
+              <td>{request.folderName || t('folder.none')}</td>
+              <td><div className="admin-request-actions"><button className="primary-button" type="button" onClick={() => void decideFeedRequest(request, true)}>{t('admin.approveFeed')}</button><button className="secondary-button" type="button" onClick={() => void decideFeedRequest(request, false)}>{t('admin.rejectFeed')}</button></div></td>
+            </tr>)}
+          </tbody></table></div>}
+        </section>
 
         <section className="admin-card admin-users-card" aria-labelledby="users-title">
           <div className="admin-card-heading"><span className="admin-card-icon users-icon">◎</span><div><h2 id="users-title">{t('admin.users')}</h2><p>{t('admin.usersDescription')}</p></div><span className="admin-user-count" aria-label={t('admin.userCount', { count: settings?.users.length || 0 })}>{settings?.users.length || 0}</span></div>

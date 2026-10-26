@@ -55,6 +55,17 @@ func (s *Store) SourcesForUser(ctx context.Context, userID int64) ([]FeedTarget,
 	return result, rows.Err()
 }
 
+func (s *Store) CheckUserFeedLimit(ctx context.Context, userID int64) error {
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_feeds WHERE user_id=$1`, userID).Scan(&count); err != nil {
+		return err
+	}
+	if count >= MaxFeedsPerUser {
+		return ErrFeedLimitReached
+	}
+	return nil
+}
+
 func (s *Store) ClaimSource(ctx context.Context, sourceID int64, userID *int64) (SourceLease, bool, error) {
 	token, err := auth.NewSessionToken()
 	if err != nil {
@@ -133,6 +144,9 @@ func (s *Store) EnsureFeedSourceForUser(ctx context.Context, userID int64, rawUR
 	if alreadySubscribed {
 		return 0, false, ErrDuplicate
 	}
+	if err := s.CheckUserFeedLimit(ctx, userID); err != nil {
+		return 0, false, err
+	}
 	parsed, _ := url.Parse(normalizedURL)
 	fallbackTitle := parsed.Hostname()
 	var id int64
@@ -153,6 +167,26 @@ func (s *Store) SubscribeSource(ctx context.Context, userID, sourceID int64, fol
 		return Feed{}, err
 	}
 	defer tx.Rollback(ctx)
+	var lockedUserID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedUserID); errors.Is(err, pgx.ErrNoRows) {
+		return Feed{}, ErrNotFound
+	} else if err != nil {
+		return Feed{}, err
+	}
+	var alreadySubscribed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_feeds WHERE user_id=$1 AND feed_source_id=$2)`, userID, sourceID).Scan(&alreadySubscribed); err != nil {
+		return Feed{}, err
+	}
+	if alreadySubscribed {
+		return Feed{}, ErrDuplicate
+	}
+	var feedCount int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM user_feeds WHERE user_id=$1`, userID).Scan(&feedCount); err != nil {
+		return Feed{}, err
+	}
+	if feedCount >= MaxFeedsPerUser {
+		return Feed{}, ErrFeedLimitReached
+	}
 	if folderID != nil {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM folders WHERE id=$1 AND owner_user_id=$2)`, *folderID, userID).Scan(&exists); err != nil {

@@ -357,9 +357,15 @@ function App() {
   async function submitFeed(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError('');
+    setFormNotice('');
     setSubmitting(true);
     try {
       const created = await api.createFeed(feedUrl.trim(), targetFolder ? Number(targetFolder) : null);
+      if ('requestId' in created) {
+        setFormNotice(t('feedModal.requestedApproval'));
+        setFeedUrl('');
+        return;
+      }
       setFeeds((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       setModal(null);
       setFeedUrl('');
@@ -378,6 +384,7 @@ function App() {
     event.preventDefault();
     if (!editingFeed) return;
     setFormError('');
+    setFormNotice('');
     setSubmitting(true);
     try {
       const updated = await api.updateFeed(editingFeed.id, {
@@ -385,6 +392,10 @@ function App() {
         url: feedUrl.trim(),
         folderId: targetFolder ? Number(targetFolder) : null,
       });
+      if ('requestId' in updated) {
+        setFormNotice(t('feedModal.requestedApproval'));
+        return;
+      }
       setFeeds((current) => current.map((feed) => feed.id === updated.id ? updated : feed));
       setModal(null);
       setEditingFeed(null);
@@ -930,6 +941,7 @@ function App() {
               <FolderPicker id="feed-folder" labelId="feed-folder-label" folders={folders} value={targetFolder} noneLabel={t('folder.none')} onChange={setTargetFolder} />
             </div>
             <ErrorToast message={formError} onDismiss={() => setFormError('')} />
+            {formNotice && <p className="profile-success" role="status">{formNotice}</p>}
             <button className="primary-button modal-submit" type="submit" disabled={submitting}>{submitting ? <><span className="button-spinner" />{modal === 'editFeed' ? t('states.saving') : t('states.checkingFeed')}</> : modal === 'editFeed' ? <>{t('actions.saveChanges')}<Icon name="arrow" size={16} /></> : <>{t('actions.subscribe')}<Icon name="arrow" size={16} /></>}</button>
           </form> : <form onSubmit={(event) => void submitFolder(event)}>
             <label className="form-label" htmlFor="folder-name">{t('folder.name')}</label>

@@ -3,6 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 type MockOptions = {
   articleCount?: number;
   failArticles?: boolean;
+  feedLimitScenario?: boolean;
 };
 
 function articlesBetween(offset: number, limit: number, articleCount: number) {
@@ -25,6 +26,25 @@ function articlesBetween(offset: number, limit: number, articleCount: number) {
 
 async function prepareReader(page: Page, options: MockOptions = {}) {
   const articleCount = options.articleCount ?? 3;
+  let feeds: Array<{ id: number; title: string; url: string; folderId: number | null; folderName: string | null; unreadCount: number; lastCheckedAt: string; lastError: string | null }> = options.feedLimitScenario ? [] : [{
+    id: 1,
+    title: 'The Daily Signal',
+    url: 'https://example.com/feed.xml',
+    folderId: 1,
+    folderName: 'Reading list',
+    unreadCount: articleCount,
+    lastCheckedAt: '2026-04-15T11:55:00Z',
+    lastError: null,
+  }, {
+    id: 2,
+    title: 'Unfiled Brief',
+    url: 'https://example.net/feed.xml',
+    folderId: null,
+    folderName: null,
+    unreadCount: 0,
+    lastCheckedAt: '2026-04-15T11:55:00Z',
+    lastError: null,
+  }];
   await page.addInitScript(() => {
     localStorage.setItem('pulse-theme', 'light');
     localStorage.setItem('pulse.language', 'en');
@@ -39,25 +59,32 @@ async function prepareReader(page: Page, options: MockOptions = {}) {
     if (path.endsWith('/auth/me')) {
       body = { id: 1, email: 'reader@example.com', role: 'Administrator', refreshIntervalMinutes: null };
     } else if (path.endsWith('/feeds')) {
-      body = [{
-        id: 1,
-        title: 'The Daily Signal',
-        url: 'https://example.com/feed.xml',
-        folderId: 1,
-        folderName: 'Reading list',
-        unreadCount: articleCount,
-        lastCheckedAt: '2026-04-15T11:55:00Z',
-        lastError: null,
-      }, {
-        id: 2,
-        title: 'Unfiled Brief',
-        url: 'https://example.net/feed.xml',
-        folderId: null,
-        folderName: null,
-        unreadCount: 0,
-        lastCheckedAt: '2026-04-15T11:55:00Z',
-        lastError: null,
-      }];
+      if (route.request().method() === 'POST' && options.feedLimitScenario) {
+        if (feeds.length >= 100) {
+          status = 409;
+          body = {
+            code: 'feed.limit_reached',
+            error: 'You have reached the maximum of 100 feeds.',
+          };
+        } else {
+          const request = route.request().postDataJSON() as { url: string; folderId: number | null };
+          const feed = {
+            id: feeds.length + 1,
+            title: `Limit test feed ${feeds.length + 1}`,
+            url: request.url,
+            folderId: request.folderId,
+            folderName: null,
+            unreadCount: 0,
+            lastCheckedAt: '2026-04-15T11:55:00Z',
+            lastError: null,
+          };
+          feeds = [feed, ...feeds];
+          status = 201;
+          body = feed;
+        }
+      } else {
+        body = feeds;
+      }
     } else if (path.endsWith('/folders')) {
       body = [
         { id: 1, name: 'Reading list', color: 'amber', unreadCount: articleCount },
@@ -165,6 +192,38 @@ test('the 724px add-source dialog and folder picker fit the viewport', async ({ 
   await expect(page).toHaveScreenshot('add-source-folder-picker-724.png', { fullPage: true, maxDiffPixelRatio: 0 });
   await folderList.getByRole('option', { name: 'Research' }).click();
   await expect(folderPicker).toContainText('Research');
+});
+
+test('adding a feed at the subscription limit shows the limit error', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page, { articleCount: 0, feedLimitScenario: true });
+  let submittedCount = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/feeds')) {
+      submittedCount += 1;
+    }
+  });
+  await page.goto('/');
+  const addFeedButton = page.getByRole('button', { name: 'Add feed' });
+  for (let index = 1; index <= 100; index += 1) {
+    await addFeedButton.click();
+    const dialog = page.getByRole('dialog', { name: 'Add source' });
+    await dialog.getByLabel('RSS feed URL').fill(`https://example.com/limit-test/${index}.xml`);
+    await dialog.getByRole('button', { name: 'Subscribe' }).click();
+    await expect(dialog).toBeHidden();
+  }
+  await expect(page.locator('.unfiled-folder .tree-feed-row .feed-name')).toHaveCount(100);
+  expect(submittedCount).toBe(100);
+
+  await addFeedButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Add source' });
+  await dialog.getByLabel('RSS feed URL').fill('https://example.com/limit-test/101.xml');
+  await dialog.getByRole('button', { name: 'Subscribe' }).click();
+  await expect(page.locator('.error-toast-message')).toHaveText('You can subscribe to up to 100 feeds.');
+  await expect(dialog).toBeVisible();
+  expect(submittedCount).toBe(101);
+  await expect(page.locator('.unfiled-folder .tree-feed-row .feed-name')).toHaveCount(100);
 });
 
 test('feed sources are nested under folders and can be collapsed', async ({ page }) => {

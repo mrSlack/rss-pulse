@@ -215,6 +215,55 @@ func TestSourceRefreshMergesDuplicateArticlesWithinThirtyMinutes(t *testing.T) {
 	}
 }
 
+func TestSubscribeSourceRejectsSubscriptionsAbovePerUserLimit(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedPostgres(t)
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	adminID, err := store.EnsureInitialAdministrator(ctx, pool, "admin@example.com", "a-long-bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateSharedSources(ctx, pool, adminID); err != nil {
+		t.Fatal(err)
+	}
+	const maxFeedsPerUser = 100
+	if _, err := pool.Exec(ctx, `INSERT INTO feed_sources (normalized_url,title,url)
+		SELECT 'https://example.com/feed/' || n, 'Feed ' || n, 'https://example.com/feed/' || n
+		FROM generate_series(1,$1) AS n`, maxFeedsPerUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_feeds (user_id,feed_source_id) SELECT $1,id FROM feed_sources`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	var newSourceID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url)
+		VALUES ('https://another.example/feed','Another','https://another.example/feed') RETURNING id`).Scan(&newSourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.New(pool).CheckUserFeedLimit(ctx, adminID); !errors.Is(err, store.ErrFeedLimitReached) {
+		t.Fatalf("CheckUserFeedLimit() error = %v, want ErrFeedLimitReached", err)
+	}
+	var sourceCountBefore int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources`).Scan(&sourceCountBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.New(pool).EnsureFeedSourceForUser(ctx, adminID, "https://blocked-by-limit.example/rss", nil); !errors.Is(err, store.ErrFeedLimitReached) {
+		t.Fatalf("EnsureFeedSourceForUser() error = %v, want ErrFeedLimitReached", err)
+	}
+	var sourceCountAfter int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources`).Scan(&sourceCountAfter); err != nil {
+		t.Fatal(err)
+	}
+	if sourceCountAfter != sourceCountBefore {
+		t.Fatalf("feed source count changed at limit: before %d, after %d", sourceCountBefore, sourceCountAfter)
+	}
+	if _, err := store.New(pool).SubscribeSource(ctx, adminID, newSourceID, nil); !errors.Is(err, store.ErrFeedLimitReached) {
+		t.Fatalf("SubscribeSource() error = %v, want ErrFeedLimitReached", err)
+	}
+}
+
 func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedPostgres(t)

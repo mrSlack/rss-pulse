@@ -62,7 +62,11 @@ A feed source is a canonical shared entity identified by a normalized URL. Norma
 
 One source owns one set of RSS/Atom articles. A user subscription links a user to a source and optionally to one of that user's folders. A source can have many user subscriptions, and one user can subscribe to many sources. Folder names are unique per owner, not globally. Each personal folder stores a color from the supported palette or a custom six-digit HEX value; readers can rename and recolor folders without changing their feed assignments. The read and saved flags live in per-user article state, so all subscribers see the same refreshed article data while retaining private reading progress.
 
-Feed name overrides and folder assignments belong to the user subscription. Editing a name or folder affects only that user's library. Changing a subscription URL moves only that user's subscription to the source identified by the new normalized URL; it creates the source when needed or reuses an existing canonical source, without changing the previous source or its other subscribers. A user cannot add the same canonical source twice.
+Each user may subscribe to at most 100 feeds. The API checks this limit before fetching a newly added source and enforces it again transactionally when creating the personal subscription, so concurrent requests cannot exceed the cap. Administrators do not need access to users' personal feed lists to apply this limit.
+
+New feed URLs that are not already in `feed_sources` are stored as pending approval requests only; Pulse does not resolve, fetch, parse, or persist feed content before an Administrator approves the URL. The approval queue exposes the submitted URL, requester, and selected folder, but not the requester's other subscriptions or article data. Approval creates the shared source and the requester's subscription; background refresh can fetch it afterward, and future subscriptions to that canonical source reuse the approved source. Rejection deletes the request. Changing a subscription to a not-yet-approved URL follows the same queue and leaves the current subscription in place until approval. Sources already present before this migration remain usable to preserve existing libraries.
+
+Feed name overrides and folder assignments belong to the user subscription. Editing a name or folder affects only that user's library. Changing a subscription URL moves only that user's subscription to an already approved source; a new URL must first be approved, without changing the previous source or its other subscribers. A user cannot add the same canonical source twice.
 
 The legacy single-user library is migrated to the first bootstrapped Administrator. If source URL normalization merges duplicate feeds, duplicate article identifiers are consolidated. The migration preserves saved state if any duplicate was saved, unread state if any duplicate was unread, and the latest publication timestamp for merged article content. Existing user-created names and content are not translated or rewritten by localization changes.
 
@@ -100,7 +104,7 @@ The API is served under `/api/`. It includes a public health endpoint; authentic
 - `/api/folders` and `/api/feeds` for the signed-in user's library, including `PATCH /api/feeds/{id}` for personal subscription edits and `DELETE /api/folders/{id}` for folder removal. The delete body uses `{"action":"delete_sources"}` to remove the user's subscriptions and their article state, or `{"action":"move_sources","targetFolderId":<id>}` to move subscriptions into another folder owned by the same user. The folder deletion and subscription changes occur in one transaction; shared source and article records are retained.
 - `/api/articles` and `/api/articles/{id}` for filtered article listing and per-user read/saved updates.
 - `/api/refresh` for refresh control and status.
-- `/api/admin/users`, `/api/admin/users/{id}`, and `/api/admin/settings` for administrator operations.
+- `/api/admin/users`, `/api/admin/users/{id}`, `/api/admin/settings`, and `/api/admin/feed-requests` (including approve and reject actions) for administrator operations.
 - `/api/health` for service health.
 
 API errors use an object with a stable `code` and an English `error` message. Existing HTTP status codes communicate request outcome; localized text is resolved in the frontend.

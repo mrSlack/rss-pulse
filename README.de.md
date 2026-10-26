@@ -115,6 +115,8 @@ Es benötigt einen sauberen Checkout auf `master`, speichert einen Datenbankdump
 
 Der erste Administrator erhält bei der Migration die bisherige gemeinsame Bibliothek. Administratoren können Konten mit den Rollen `Administrator` oder `Reader` anlegen; eine öffentliche Registrierung gibt es nicht. Jeder Benutzer hat eigene Ordner, Abonnements, Lesestatus und gespeicherte Artikel. Normalisierte Feed-URLs und ihre Artikel werden geteilt, persönliche Lesestatus bleiben privat. Administratoren können keine Bibliotheken anderer Benutzer öffnen.
 
+Jeder Benutzer kann bis zu 100 Feeds abonnieren. Die API prüft das Limit vor dem Abruf einer neuen Quelle und erneut beim Speichern des Abonnements, auch bei parallelen Anfragen.
+
 Die gemeinsame Feed-TTL beträgt standardmäßig 15 Minuten (zulässig sind 5 bis 1.440 Minuten). Der Hintergrundplaner läuft derzeit alle 15 Minuten. Planer- und Benutzerintervalle lassen sich in der Administration speichern, steuern die Zeitplanung aber noch nicht. Die API aktualisiert eindeutige Feeds parallel über einen begrenzten Go-Workerpool. `RSS_REFRESH_CONCURRENCY` in `.env` akzeptiert Werte von 1 bis 32 (Standard: 4). Datenbank-Leases und TTL verhindern doppelte Anfragen während einer Aktualisierung und bis zum Ablauf der TTL.
 
 Zulässig sind nur öffentliche HTTP/HTTPS-RSS- und Atom-URLs. Loopback-, private und lokale Netzwerkadressen werden blockiert. Pulse speichert Feed-Metadaten und Zusammenfassungen; der vollständige Artikel bleibt auf der Website der Quelle.

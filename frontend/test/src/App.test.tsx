@@ -18,6 +18,7 @@ const apiMock = vi.hoisted(() => ({
   refresh: vi.fn(),
   refreshStatus: vi.fn(),
   getAdminSettings: vi.fn(),
+  getFeedRequests: vi.fn(),
   updateAdminSettings: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
@@ -37,6 +38,7 @@ beforeEach(() => {
   apiMock.getFolders.mockResolvedValue([]);
   apiMock.getArticles.mockResolvedValue({ items: [], hasMore: false });
   apiMock.getAdminSettings.mockResolvedValue({ refreshIntervalMinutes: 15, sharedFeedTTLMinutes: 15, users: [] });
+  apiMock.getFeedRequests.mockResolvedValue([]);
 });
 
 afterEach(() => cleanup());

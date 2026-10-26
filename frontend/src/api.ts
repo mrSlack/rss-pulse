@@ -65,6 +65,18 @@ export type AdminSettings = {
   users: SessionUser[];
 };
 
+export type FeedRequest = {
+  id: number;
+  url: string;
+  requestedBy: string;
+  folderId: number | null;
+  folderName: string | null;
+  title: string;
+  createdAt: string;
+};
+
+export type FeedRequestResult = { requestId: number; status: 'pending' };
+
 
 function parseApiError(value: unknown): { code?: string; error?: string } {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -122,12 +134,12 @@ export const api = {
   getFeeds: () => request<Feed[]>('/feeds'),
   getArticles: (params: URLSearchParams) => request<ArticlePage>(`/articles?${params}`),
   createFeed: (url: string, folderId: number | null) =>
-    request<Feed>('/feeds', {
+    request<Feed | FeedRequestResult>('/feeds', {
       method: 'POST',
       body: JSON.stringify({ url, folderId }),
     }),
   updateFeed: (id: number, feed: { title: string; url: string; folderId: number | null }) =>
-    request<Feed>(`/feeds/${id}`, {
+    request<Feed | FeedRequestResult>(`/feeds/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(feed),
     }),
@@ -168,6 +180,9 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(update),
     }),
+  getFeedRequests: () => request<FeedRequest[]>('/admin/feed-requests'),
+  approveFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
+  rejectFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}`, { method: 'DELETE' }),
 };
 
 export function stripMarkup(value: string): string {

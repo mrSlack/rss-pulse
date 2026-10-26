@@ -80,10 +80,38 @@ func newSafeHTTPClient() *http.Client {
 			if len(via) >= 3 {
 				return errors.New("too many redirects")
 			}
+			if err := validateRedirectOrigin(via[0].URL, request.URL); err != nil {
+				return err
+			}
 			_, err := validateURL(request.Context(), request.URL.String())
 			return err
 		},
 	}
+}
+
+func validateRedirectOrigin(from, to *url.URL) error {
+	if from == nil || to == nil || !strings.EqualFold(from.Hostname(), to.Hostname()) {
+		return errors.New("redirect target is outside the approved feed host")
+	}
+	if from.Scheme == "https" && to.Scheme != "https" {
+		return errors.New("redirect target cannot downgrade HTTPS")
+	}
+	fromPort, toPort := effectivePort(from), effectivePort(to)
+	secureUpgrade := from.Scheme == "http" && to.Scheme == "https" && fromPort == "80" && toPort == "443"
+	if fromPort != toPort && !secureUpgrade {
+		return errors.New("redirect target is outside the approved feed port")
+	}
+	return nil
+}
+
+func effectivePort(parsed *url.URL) string {
+	if port := parsed.Port(); port != "" {
+		return port
+	}
+	if parsed.Scheme == "https" {
+		return "443"
+	}
+	return "80"
 }
 
 func validateURL(ctx context.Context, raw string) (*url.URL, error) {

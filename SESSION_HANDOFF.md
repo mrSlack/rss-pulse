@@ -1,3 +1,14 @@
+# Session handoff — 2026-10-26
+
+- **Done:** Added pre-fetch approval for new feed URLs. Readers submit requests; Administrators can approve or reject them. Approved feeds are subscribed for the requester and enter shared refresh. URL changes wait for approval and preserve the current subscription. Redirects stay on the approved host and port, with HTTPS downgrade blocked.
+- **Verified:** Full Go suite passed; frontend unit tests passed (34); frontend production build passed; all 12 Playwright tests passed serially, including the 100-subscription scenario and new approval-request browser test.
+- **Decisions and limits:** The approval queue shows URL, requester, and selected folder, not the rest of the user's library. Existing `feed_sources` remain usable for compatibility and were not reviewed or purged; content from approved feeds is not scanned and may change over time.
+- **Remaining:** Backend migration `007_feed_approval.sql` applies on API startup. Running application services were not rebuilt or restarted. Review any existing sources separately if they must also require explicit approval.
+- **State:** Changes remain uncommitted. The worktree already contained unrelated edits from earlier tasks; inspect `git status` and the diff before committing. Suggested subject: `Add administrator approval for new feed sources`.
+- **References:** `docs/PROJECT.md`, `backend/internal/store/migrations/007_feed_approval.sql`, current working-tree diff.
+
+---
+
 # Session handoff — 2026-10-25
 
 - **Done:** fixed backend acceptance of JSON `null` (could clear a profile) and frontend crashes on malformed API errors; added regression tests. Added EditorConfig, Prettier, VS Code settings, and English documentation.

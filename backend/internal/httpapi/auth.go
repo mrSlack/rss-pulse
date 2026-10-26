@@ -349,4 +349,51 @@ func (h *Handler) updateAdminSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settings)
 }
 
+func (h *Handler) listFeedRequests(w http.ResponseWriter, r *http.Request) {
+	requests, err := h.store.ListPendingFeedRequests(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "feed.requests_load_failed", "Feed requests could not be loaded.")
+		return
+	}
+	writeJSON(w, http.StatusOK, requests)
+}
+
+func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {
+	requestID, ok := optionalID(chi.URLParam(r, "id"))
+	if !ok || requestID == nil {
+		writeError(w, http.StatusBadRequest, "feed.request_id_invalid", "The feed request ID is invalid.")
+		return
+	}
+	if _, err := h.store.ApproveFeedRequest(r.Context(), *requestID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "feed.request_not_found", "The feed request could not be found.")
+		return
+	} else if errors.Is(err, store.ErrFeedLimitReached) {
+		writeError(w, http.StatusConflict, "feed.limit_reached", "The requester has reached the maximum of 100 feeds.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "feed.request_approve_failed", "The feed request could not be approved.")
+		return
+	}
+	if h.control != nil {
+		h.control.Request(true)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) rejectFeedRequest(w http.ResponseWriter, r *http.Request) {
+	requestID, ok := optionalID(chi.URLParam(r, "id"))
+	if !ok || requestID == nil {
+		writeError(w, http.StatusBadRequest, "feed.request_id_invalid", "The feed request ID is invalid.")
+		return
+	}
+	if err := h.store.RejectFeedRequest(r.Context(), *requestID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "feed.request_not_found", "The feed request could not be found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "feed.request_reject_failed", "The feed request could not be rejected.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func validRole(role string) bool { return role == "Administrator" || role == "Reader" }

@@ -5,6 +5,9 @@ import { AdminPanel } from '../../src/AdminPanel';
 
 const apiMock = vi.hoisted(() => ({
   getAdminSettings: vi.fn(),
+  getFeedRequests: vi.fn(),
+  approveFeedRequest: vi.fn(),
+  rejectFeedRequest: vi.fn(),
   updateAdminSettings: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
@@ -25,6 +28,9 @@ beforeEach(() => {
       { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null },
     ],
   });
+  apiMock.getFeedRequests.mockResolvedValue([]);
+  apiMock.approveFeedRequest.mockResolvedValue(undefined);
+  apiMock.rejectFeedRequest.mockResolvedValue(undefined);
   apiMock.updateAdminSettings.mockResolvedValue({ refreshIntervalMinutes: 30, sharedFeedTTLMinutes: 45 });
   apiMock.createUser.mockResolvedValue({ id: 3, email: 'new@example.com', role: 'Reader', refreshIntervalMinutes: null });
   apiMock.updateUser.mockResolvedValue({ id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: 60 });
@@ -58,5 +64,23 @@ describe('AdminPanel', () => {
 
     await user.selectOptions(screen.getByLabelText('Interval for reader@example.com'), '60');
     await waitFor(() => expect(apiMock.updateUser).toHaveBeenCalledWith(2, { refreshIntervalMinutes: 60 }));
+  });
+
+  it('allows administrators to approve pending feed URLs', async () => {
+    const user = userEvent.setup();
+    apiMock.getFeedRequests.mockResolvedValueOnce([{
+      id: 12,
+      url: 'https://example.test/rss',
+      requestedBy: 'reader@example.com',
+      folderId: null,
+      folderName: null,
+      title: '',
+      createdAt: '2026-10-26T09:00:00Z',
+    }]);
+    render(<AdminPanel />);
+    expect(await screen.findByText('https://example.test/rss')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(apiMock.approveFeedRequest).toHaveBeenCalledWith(12));
+    expect(await screen.findByText('Feed approved. It will be fetched after approval.')).toBeTruthy();
   });
 });
