@@ -135,6 +135,86 @@ func TestSourceLeasesFenceConcurrentAndStaleRefreshesAndHonorTTL(t *testing.T) {
 	}
 }
 
+func TestSourceRefreshMergesDuplicateArticlesWithinThirtyMinutes(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedPostgres(t)
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	adminID, err := store.EnsureInitialAdministrator(ctx, pool, "admin@example.com", "a-long-bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateSharedSources(ctx, pool, adminID); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,lease_token,lease_expires_at)
+		VALUES ('https://example.com/rss','Example','https://example.com/rss','test-lease',NOW()+INTERVAL '1 minute') RETURNING id`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_feeds (user_id,feed_source_id) VALUES ($1,$2)`, adminID, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	oldPublishedAt := time.Now().UTC().Truncate(time.Second)
+	oldArticles := []struct {
+		guid, title, url, summary string
+	}{
+		{"by-url", "Original URL title", "https://example.com/url-match", "Original URL text"},
+		{"by-title", "Unique title match", "https://example.com/old-title", "Original title text"},
+		{"by-text", "Original text title", "https://example.com/old-text", "Unique text match"},
+		{"outside-window", "Outside window title", "https://example.com/outside", "Outside window text"},
+	}
+	articleIDs := make([]int64, len(oldArticles))
+	for i, article := range oldArticles {
+		if err := pool.QueryRow(ctx, `INSERT INTO articles (feed_source_id,guid,title,url,summary,published_at)
+			VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, sourceID, article.guid, article.title, article.url, article.summary, oldPublishedAt).Scan(&articleIDs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_article_states (user_id,article_id,is_read,is_saved) VALUES ($1,$2,TRUE,TRUE)`, adminID, articleIDs[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	lease := store.SourceLease{ID: sourceID, Token: "test-lease"}
+	document := feeds.Document{Title: "Example", Items: []feeds.Item{
+		{GUID: "new-url-guid", Title: "Updated URL title", URL: oldArticles[0].url, Summary: "Updated URL text", PublishedAt: oldPublishedAt.Add(20 * time.Minute), HasPublishedAt: true},
+		{GUID: "new-title-guid", Title: oldArticles[1].title, URL: "https://example.com/new-title", Summary: "Updated title text", PublishedAt: oldPublishedAt.Add(-20 * time.Minute), HasPublishedAt: true},
+		{GUID: "new-text-guid", Title: "Updated text title", URL: "https://example.com/new-text", Summary: oldArticles[2].summary, PublishedAt: oldPublishedAt.Add(10 * time.Minute), HasPublishedAt: true},
+		{GUID: "outside-new-guid", Title: "Outside window title", URL: oldArticles[3].url, Summary: "New outside window text", PublishedAt: oldPublishedAt.Add(31 * time.Minute), HasPublishedAt: true},
+	}}
+	if err := store.New(pool).CommitSourceRefresh(ctx, lease, document); err != nil {
+		t.Fatalf("CommitSourceRefresh() error = %v", err)
+	}
+
+	var articleCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM articles WHERE feed_source_id=$1`, sourceID).Scan(&articleCount); err != nil {
+		t.Fatal(err)
+	}
+	if articleCount != 5 {
+		t.Fatalf("article count = %d, want 5 (three matches updated and one outside-window item inserted)", articleCount)
+	}
+	wantArticles := []feeds.Item{document.Items[0], document.Items[1], document.Items[2]}
+	for i, want := range wantArticles {
+		var gotGUID, gotTitle, gotURL, gotSummary string
+		var gotPublishedAt time.Time
+		if err := pool.QueryRow(ctx, `SELECT guid,title,url,summary,published_at FROM articles WHERE id=$1`, articleIDs[i]).Scan(&gotGUID, &gotTitle, &gotURL, &gotSummary, &gotPublishedAt); err != nil {
+			t.Fatal(err)
+		}
+		if gotGUID != want.GUID || gotTitle != want.Title || gotURL != want.URL || gotSummary != want.Summary || !gotPublishedAt.Equal(want.PublishedAt) {
+			t.Errorf("article %d = (%q,%q,%q,%q,%v), want (%q,%q,%q,%q,%v)", articleIDs[i], gotGUID, gotTitle, gotURL, gotSummary, gotPublishedAt,
+				want.GUID, want.Title, want.URL, want.Summary, want.PublishedAt)
+		}
+	}
+	var isRead, isSaved bool
+	if err := pool.QueryRow(ctx, `SELECT is_read,is_saved FROM user_article_states WHERE user_id=$1 AND article_id=$2`, adminID, articleIDs[0]).Scan(&isRead, &isSaved); err != nil {
+		t.Fatal(err)
+	}
+	if !isRead || !isSaved {
+		t.Fatalf("duplicate merge state = (read:%v,saved:%v), want existing personal state preserved", isRead, isSaved)
+	}
+}
+
 func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedPostgres(t)

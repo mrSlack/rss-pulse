@@ -438,13 +438,41 @@ func (s *Store) GetArticleForUser(ctx context.Context, userID, articleID int64) 
 
 func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []feeds.Item) error {
 	for _, item := range items {
-		_, err := tx.Exec(ctx, `INSERT INTO articles (feed_source_id, guid, title, url, summary, published_at)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (feed_source_id, guid) DO UPDATE SET
-			title = EXCLUDED.title, url = EXCLUDED.url, summary = EXCLUDED.summary,
-			published_at = CASE WHEN $7 THEN EXCLUDED.published_at ELSE articles.published_at END`,
-			sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt, item.HasPublishedAt)
-		if err != nil {
+		var existingID int64
+		err := tx.QueryRow(ctx, `UPDATE articles SET title=$3,url=$4,summary=$5,
+			published_at=CASE WHEN $7 THEN $6 ELSE published_at END
+			WHERE feed_source_id=$1 AND guid=$2 RETURNING id`,
+			sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt, item.HasPublishedAt).Scan(&existingID)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		err = tx.QueryRow(ctx, `SELECT id FROM articles
+			WHERE feed_source_id=$1
+			AND published_at BETWEEN $6::timestamptz - INTERVAL '30 minutes' AND $6::timestamptz + INTERVAL '30 minutes'
+			AND (($2 <> '' AND guid=$2) OR ($3 <> '' AND title=$3) OR ($4 <> '' AND url=$4) OR ($5 <> '' AND summary=$5))
+			ORDER BY CASE WHEN guid=$2 AND $2 <> '' THEN 0 WHEN url=$4 AND $4 <> '' THEN 1
+				WHEN title=$3 AND $3 <> '' THEN 2 ELSE 3 END,
+				ABS(EXTRACT(EPOCH FROM (published_at - $6)))
+			LIMIT 1 FOR UPDATE`, sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt).Scan(&existingID)
+		if err == nil {
+			_, err = tx.Exec(ctx, `UPDATE articles SET guid=$2,title=$3,url=$4,summary=$5,
+				published_at=CASE WHEN $7 THEN $6 ELSE published_at END WHERE id=$1`,
+				existingID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt, item.HasPublishedAt)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx, `INSERT INTO articles (feed_source_id, guid, title, url, summary, published_at)
+			VALUES ($1, $2, $3, $4, $5, $6)`, sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt); err != nil {
 			return err
 		}
 	}
