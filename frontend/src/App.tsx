@@ -1,145 +1,21 @@
 import { useTranslation } from 'react-i18next';
+import { Icon, ProfileMenu, dateLabel, initials } from './AppChrome';
 import './i18n';
 import { LanguageSelector } from './LanguageSelector';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { api, extractArticleImages, folderColors, stripMarkup, type Article, type Feed, type Folder, type FolderColor, type SessionUser } from './api';
 import { ThemeToggle } from './ThemeToggle';
 import { ArticleDrawer } from './ArticleDrawer';
-import { ArticleTitle } from './ArticleTitle';
 import { useTheme } from './useTheme';
 import { SignIn } from './SignIn';
 import { AdminPanel } from './AdminPanel';
 import { ErrorToast } from './ErrorToast';
 import { FolderPicker } from './FolderPicker';
+import { LibrarySidebar, type Filter } from './LibrarySidebar';
+import { ArticleCard } from './ArticleCard';
 
-type Filter = 'all' | 'unread' | 'today' | 'saved';
 type Modal = 'feed' | 'editFeed' | 'folder' | 'editFolder' | 'manageFolders' | 'deleteFolder' | 'profile' | null;
 const articlePageSize = 20;
-
-const iconShapes: Record<string, ReactNode> = {
-  rss: <><path d="M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" /><path d="M4 11a9 9 0 0 1 9 9M4 5a15 15 0 0 1 15 15" /></>,
-  inbox: <><path d="M4 5h16l1 10h-5l-2 3h-4l-2-3H3L4 5Z" /><path d="M3.5 13h5l1.5 2h3l1.5-2h5" /></>,
-  list: <><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>,
-  menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,
-  clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
-  bookmark: <path d="M6 4.8A1.8 1.8 0 0 1 7.8 3h8.4A1.8 1.8 0 0 1 18 4.8V21l-6-3.8L6 21V4.8Z" />,
-  plus: <><path d="M12 5v14M5 12h14" /></>,
-  search: <><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 4.5 4.5" /></>,
-  refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.7 9A7 7 0 0 1 18 6.5L20 12M4 12l2 5.5A7 7 0 0 0 18.3 15" /></>,
-  sparkle: <><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z" /><path d="m19 15 .9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z" /></>,
-  arrow: <><path d="M5 12h14M13 6l6 6-6 6" /></>,
-  folder: <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2H19a2 2 0 0 1 2 2v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11Z" />,
-  settings: <><circle cx="12" cy="12" r="3" /><path d="m19.4 15 .1.1a1.8 1.8 0 1 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3 .9v.2a1.8 1.8 0 1 1-3.6 0v-.2a1.8 1.8 0 0 0-3-.9l-.1.1a1.8 1.8 0 1 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-.9-3h-.2a1.8 1.8 0 1 1 0-3.6h.2a1.8 1.8 0 0 0 .9-3l-.1-.1a1.8 1.8 0 1 1 2.5-2.5l.1.1a1.8 1.8 0 0 0 3-.9v-.2a1.8 1.8 0 1 1 3.6 0v.2a1.8 1.8 0 0 0 3 .9l.1-.1a1.8 1.8 0 1 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 .9 3h.2a1.8 1.8 0 1 1 0 3.6h-.2a1.8 1.8 0 0 0-.9 3Z" /></>,
-  trash: <><path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3" /></>,
-  close: <><path d="m6 6 12 12M18 6 6 18" /></>,
-  external: <><path d="M13 5h6v6M19 5l-9 9" /><path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></>,
-  check: <path d="m5 12 4 4L19 6" />,
-  user: <><circle cx="12" cy="8" r="4" /><path d="M5 21a7 7 0 0 1 14 0" /></>,
-  logout: <><path d="M10 17l5-5-5-5M15 12H3" /><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6" /></>,
-  edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" /></>,
-  chevron: <path d="m7 10 5 5 5-5" />,
-};
-
-function Icon({ name, size = 18, className = '' }: { name: string; size?: number; className?: string }) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {iconShapes[name]}
-    </svg>
-  );
-}
-
-const filters: { id: Filter; icon: string }[] = [
-  { id: 'all', icon: 'inbox' },
-  { id: 'today', icon: 'clock' },
-  { id: 'saved', icon: 'bookmark' },
-];
-
-function ProfileMenu({
-  user,
-  placement,
-  adminActive,
-  onAdmin,
-  onEditProfile,
-  onSignOut,
-}: {
-  user: SessionUser;
-  placement: 'sidebar' | 'topbar';
-  adminActive: boolean;
-  onAdmin: () => void;
-  onEditProfile: () => void;
-  onSignOut: () => void;
-}) {
-  const { t } = useTranslation();
-  const menuRef = useRef<HTMLDetailsElement>(null);
-  const isAdministrator = user.role === 'Administrator';
-  const roleLabel = isAdministrator ? t('roles.administrator') : t('roles.reader');
-
-  useEffect(() => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && menu.open) {
-        menu.open = false;
-        menu.querySelector('summary')?.focus();
-      }
-    };
-    document.addEventListener('click', closeOnOutsideClick);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('click', closeOnOutsideClick);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, []);
-
-  function runAction(action: () => void) {
-    if (menuRef.current) menuRef.current.open = false;
-    action();
-  }
-
-  return (
-    <details ref={menuRef} className={`profile-menu-container profile-menu-${placement}`}>
-      <summary className={`profile-menu-trigger ${placement === 'sidebar' ? 'profile-row' : ''}`} aria-label={t('profile.menuFor', { email: user.email })}>
-        <span className={`profile-avatar ${placement === 'topbar' ? 'topbar-avatar' : ''}`}>{initials(user.email)}</span>
-        <span className="profile-copy"><strong>{user.email}</strong><small>{roleLabel}</small></span>
-        <Icon name="chevron" size={16} className="profile-menu-chevron" />
-      </summary>
-      <div className="profile-dropdown" aria-label={t('profile.menu')}>
-        <div className="profile-dropdown-heading">
-          <span className="profile-dropdown-avatar">{initials(user.email)}</span>
-          <span><strong>{user.email}</strong><small>{roleLabel}</small></span>
-        </div>
-        <div className="profile-dropdown-separator" />
-        {isAdministrator && <button className={`profile-menu-item ${adminActive ? 'active' : ''}`} type="button" onClick={() => runAction(onAdmin)}>
-          <Icon name="sparkle" size={17} /><span>{t('profile.administration')}</span>
-        </button>}
-        <button className="profile-menu-item" type="button" onClick={() => runAction(onEditProfile)}>
-          <Icon name="user" size={17} /><span>{t('profile.edit')}</span>
-        </button>
-        <div className="profile-dropdown-separator" />
-        <button className="profile-menu-item profile-menu-signout" type="button" onClick={() => runAction(onSignOut)}>
-          <Icon name="logout" size={17} /><span>{t('profile.signOut')}</span>
-        </button>
-      </div>
-    </details>
-  );
-}
-
-function dateLabel(value: string, locale: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const delta = Date.now() - date.getTime();
-  if (delta < 60 * 60 * 1000) return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-Math.max(1, Math.floor(delta / 60000)), 'minute');
-  if (delta < 24 * 60 * 60 * 1000) return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-Math.floor(delta / 3600000), 'hour');
-  return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' }).format(date);
-}
-
-function initials(value: string): string {
-  const parts = value.trim().split(/\s+/).slice(0, 2);
-  return parts.map((part) => part[0]?.toUpperCase() || '').join('') || 'R';
-}
 
 function App() {
   const { t, i18n } = useTranslation();
@@ -269,7 +145,6 @@ function App() {
     [selectedArticle],
   );
   const unreadTotal = feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
-  const visibleFolders = folders.filter((folder) => feeds.some((feed) => feed.folderId === folder.id));
   const activeFeed = feedId === null ? null : feeds.find((item) => item.id === feedId) || null;
   const activeFolder = folderId === null ? null : folders.find((item) => item.id === folderId) || null;
   const isCustomFolderColor = !folderColors.includes(folderColor as typeof folderColors[number]);
@@ -667,17 +542,6 @@ function App() {
     }
   }
 
-  function renderFeedRow(feed: Feed) {
-    return <div key={feed.id} className="feed-row tree-feed-row">
-      <button className={`nav-item feed-item ${feedId === feed.id ? 'active' : ''}`} onClick={() => selectFeed(feed.id)} title={feed.title}>
-        <span className="feed-name">{feed.title}</span>
-        {feed.unreadCount > 0 && <span className="feed-unread">{feed.unreadCount}</span>}
-      </button>
-      <button className="feed-edit-button" type="button" onClick={() => openEditFeed(feed)} aria-label={t('feedModal.editFor', { title: feed.title })} title={t('actions.editFeed')}>
-        <Icon name="edit" size={15} />
-      </button>
-    </div>;
-  }
 
   if (sessionLoading) {
     return <main className="signin-screen" aria-busy="true"><div className="list-loading"><span className="loader" />{t('states.checkingSession')}</div></main>;
@@ -688,89 +552,33 @@ function App() {
 
   return (
     <div className="app-shell" inert={Boolean(selectedArticle)}>
-      <aside className={`sidebar ${mobileNavOpen ? 'mobile-open' : ''}`}>
-        <a className="brand" href="#home" onClick={(event) => { event.preventDefault(); selectFilter('all'); }} aria-label={t('brand.home')}>
-          <span className="brand-mark"><Icon name="rss" size={22} /></span>
-          <span className="brand-name">RSS-Pulse<span>.</span></span>
-        </a>
-
-        <button className="add-feed-button" onClick={openAddFeed}>
-          <Icon name="plus" size={17} />
-          <span>{t('actions.addSource')}</span>
-        </button>
-
-        <div className="sidebar-label">{t('nav.read')}</div>
-        <nav className="primary-nav" aria-label={t('nav.primary')}>
-          {filters.filter((item) => item.id !== 'all').map((item) => (
-            <button
-              key={item.id}
-              className={`nav-item ${(filter === item.id && feedId === null && folderId === null) ? 'active' : ''}`}
-              onClick={() => selectFilter(item.id)}
-            >
-              <Icon name={item.icon} size={18} />
-              <span>{t(`filters.${item.id}`)}</span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="sidebar-section-heading source-heading">
-          <span className="sidebar-label">{t('nav.feedTree')}</span>
-          <div className="library-heading-actions">
-            <button className="icon-button tiny" title={t('actions.createFolder')} aria-label={t('actions.createFolder')} onClick={() => { setEditingFolder(null); setFolderName(''); setFolderColor('amber'); setFormError(''); setModal('folder'); }}>
-              <Icon name="folder" size={14} />
-            </button>
-            <button className="icon-button tiny" title={t('folder.manage')} aria-label={t('folder.manage')} onClick={() => { setFormError(''); setModal('manageFolders'); }}>
-              <Icon name="settings" size={14} />
-            </button>
-            <button className="icon-button tiny" title={t('actions.addSource')} aria-label={t('actions.addSource')} onClick={openAddFeed}>
-              <Icon name="plus" size={15} />
-            </button>
-          </div>
-        </div>
-        <nav className="library-tree" aria-label={t('nav.feedTree')}>
-          <button
-            className={`nav-item library-all-row ${filter === 'all' && feedId === null && folderId === null ? 'active' : ''}`}
-            type="button"
-            onClick={() => selectFilter('all')}
-          >
-            <Icon name="list" size={17} />
-            <span>{t('nav.allFeeds')}</span>
-            {unreadTotal > 0 && <span className="feed-unread tree-count">{unreadTotal}</span>}
-          </button>
-          {visibleFolders.map((folder) => {
-            const folderFeeds = feeds.filter((feed) => feed.folderId === folder.id);
-            const collapsed = collapsedFolderIds.has(folder.id);
-            return <div key={folder.id} className="folder-row library-folder">
-              <div className="tree-folder-row">
-                <button className="tree-folder-toggle" type="button" aria-label={t(collapsed ? 'folder.expand' : 'folder.collapse', { name: folder.name })} aria-expanded={!collapsed} onClick={() => toggleFolderCollapsed(folder.id)}>
-                  <Icon name="chevron" size={14} />
-                </button>
-                <button className={`nav-item folder-item ${folderId === folder.id ? 'active' : ''}`} onClick={() => selectFolder(folder.id)} title={folder.name}>
-                  <span className="tree-folder-name">{folder.name}</span>
-                  {folder.unreadCount > 0 && <span className="feed-unread">{folder.unreadCount}</span>}
-                </button>
-              </div>
-              {!collapsed && <div className="tree-children" role="group" aria-label={folder.name}>{folderFeeds.map(renderFeedRow)}</div>}
-            </div>;
-          })}
-          {feeds.some((feed) => feed.folderId === null) && <div className="folder-row library-folder unfiled-folder">
-            <button className="tree-unfiled-toggle" type="button" aria-label={t(unfiledCollapsed ? 'folder.expand' : 'folder.collapse', { name: t('folder.none') })} aria-expanded={!unfiledCollapsed} onClick={() => setUnfiledCollapsed((collapsed) => !collapsed)}>
-              <Icon name="chevron" size={14} />
-              <span className="tree-folder-name">{t('folder.none')}</span>
-            </button>
-            {!unfiledCollapsed && <div className="tree-children" role="group" aria-label={t('folder.none')}>
-              {feeds.filter((feed) => feed.folderId === null).map(renderFeedRow)}
-            </div>}
-          </div>}
-          {folders.length === 0 && feeds.length === 0 && <p className="sidebar-hint">{t('states.feedsEmpty')}</p>}
-        </nav>
-
-        <div className="sidebar-bottom">
-          <div className="sync-indicator"><span className="sync-dot" /><span>{t('nav.localLibrary')}</span></div>
-          <ProfileMenu user={sessionUser} placement="sidebar" adminActive={adminView} onAdmin={openAdmin} onEditProfile={openProfile} onSignOut={() => void signOut()} />
-        </div>
-      </aside>
-      {mobileNavOpen && <button className="mobile-scrim" aria-label={t('nav.closeMenu')} onClick={() => setMobileNavOpen(false)} />}
+      <LibrarySidebar
+        user={sessionUser}
+        feeds={feeds}
+        folders={folders}
+        filter={filter}
+        feedId={feedId}
+        folderId={folderId}
+        unreadTotal={unreadTotal}
+        adminView={adminView}
+        mobileNavOpen={mobileNavOpen}
+        collapsedFolderIds={collapsedFolderIds}
+        unfiledCollapsed={unfiledCollapsed}
+        onHome={() => selectFilter('all')}
+        onAddFeed={openAddFeed}
+        onCreateFolder={() => { setEditingFolder(null); setFolderName(''); setFolderColor('amber'); setFormError(''); setModal('folder'); }}
+        onManageFolders={() => { setFormError(''); setModal('manageFolders'); }}
+        onSelectFilter={selectFilter}
+        onSelectFeed={selectFeed}
+        onSelectFolder={selectFolder}
+        onToggleFolder={toggleFolderCollapsed}
+        onToggleUnfiled={() => setUnfiledCollapsed((collapsed) => !collapsed)}
+        onEditFeed={openEditFeed}
+        onAdmin={openAdmin}
+        onEditProfile={openProfile}
+        onSignOut={() => void signOut()}
+        onCloseMobileNav={() => setMobileNavOpen(false)}
+      />
 
       <main className="main-area">
         <header className="topbar">
@@ -829,18 +637,16 @@ function App() {
                     {!search && filter !== 'saved' && <button className="text-action" onClick={openAddFeed}>{t('actions.addSource')}<Icon name="arrow" size={15} /></button>}
                   </div>
                 ) : articles.map((article) => (
-                  <article key={article.id} className={`article-card ${selectedId === article.id ? 'selected' : ''} ${article.isRead ? 'read' : 'unread'}`}>
-                    <div className="article-card-main" role="group" tabIndex={0} aria-label={t('article.cardLabel', { title: article.title })} onClick={(event) => { if (!(event.target instanceof Element) || !event.target.closest('a, button')) { event.currentTarget.focus(); void chooseArticle(article); } }} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void chooseArticle(article); } }}>
-                      <div className="article-card-meta">{!article.isRead && <span className="article-unread-indicator" aria-hidden="true" />}<span className={`source-mark source-mark-${Math.abs(article.feedId) % 5}`}>{initials(article.feedTitle)}</span><span className="source-title">{article.feedTitle}</span><span className="meta-separator">·</span><time>{dateLabel(article.publishedAt, locale)}</time></div>
-                      <h2><ArticleTitle href={article.url} title={article.title} onOpenLocal={() => void chooseArticle(article)} /></h2>
-                      <p>{stripMarkup(article.summary) || t('article.summaryFallback')}</p>
-                      <div className="article-card-footer"><span className="article-topic">{feeds.find((item) => item.id === article.feedId)?.folderName || t('reader.inbox')}</span><span className="read-time">{t('reader.readTime', { count: Math.max(1, Math.ceil(stripMarkup(article.summary).split(/\s+/).length / 220)) })}</span></div>
-                    </div>
-                    <div className="article-actions">
-                      <button className={`read-state-button ${article.isRead ? 'marked-read' : ''}`} aria-label={article.isRead ? t('actions.markUnread') : t('actions.markRead')} title={article.isRead ? t('actions.markUnread') : t('actions.markRead')} onClick={() => void toggleRead(article)}><Icon name={article.isRead ? 'inbox' : 'check'} size={16} /></button>
-                      <button className={`save-button ${article.isSaved ? 'saved' : ''}`} aria-label={article.isSaved ? t('actions.removeSaved') : t('actions.saveForLater')} title={article.isSaved ? t('actions.removeSaved') : t('actions.saveForLater')} onClick={() => void toggleSaved(article)}><Icon name="bookmark" size={17} /></button>
-                    </div>
-                  </article>
+                  <ArticleCard
+                    key={article.id}
+                    article={article}
+                    selected={selectedId === article.id}
+                    locale={locale}
+                    folderName={feeds.find((item) => item.id === article.feedId)?.folderName ?? null}
+                    onChoose={() => void chooseArticle(article)}
+                    onToggleRead={() => void toggleRead(article)}
+                    onToggleSaved={() => void toggleSaved(article)}
+                  />
                 ))}
               </div>
               {hasMore && <div className="load-more-wrap" ref={loadMoreSentinelRef}>
