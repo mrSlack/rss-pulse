@@ -153,8 +153,8 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 			ON CONFLICT (feed_source_id,article_guid) DO UPDATE SET article_title=EXCLUDED.article_title,
 				article_url=EXCLUDED.article_url,feed_title=EXCLUDED.feed_title,feed_url=EXCLUDED.feed_url,
 				added_by_user_id=COALESCE(blocked_feed_articles.added_by_user_id,EXCLUDED.added_by_user_id),
-				matched_term=CASE WHEN EXCLUDED.matched_term<>'' THEN EXCLUDED.matched_term ELSE blocked_feed_articles.matched_term END,summary=EXCLUDED.summary,published_at=EXCLUDED.published_at,last_blocked_at=NOW()`,
-			sourceID, item.GUID, item.Title, item.URL, feedTitle, feedURL, addedByUserID, matchedTerm, item.Summary, item.PublishedAt); err != nil {
+				matched_term=CASE WHEN EXCLUDED.matched_term<>'' THEN EXCLUDED.matched_term ELSE blocked_feed_articles.matched_term END,summary=EXCLUDED.summary,published_at=CASE WHEN $11 THEN EXCLUDED.published_at ELSE blocked_feed_articles.published_at END,last_blocked_at=NOW()`,
+			sourceID, item.GUID, item.Title, item.URL, feedTitle, feedURL, addedByUserID, matchedTerm, item.Summary, item.PublishedAt, item.HasPublishedAt); err != nil {
 			return nil, err
 		}
 		if status == "allowed" {

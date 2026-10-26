@@ -133,3 +133,59 @@ func TestQuarantinePersistsPayloadAndDecisions(t *testing.T) {
 		t.Fatalf("missing error=%v", err)
 	}
 }
+
+func TestQuarantinePreservesPublicationTimeOnUndatedRefresh(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedPostgres(t)
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.EnsureInitialAdministrator(ctx, pool, "admin@example.com", "long-bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateSharedSources(ctx, pool, admin); err != nil {
+		t.Fatal(err)
+	}
+	var source int64
+	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources(normalized_url,url,title) VALUES ('https://example.com/rss','https://example.com/rss','News') RETURNING id`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	s := store.New(pool)
+	original := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	item := feeds.Item{GUID: "dated", Title: "adult content", Summary: "original summary", PublishedAt: original, HasPublishedAt: true}
+	for _, hasDate := range []bool{true, false} {
+		item.HasPublishedAt = hasDate
+		if !hasDate {
+			item.PublishedAt = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+			item.Summary = "updated undated content"
+		}
+		if _, err := pool.Exec(ctx, `UPDATE feed_sources SET lease_token='test',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1`, source); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.ListBlockedFeedArticles(ctx, 100)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("quarantine=%v err=%v", rows, err)
+	}
+	row := rows[0]
+	if row.PublishedAt == nil || !row.PublishedAt.Equal(original) {
+		t.Fatalf("quarantine publication time=%v, want %v", row.PublishedAt, original)
+	}
+	if row.Summary != item.Summary {
+		t.Fatalf("summary=%q, want refreshed content", row.Summary)
+	}
+	if err := s.ModerateBlockedFeedArticle(ctx, row.ID, true, admin); err != nil {
+		t.Fatal(err)
+	}
+	var promoted time.Time
+	if err := pool.QueryRow(ctx, `SELECT published_at FROM articles WHERE feed_source_id=$1 AND guid='dated'`, source).Scan(&promoted); err != nil {
+		t.Fatal(err)
+	}
+	if !promoted.Equal(original) {
+		t.Fatalf("promoted publication time=%v, want %v", promoted, original)
+	}
+}
