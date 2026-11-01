@@ -209,9 +209,9 @@ commands from `AGENTS.md`.
 | Stage | Name | Tasks | Depends on | Est. |
 | --- | --- | --- | --- | --- |
 | 1 | Quick fixes — **done** (branch `stage-1/quick-fixes`) | 0.1–0.3, 2.1 (REL-1), 1.2 (SEC-2), 1.3 (SEC-4) | — | 1–1.5 |
-| 2 | Sign-in protection | 1.1 (SEC-1), 1.5 (SEC-5), 1.6 (SEC-6), 0.5 | 1 | 1.5–2 |
-| 3 | Reading correctness | 2.2 + 2.4 together (REL-2, REL-4), 2.3 (REL-3) | 1 | 2–2.5 |
-| 4 | Data growth | 4.1 (baseline), 4.2 (retention, session cleanup) | decision Q1 | 1.5 |
+| 2 | Sign-in protection — **done** (`stage-2/sign-in-protection`) | 1.1 (SEC-1), 1.5 (SEC-5), 1.6 (SEC-6), 0.5 | 1 | 1.5–2 |
+| 3 | Reading correctness — **done** (`stage-3/reading-correctness`) | 2.2 + 2.4 together (REL-2, REL-4), 2.3 (REL-3) | 1 | 2–2.5 |
+| 4 | Data growth — **done** (`stage-4/data-growth`) | 4.1 (baseline), 4.2 (retention, session cleanup) | decision Q1 | 1.5 |
 | 5 | Refresh engine | 3.1, 3.2, 3.4, 3.5, then design note + 3.3 | decision Q3 | 3–3.5 |
 | 6 | Accounts and requests | 1.4 (SEC-3), 2.6 (REL-9), 2.5 (REL-10) | decision Q2 | 2 |
 | 7 | Performance | 4.3, 4.4, 4.5 | 4 | 3 |
@@ -223,8 +223,11 @@ closed by stage 4.
 
 ## 4. Open questions for the product owner
 
-Proposed defaults are applied unless the owner decides otherwise before the
-dependent stage starts. Q5 is decided: remove the binary going forward only.
+Decisions (2026-11-01, delegated to the implementer by the owner): Q1 — 180 days
+for unsaved articles, 90 days for decided quarantine records; Q2 — add account
+disabling; Q3 — shortest subscriber interval, bounded below by the shared TTL;
+Q4 — keep loading remote images directly, task 5.6 deferred; Q5 — remove the
+binary going forward only. Stage branches are merged into `improvements`.
 
 1. Retention period for unsaved articles and for decided quarantine records
    (proposal: 180 and 90 days).
