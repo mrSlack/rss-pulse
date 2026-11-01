@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   API_CACHE,
   API_CACHE_MAX_ENTRIES,
+  API_NETWORK_TIMEOUT_MS,
   SHELL_CACHE_PREFIX,
   clearsApiCache,
   entriesToEvict,
   isCacheableApiResponse,
   isObsoleteCache,
+  networkFirstWithTimeout,
   requestStrategy,
 } from '../../src/sw/policy';
 import { API_CACHE_PREFIX } from '../../src/offlineData';
@@ -100,5 +102,98 @@ describe('API cache privacy', () => {
     expect(isObsoleteCache(`${SHELL_CACHE_PREFIX}new`, `${SHELL_CACHE_PREFIX}new`)).toBe(false);
     expect(isObsoleteCache(API_CACHE, `${SHELL_CACHE_PREFIX}new`)).toBe(false);
     expect(isObsoleteCache('someone-else', `${SHELL_CACHE_PREFIX}new`)).toBe(false);
+  });
+});
+
+describe('network-first API requests with a time limit', () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** A network request the test settles by hand. */
+  function pendingNetwork() {
+    let resolve!: (value: string) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  function observe(promise: Promise<string>) {
+    const state: { value?: string; error?: unknown; settled: boolean } = { settled: false };
+    promise.then((value) => { state.value = value; state.settled = true; }, (error: unknown) => { state.error = error; state.settled = true; });
+    return state;
+  }
+
+  const notAborted = () => false;
+
+  it('waits a few seconds before it gives up on the network', () => {
+    expect(API_NETWORK_TIMEOUT_MS).toBeGreaterThanOrEqual(3000);
+    expect(API_NETWORK_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+  });
+
+  it('returns the network response when it arrives in time, without reading the cache', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const cached = vi.fn(async () => 'stored');
+    const state = observe(networkFirstWithTimeout(network.promise, cached, { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+
+    await vi.advanceTimersByTimeAsync(API_NETWORK_TIMEOUT_MS - 1);
+    network.resolve('fresh');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(state).toEqual({ value: 'fresh', settled: true });
+    expect(cached).not.toHaveBeenCalled();
+  });
+
+  it('returns the stored response when the network hangs past the time limit', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const state = observe(networkFirstWithTimeout(network.promise, async () => 'stored', { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+
+    await vi.advanceTimersByTimeAsync(API_NETWORK_TIMEOUT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(state).toEqual({ value: 'stored', settled: true });
+    // A late network response does not change the answer already given.
+    network.resolve('fresh');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.value).toBe('stored');
+  });
+
+  it('keeps waiting for the network when nothing is stored', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const cached = vi.fn(async () => undefined);
+    const state = observe(networkFirstWithTimeout(network.promise, cached, { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+
+    await vi.advanceTimersByTimeAsync(10 * API_NETWORK_TIMEOUT_MS);
+    expect(state.settled).toBe(false);
+    expect(cached).toHaveBeenCalledTimes(1);
+    network.resolve('slow but fine');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state).toEqual({ value: 'slow but fine', settled: true });
+  });
+
+  it('falls back to the stored response when the network fails, and fails without one', async () => {
+    const failure = new TypeError('Failed to fetch');
+    await expect(networkFirstWithTimeout(Promise.reject(failure), async () => 'stored', { timeoutMs: 10, aborted: notAborted })).resolves.toBe('stored');
+    await expect(networkFirstWithTimeout(Promise.reject(failure), async () => undefined, { timeoutMs: 10, aborted: notAborted })).rejects.toBe(failure);
+    // A failing cache lookup counts as nothing stored.
+    await expect(networkFirstWithTimeout(Promise.reject(failure), () => Promise.reject(new Error('no storage')), { timeoutMs: 10, aborted: notAborted })).rejects.toBe(failure);
+  });
+
+  it('fails when the network fails after the time limit found nothing stored', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const failure = new TypeError('Failed to fetch');
+    const state = observe(networkFirstWithTimeout(network.promise, async () => undefined, { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+    await vi.advanceTimersByTimeAsync(API_NETWORK_TIMEOUT_MS);
+    network.reject(failure);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state).toEqual({ error: failure, settled: true });
+  });
+
+  it('does not answer an aborted request from the cache', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+    const cached = vi.fn(async () => 'stored');
+    await expect(networkFirstWithTimeout(Promise.reject(abort), cached, { timeoutMs: 10, aborted: () => true })).rejects.toBe(abort);
+    expect(cached).not.toHaveBeenCalled();
   });
 });

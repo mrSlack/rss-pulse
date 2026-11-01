@@ -4,6 +4,7 @@ import { api, errorMessage, type SessionUser } from './api';
 import { initials } from './AppChrome';
 import { ErrorToast } from './ErrorToast';
 import { ModalFrame } from './ModalFrame';
+import { rememberUser, remembersDevice, setRemembersDevice } from './offlineData';
 
 type Props = {
   user: SessionUser;
@@ -25,6 +26,13 @@ export function ProfileModal({ user, onClose, onUserUpdated }: Props) {
   const [profileNotice, setProfileNotice] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [passwordNotice, setPasswordNotice] = useState('');
+  const [rememberDevice, setRememberDevice] = useState(remembersDevice);
+
+  /** Applies the offline choice at once: off deletes the stored account and articles. */
+  function changeRememberDevice(remember: boolean) {
+    setRememberDevice(remember);
+    void setRemembersDevice(remember).then(() => (remember ? rememberUser(user) : undefined));
+  }
 
   async function submitDetails(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -81,6 +89,14 @@ export function ProfileModal({ user, onClose, onUserUpdated }: Props) {
         {profileNotice && <p className="profile-success" role="status">{profileNotice}</p>}
         <button className="primary-button modal-submit" type="submit" disabled={submitting}>{submitting ? t('states.saving') : t('profile.save')}</button>
       </form>
+      <div className="profile-device">
+        <p className="profile-form-title">{t('profile.offlineTitle')}</p>
+        <div className="remember-device">
+          <input id="profile-remember" type="checkbox" checked={rememberDevice} onChange={(event) => changeRememberDevice(event.target.checked)} aria-describedby="profile-remember-hint" />
+          <label htmlFor="profile-remember">{t('profile.rememberOffline')}</label>
+          <small id="profile-remember-hint">{t('profile.rememberOfflineHint')}</small>
+        </div>
+      </div>
       <form className="profile-password-form" onSubmit={(event) => void submitPassword(event)}>
         <p className="profile-form-title">{t('profile.changePassword')}</p>
         <label className="form-label" htmlFor="profile-current-password">{t('profile.currentPassword')}</label>

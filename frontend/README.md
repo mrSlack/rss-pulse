@@ -28,9 +28,17 @@ and is served as immutable.
 - `src/pwa.ts` registers the worker in production builds only; the Vite dev
   server has no service worker. A new version waits until the user chooses
   "Reload" in the prompt (`src/AppStatus.tsx`).
-- `src/offlineData.ts` remembers the signed-in account for offline starts and
-  deletes it together with the API cache on sign-out, on a 401, and when
-  another account signs in.
+- The worker answers article, feed and folder requests from its cache when the
+  network fails or has not answered within `API_NETWORK_TIMEOUT_MS` (4 s);
+  `src/api.ts` ends any request without a response after `REQUEST_TIMEOUT_MS`
+  (40 s, the session check after 15 s, OPML imports never).
+- `src/offlineData.ts` holds the "Remember me on this device for offline use"
+  choice (`pulse.offlineRemember`; default on in the installed app, off in a
+  browser tab). When on, it remembers the signed-in account
+  (`pulse.offlineUser`) for offline starts. When off, no account is stored and
+  the API cache is deleted at the next start. Either way the account and the
+  API cache are deleted on sign-out, on a 401, when another account signs in,
+  and when the option is turned off (sign-in form or profile).
 
 Service workers need a secure context: HTTPS, or `http://localhost`. After
 changing `src/sw/`, check `test/e2e/pwa.spec.ts`; Playwright runs it against a

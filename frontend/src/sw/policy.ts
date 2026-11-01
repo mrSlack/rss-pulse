@@ -8,9 +8,17 @@ export const SHELL_CACHE_PREFIX = 'pulse-shell-';
 export const API_CACHE = 'pulse-api-v1';
 /** Upper bound of stored API responses (article pages, feeds, folders). */
 export const API_CACHE_MAX_ENTRIES = 60;
+/**
+ * How long a cacheable API request waits for the network before the stored
+ * copy is shown instead. A connection that hangs (captive portal, dead mobile
+ * link) would otherwise never fall back to it. Without a stored copy the
+ * request keeps waiting; the page's own request timeout (src/api.ts) ends it.
+ */
+export const API_NETWORK_TIMEOUT_MS = 4000;
 
 /**
- * - `api`: network first, falling back to the last stored response offline.
+ * - `api`: network first, falling back to the last stored response when the
+ *   network fails or takes longer than API_NETWORK_TIMEOUT_MS.
  * - `asset`: content-hashed build output, cache first.
  * - `navigation`: network first, falling back to the precached index.html.
  * - `static`: other precached files (favicon, icons), network first.
@@ -53,6 +61,47 @@ export function isCacheableApiResponse(response: { status: number; type: Respons
   if (response.status !== 200 || response.type !== 'basic') return false;
   if (/(^|,)\s*no-store\s*(,|$)/i.test(response.headers.get('cache-control') || '')) return false;
   return (response.headers.get('content-type') || '').toLowerCase().startsWith('application/json');
+}
+
+/**
+ * Settles with the network response, or with the stored copy (from `cached`,
+ * undefined when there is none) when the network fails or has not answered
+ * within `timeoutMs`. Without a stored copy it waits for the network however
+ * long it takes. The network request is not cancelled: the caller may still
+ * use its response to refresh the cache. An aborted request (`aborted()`) is
+ * never answered from the cache.
+ */
+export function networkFirstWithTimeout<T>(
+  network: Promise<T>,
+  cached: () => Promise<T | undefined>,
+  { timeoutMs, aborted }: { timeoutMs: number; aborted: () => boolean },
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (finish: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finish();
+    };
+    const lookup = () => cached().catch(() => undefined);
+    const timer = setTimeout(() => {
+      void lookup().then((copy) => {
+        if (copy !== undefined) settle(() => resolve(copy));
+      });
+    }, timeoutMs);
+    network.then(
+      (response) => settle(() => resolve(response)),
+      (reason: unknown) => {
+        if (settled) return;
+        if (aborted()) {
+          settle(() => reject(reason));
+          return;
+        }
+        void lookup().then((copy) => settle(() => (copy !== undefined ? resolve(copy) : reject(reason))));
+      },
+    );
+  });
 }
 
 /** Oldest keys to delete so that at most API_CACHE_MAX_ENTRIES remain (keys in insertion order). */
