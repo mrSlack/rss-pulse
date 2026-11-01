@@ -2786,26 +2786,52 @@
               "maximum": 200,
               "default": 100
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of pending requests to skip (oldest first).",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Pending requests, oldest first.",
+            "description": "One page of pending requests, oldest first, and the total number of pending requests.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/FeedRequest"
+                  "type": "object",
+                  "required": [
+                    "requests",
+                    "total"
+                  ],
+                  "properties": {
+                    "requests": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/FeedRequest"
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of pending requests, independent of limit and offset."
+                    }
                   }
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid limit. Error codes: `feed.requests_limit_invalid`.",
+            "description": "Invalid limit or offset. Error codes: `feed.requests_limit_invalid`, `feed.requests_offset_invalid`.",
             "x-error-codes": [
-              "feed.requests_limit_invalid"
+              "feed.requests_limit_invalid",
+              "feed.requests_offset_invalid"
             ],
             "content": {
               "application/json": {

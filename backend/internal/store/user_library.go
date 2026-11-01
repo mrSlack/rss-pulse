@@ -208,23 +208,25 @@ func (s *Store) ListFeedsForUser(ctx context.Context, userID int64) ([]Feed, err
 	return result, rows.Err()
 }
 
-func (s *Store) PrepareFeedUpdate(ctx context.Context, userID, feedID int64, rawURL string, folderID *int64) (int64, bool, bool, error) {
+// PrepareFeedUpdate checks a URL change of the user's subscription and returns the
+// approved source for the new URL and whether the URL changed.
+func (s *Store) PrepareFeedUpdate(ctx context.Context, userID, feedID int64, rawURL string, folderID *int64) (int64, bool, error) {
 	normalizedURL, err := NormalizeFeedURL(rawURL)
 	if err != nil {
-		return 0, false, false, err
+		return 0, false, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, false, false, err
+		return 0, false, err
 	}
 	defer tx.Rollback(ctx)
 	if folderID != nil {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM folders WHERE id=$1 AND owner_user_id=$2)`, *folderID, userID).Scan(&exists); err != nil {
-			return 0, false, false, err
+			return 0, false, err
 		}
 		if !exists {
-			return 0, false, false, ErrFolderUnavailable
+			return 0, false, ErrFolderUnavailable
 		}
 	}
 	var currentSourceID int64
@@ -233,38 +235,37 @@ func (s *Store) PrepareFeedUpdate(ctx context.Context, userID, feedID int64, raw
 		FROM user_feeds uf JOIN feed_sources fs ON fs.id=uf.feed_source_id
 		WHERE uf.id=$1 AND uf.user_id=$2 FOR UPDATE OF uf`, feedID, userID).Scan(&currentSourceID, &currentURL)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, false, ErrNotFound
+		return 0, false, ErrNotFound
 	}
 	if err != nil {
-		return 0, false, false, err
+		return 0, false, err
 	}
 	if currentURL == normalizedURL {
-		return currentSourceID, false, false, nil
+		return currentSourceID, false, nil
 	}
 	var alreadySubscribed bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM user_feeds uf JOIN feed_sources fs ON fs.id=uf.feed_source_id
 		WHERE uf.user_id=$1 AND uf.id<>$2 AND fs.normalized_url=$3)`, userID, feedID, normalizedURL).Scan(&alreadySubscribed); err != nil {
-		return 0, false, false, err
+		return 0, false, err
 	}
 	if alreadySubscribed {
-		return 0, false, false, ErrDuplicate
+		return 0, false, ErrDuplicate
 	}
-	parsed, _ := url.Parse(normalizedURL)
+	// The caller has already confirmed through RequestFeedApproval that the source
+	// is approved; sources are never deleted, so it is looked up, not created.
 	var sourceID int64
-	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,added_by_user_id) VALUES ($1,$2,$1,$3)
-		ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, parsed.Hostname(), userID).Scan(&sourceID)
-	created := err == nil
+	err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&sourceID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&sourceID)
+		return 0, false, ErrNotFound
 	}
 	if err != nil {
-		return 0, false, false, err
+		return 0, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, false, false, err
+		return 0, false, err
 	}
-	return sourceID, created, true, nil
+	return sourceID, true, nil
 }
 
 func (s *Store) UpdateFeedForUser(ctx context.Context, userID, feedID, sourceID int64, title string, folderID *int64) (Feed, error) {

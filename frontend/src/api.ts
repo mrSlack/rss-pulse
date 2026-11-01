@@ -91,6 +91,12 @@ export type FeedRequest = {
   createdAt: string;
 };
 
+export type FeedRequestPage = {
+  requests: FeedRequest[];
+  /** Number of pending requests on the server, independent of the page size. */
+  total: number;
+};
+
 export type FeedRequestResult = { requestId: number; status: 'pending' };
 
 export type StopWord = { id: number; term: string; createdAt: string };
@@ -295,7 +301,9 @@ export const api = {
       body: JSON.stringify(update),
     }),
   signOutUser: (id: number) => request<void>(`/admin/users/${id}/sign-out`, { method: 'POST' }),
-  getFeedRequests: (signal?: AbortSignal) => request<FeedRequest[]>('/admin/feed-requests', { signal }),
+  /** One page of pending requests, oldest first, starting after `offset`, with the total pending count. */
+  getFeedRequests: (signal?: AbortSignal, offset = 0) =>
+    request<FeedRequestPage>(offset > 0 ? `/admin/feed-requests?offset=${offset}` : '/admin/feed-requests', { signal }),
   approveFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
   rejectFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}`, { method: 'DELETE' }),
   getStopWords: (signal?: AbortSignal) => request<StopWord[]>('/admin/stop-words', { signal }),

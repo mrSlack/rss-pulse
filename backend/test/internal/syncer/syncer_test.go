@@ -188,7 +188,14 @@ func TestConcurrentUserRequestsAreAllAcceptedAndProcessed(t *testing.T) {
 		defer repository.mu.Unlock()
 		return len(repository.userIDs) == 8
 	})
-	waitFor(t, func() bool { return !control.IsRunning() })
+	waitFor(t, func() bool {
+		for userID := int64(1); userID <= 8; userID++ {
+			if control.IsUserRefreshing(userID) {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 func TestSchedulerRunsShortlyAfterStartAndThenOnEveryTick(t *testing.T) {
@@ -313,7 +320,9 @@ func TestScheduledCycleAndUserRequestShareTheWorkerBudget(t *testing.T) {
 	waitFor(t, func() bool { return repository.activeClaims.Load() == 2 })
 	time.Sleep(20 * time.Millisecond)
 	close(release)
-	waitFor(t, func() bool { return repository.claimCount.Load() == 6 && !control.IsRunning() })
+	waitFor(t, func() bool {
+		return repository.claimCount.Load() == 6 && repository.activeClaims.Load() == 0 && !control.IsUserRefreshing(5)
+	})
 	if got := repository.maxActive.Load(); got != 2 {
 		t.Fatalf("maximum concurrent claims across cycle and user request = %d, want 2", got)
 	}
@@ -358,7 +367,7 @@ func TestSyncerUsesConfiguredWorkersAndProcessesEverySource(t *testing.T) {
 	}
 	close(release)
 	waitFor(t, func() bool {
-		return repository.claimCount.Load() == int32(len(repository.dueSources)) && !control.IsRunning()
+		return repository.claimCount.Load() == int32(len(repository.dueSources)) && repository.activeClaims.Load() == 0
 	})
 	if got := repository.maxActive.Load(); got != 3 {
 		t.Fatalf("maximum concurrent source claims = %d, want 3", got)

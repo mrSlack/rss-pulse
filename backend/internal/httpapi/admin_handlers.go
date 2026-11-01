@@ -198,12 +198,21 @@ func (h *Handler) listFeedRequests(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	requests, err := h.store.ListPendingFeedRequests(r.Context(), limit)
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "feed.requests_offset_invalid", "The feed request offset must be zero or a positive whole number.")
+			return
+		}
+		offset = parsed
+	}
+	requests, total, err := h.store.ListPendingFeedRequests(r.Context(), limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "feed.requests_load_failed", "Feed requests could not be loaded.")
 		return
 	}
-	writeJSON(w, http.StatusOK, requests)
+	writeJSON(w, http.StatusOK, map[string]any{"requests": requests, "total": total})
 }
 
 func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {

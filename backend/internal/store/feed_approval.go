@@ -112,7 +112,16 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 	err = tx.QueryRow(ctx, `SELECT r.request_id FROM feed_request_requesters r JOIN feed_requests fr ON fr.id=r.request_id
 		WHERE fr.normalized_url=$1 AND r.user_id=$2`, normalizedURL, userID).Scan(&requestID)
 	if err == nil {
-		// Asking again for a URL you already requested is idempotent.
+		// Asking again for a URL you already requested keeps your place in the queue
+		// but replaces what approval will do for you: the latest folder, title, and
+		// subscription to replace (or none, for a new feed) win.
+		if _, err := tx.Exec(ctx, `UPDATE feed_request_requesters SET folder_id=$3,title=$4,replace_feed_id=$5
+			WHERE request_id=$1 AND user_id=$2`, requestID, userID, folderID, title, replaceFeedID); err != nil {
+			return FeedRequestResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return FeedRequestResult{}, err
+		}
 		return FeedRequestResult{RequestID: requestID}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -142,9 +151,21 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 	return FeedRequestResult{RequestID: requestID}, nil
 }
 
-// ListPendingFeedRequests returns up to limit pending requests, oldest first.
-func (s *Store) ListPendingFeedRequests(ctx context.Context, limit int) ([]FeedRequest, error) {
-	rows, err := s.pool.Query(ctx, `SELECT fr.id,fr.url,fu.email,first.folder_id,f.name,first.title,fr.created_at::text,
+// ListPendingFeedRequests returns up to limit pending requests after skipping
+// offset, oldest first, and the total number of pending requests.
+func (s *Store) ListPendingFeedRequests(ctx context.Context, limit, offset int) ([]FeedRequest, int, error) {
+	// Read the page and the total from one snapshot so they agree.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback(ctx)
+	var total int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM feed_requests fr
+		WHERE EXISTS(SELECT 1 FROM feed_request_requesters r WHERE r.request_id=fr.id)`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := tx.Query(ctx, `SELECT fr.id,fr.url,fu.email,first.folder_id,f.name,first.title,fr.created_at::text,
 			ARRAY(SELECT u.email FROM feed_request_requesters r JOIN users u ON u.id=r.user_id
 				WHERE r.request_id=fr.id ORDER BY r.created_at,r.user_id)
 		FROM feed_requests fr
@@ -152,20 +173,22 @@ func (s *Store) ListPendingFeedRequests(ctx context.Context, limit int) ([]FeedR
 			WHERE r.request_id=fr.id ORDER BY r.created_at,r.user_id LIMIT 1) first ON TRUE
 		JOIN users fu ON fu.id=first.user_id
 		LEFT JOIN folders f ON f.id=first.folder_id AND f.owner_user_id=first.user_id
-		ORDER BY fr.created_at,fr.id LIMIT $1`, limit)
+		ORDER BY fr.created_at,fr.id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	defer rows.Close()
-	requests := make([]FeedRequest, 0)
-	for rows.Next() {
+	requests, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (FeedRequest, error) {
 		var request FeedRequest
-		if err := rows.Scan(&request.ID, &request.URL, &request.RequestedBy, &request.FolderID, &request.FolderName, &request.Title, &request.CreatedAt, &request.Requesters); err != nil {
-			return nil, err
-		}
-		requests = append(requests, request)
+		err := row.Scan(&request.ID, &request.URL, &request.RequestedBy, &request.FolderID, &request.FolderName, &request.Title, &request.CreatedAt, &request.Requesters)
+		return request, err
+	})
+	if err != nil {
+		return nil, 0, err
 	}
-	return requests, rows.Err()
+	if requests == nil {
+		requests = make([]FeedRequest, 0)
+	}
+	return requests, total, nil
 }
 
 type feedRequester struct {

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -211,7 +210,7 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"requestId": result.RequestID, "status": "pending"})
 		return
 	}
-	sourceID, sourceCreated, urlChanged, err := h.store.PrepareFeedUpdate(r.Context(), user.ID, *feedID, request.URL, request.FolderID)
+	sourceID, urlChanged, err := h.store.PrepareFeedUpdate(r.Context(), user.ID, *feedID, request.URL, request.FolderID)
 	if err != nil {
 		writeStoreError(w, err, []storeError{
 			{store.ErrNotFound, errFeedNotFound},
@@ -223,9 +222,6 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	feed, err := h.store.UpdateFeedForUser(r.Context(), user.ID, *feedID, sourceID, request.Title, request.FolderID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) && sourceCreated {
-			_ = h.store.DiscardEmptySource(r.Context(), sourceID)
-		}
 		writeStoreError(w, err, []storeError{
 			{store.ErrNotFound, errFeedNotFound},
 			{store.ErrDuplicate, errFeedAlreadyAdded},
