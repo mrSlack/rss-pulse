@@ -121,12 +121,123 @@ func TestLoginLimiterEvictsStaleEntries(t *testing.T) {
 
 func TestLoginLimiterCapsTrackedKeys(t *testing.T) {
 	limiter := newLoginLimiter(newTestClock().Now)
-	for index := 0; index < limiterMaxKeys+50; index++ {
-		limiter.begin(fmt.Sprintf("ip-%d", index), fmt.Sprintf("user%d@example.com", index))
+	if limiter.maxKeys != limiterMaxKeys {
+		t.Fatalf("maxKeys = %d, want %d", limiter.maxKeys, limiterMaxKeys)
 	}
-	if ips, accounts := limiter.size(); ips > limiterMaxKeys || accounts > limiterMaxKeys {
-		t.Fatalf("ips=%d accounts=%d exceed cap %d", ips, accounts, limiterMaxKeys)
+	floodDistinctKeys(limiter, limiterMaxKeys+50)
+	assertWithinCap(t, limiter)
+}
+
+// floodDistinctKeys starts one attempt for each of count new IPs and accounts,
+// as an attacker spreading guesses over many addresses and e-mails would.
+func floodDistinctKeys(limiter *loginLimiter, count int) {
+	for index := 0; index < count; index++ {
+		limiter.begin(fmt.Sprintf("flood-ip-%d", index), fmt.Sprintf("flood%d@example.com", index))
 	}
+}
+
+func assertWithinCap(t *testing.T, limiter *loginLimiter) {
+	t.Helper()
+	if ips, accounts := limiter.size(); ips > limiter.maxKeys || accounts > limiter.maxKeys {
+		t.Fatalf("ips=%d accounts=%d exceed cap %d", ips, accounts, limiter.maxKeys)
+	}
+}
+
+func TestLoginLimiterCapDoesNotEvictLockedAccount(t *testing.T) {
+	limiter := newLoginLimiter(newTestClock().Now)
+	limiter.maxKeys = 8
+	for attempt := 0; attempt < accountFailureLimit; attempt++ {
+		if _, _, ok := limiter.begin(fmt.Sprintf("192.0.2.%d", attempt), "victim@example.com"); !ok {
+			t.Fatalf("failure %d rejected", attempt+1)
+		}
+	}
+	floodDistinctKeys(limiter, 200)
+	assertWithinCap(t, limiter)
+	if _, _, ok := limiter.begin("198.51.100.1", "victim@example.com"); ok {
+		t.Fatal("flooding distinct e-mails flushed the locked account")
+	}
+}
+
+func TestLoginLimiterCapKeepsFailureHistoryOfAccountNearLimit(t *testing.T) {
+	limiter := newLoginLimiter(newTestClock().Now)
+	limiter.maxKeys = 8
+	for attempt := 0; attempt < accountFailureLimit-1; attempt++ {
+		if _, _, ok := limiter.begin(fmt.Sprintf("192.0.2.%d", attempt), "victim@example.com"); !ok {
+			t.Fatalf("failure %d rejected", attempt+1)
+		}
+	}
+	floodDistinctKeys(limiter, 200)
+	assertWithinCap(t, limiter)
+	if _, _, ok := limiter.begin("198.51.100.1", "victim@example.com"); !ok {
+		t.Fatal("10th failure rejected")
+	}
+	if _, _, ok := limiter.begin("198.51.100.2", "victim@example.com"); ok {
+		t.Fatal("flooding distinct e-mails erased the account's failure history")
+	}
+}
+
+func TestLoginLimiterCapDoesNotEvictLimitedIP(t *testing.T) {
+	limiter := newLoginLimiter(newTestClock().Now)
+	limiter.maxKeys = 8
+	for attempt := 0; attempt < ipAttemptLimit; attempt++ {
+		if _, _, ok := limiter.begin("203.0.113.7", fmt.Sprintf("guess%d@example.com", attempt)); !ok {
+			t.Fatalf("attempt %d rejected", attempt+1)
+		}
+	}
+	floodDistinctKeys(limiter, 200)
+	assertWithinCap(t, limiter)
+	if _, _, ok := limiter.begin("203.0.113.7", "fresh@example.com"); ok {
+		t.Fatal("flooding distinct IPs flushed the limited IP")
+	}
+}
+
+func TestLoginLimiterFailsClosedForNewKeysWhenEveryTrackedKeyIsLocked(t *testing.T) {
+	clock := newTestClock()
+	limiter := newLoginLimiter(clock.Now)
+	limiter.maxKeys = 3
+	for index := 0; index < limiter.maxKeys; index++ {
+		failAttempts(t, limiter, fmt.Sprintf("192.0.2.%d", index), fmt.Sprintf("victim%d@example.com", index), accountFailureLimit)
+	}
+	_, wait, ok := limiter.begin("198.51.100.1", "new@example.com")
+	if ok {
+		t.Fatal("new account admitted although every tracked account is locked")
+	}
+	if wait <= 0 {
+		t.Fatalf("wait = %v, want a positive retry delay", wait)
+	}
+	assertWithinCap(t, limiter)
+	for index := 0; index < limiter.maxKeys; index++ {
+		if _, _, ok := limiter.begin("198.51.100.1", fmt.Sprintf("victim%d@example.com", index)); ok {
+			t.Fatalf("locked account %d admitted", index)
+		}
+	}
+	clock.Advance(accountFailureWindow + time.Second)
+	if _, _, ok := limiter.begin("198.51.100.1", "new@example.com"); !ok {
+		t.Fatal("new account still rejected after the locks expired")
+	}
+}
+
+func TestLoginLimiterFullMapRetriesCompactionOnlyAfterDelay(t *testing.T) {
+	clock := newTestClock()
+	limiter := newLoginLimiter(clock.Now)
+	limiter.maxKeys = 2
+	for index := 0; index < limiter.maxKeys; index++ {
+		failAttempts(t, limiter, fmt.Sprintf("192.0.2.%d", index), fmt.Sprintf("victim%d@example.com", index), accountFailureLimit)
+	}
+	if _, _, ok := limiter.begin("198.51.100.1", "new@example.com"); ok {
+		t.Fatal("new account admitted into a map full of locks")
+	}
+	// Free a slot behind the limiter's back: the next scan must wait.
+	limiter.accounts["victim0@example.com"] = limiter.accounts["victim0@example.com"][:1]
+	clock.Advance(limiterFullRetry / 2)
+	if _, _, ok := limiter.begin("198.51.100.1", "new@example.com"); ok {
+		t.Fatal("full map was scanned again before the retry delay")
+	}
+	clock.Advance(limiterFullRetry / 2)
+	if _, _, ok := limiter.begin("198.51.100.1", "new@example.com"); !ok {
+		t.Fatal("new account rejected after compaction could free a slot")
+	}
+	assertWithinCap(t, limiter)
 }
 
 func TestClientIPTrustsRealIPOnlyFromTrustedProxies(t *testing.T) {

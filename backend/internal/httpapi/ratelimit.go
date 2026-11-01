@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,13 @@ const (
 	// accountFailureLimit or ipAttemptLimit timestamps.
 	limiterMaxKeys       = 50_000
 	limiterSweepInterval = time.Minute
+	// limiterFullRetry is how long a full map that could not be compacted
+	// rejects new keys without scanning it again, so a saturated map does
+	// not cost a full scan on every request.
+	limiterFullRetry = time.Second
+	// limiterFullRetryAfter is the wait reported to a client rejected because
+	// a map is full of limited keys.
+	limiterFullRetryAfter = time.Minute
 )
 
 // DefaultTrustedProxyCIDRs covers loopback, RFC 1918 and IPv6 unique local
@@ -106,13 +115,18 @@ type loginLimiter struct {
 	accounts  map[string][]time.Time
 	ips       map[string][]time.Time
 	lastSweep time.Time
+	maxKeys   int
+	// ipsFullUntil and accountsFullUntil are set when compaction could not
+	// free a slot; until then new keys are rejected without another scan.
+	ipsFullUntil      time.Time
+	accountsFullUntil time.Time
 }
 
 func newLoginLimiter(now func() time.Time) *loginLimiter {
 	if now == nil {
 		now = time.Now
 	}
-	return &loginLimiter{now: now, accounts: map[string][]time.Time{}, ips: map[string][]time.Time{}}
+	return &loginLimiter{now: now, maxKeys: limiterMaxKeys, accounts: map[string][]time.Time{}, ips: map[string][]time.Time{}}
 }
 
 // loginAttempt identifies a provisional failure recorded by begin.
@@ -137,14 +151,18 @@ func (l *loginLimiter) begin(ip, account string) (loginAttempt, time.Duration, b
 	if len(accountTimes) >= accountFailureLimit {
 		wait = max(wait, accountTimes[len(accountTimes)-accountFailureLimit].Add(accountFailureWindow).Sub(now))
 	}
+	storeTimes(l.ips, ip, ipTimes)
+	storeTimes(l.accounts, account, accountTimes)
 	if wait > 0 {
-		storeTimes(l.ips, ip, ipTimes)
-		storeTimes(l.accounts, account, accountTimes)
 		return loginAttempt{}, wait, false
+	}
+	// A key without live timestamps is absent now and needs a free slot.
+	if len(ipTimes) == 0 && !l.makeRoomLocked(l.ips, &l.ipsFullUntil, ipAttemptWindow, ipAttemptLimit, now) ||
+		len(accountTimes) == 0 && !l.makeRoomLocked(l.accounts, &l.accountsFullUntil, accountFailureWindow, accountFailureLimit, now) {
+		return loginAttempt{}, limiterFullRetryAfter, false
 	}
 	l.ips[ip] = append(ipTimes, now)
 	l.accounts[account] = append(accountTimes, now)
-	l.capLocked()
 	return loginAttempt{account: account, at: now}, 0, true
 }
 
@@ -182,17 +200,59 @@ func (l *loginLimiter) sweepLocked(now time.Time) {
 	}
 }
 
-// capLocked evicts arbitrary entries when a map exceeds limiterMaxKeys, so a
-// flood of distinct e-mail addresses or IPs cannot grow memory without bound.
-func (l *loginLimiter) capLocked() {
-	for _, entries := range []map[string][]time.Time{l.ips, l.accounts} {
-		for key := range entries {
-			if len(entries) <= limiterMaxKeys {
-				break
-			}
-			delete(entries, key)
+// makeRoomLocked reports whether entries can take one more key without
+// exceeding maxKeys, so a flood of distinct e-mail addresses or IPs cannot
+// grow memory without bound. Eviction must not let that flood erase active
+// limits: when the map is full, expired timestamps are pruned first, then
+// entries are evicted with the fewest live timestamps first and, among
+// equals, the oldest last activity first. Entries at their limit (locked
+// accounts or IPs) are never evicted. Compaction frees 10% of the map so the
+// O(n log n) scan runs at most once per maxKeys/10 new keys.
+//
+// If every remaining entry is locked, the new key is rejected (fail closed)
+// instead of admitted untracked or admitted by evicting a lock: an untracked
+// key could be guessed without limit, and evicting a lock is the bypass this
+// guards against. Filling the account map with locks takes 500,000 failed
+// attempts within 15 minutes from over 1,000 IPs; the rejection lasts only
+// until locks expire or are cleared by a successful sign-in.
+func (l *loginLimiter) makeRoomLocked(entries map[string][]time.Time, fullUntil *time.Time, window time.Duration, limit int, now time.Time) bool {
+	if len(entries) < l.maxKeys {
+		return true
+	}
+	if now.Before(*fullUntil) {
+		return false
+	}
+	type candidate struct {
+		key   string
+		count int
+		last  time.Time
+	}
+	cutoff := now.Add(-window)
+	var candidates []candidate
+	for key, times := range entries {
+		times = prune(times, cutoff)
+		storeTimes(entries, key, times)
+		if len(times) > 0 && len(times) < limit {
+			candidates = append(candidates, candidate{key: key, count: len(times), last: times[len(times)-1]})
 		}
 	}
+	target := l.maxKeys - max(1, l.maxKeys/10)
+	if excess := len(entries) - target; excess > 0 {
+		slices.SortFunc(candidates, func(a, b candidate) int {
+			if order := cmp.Compare(a.count, b.count); order != 0 {
+				return order
+			}
+			return a.last.Compare(b.last)
+		})
+		for _, evicted := range candidates[:min(excess, len(candidates))] {
+			delete(entries, evicted.key)
+		}
+	}
+	if len(entries) < l.maxKeys {
+		return true
+	}
+	*fullUntil = now.Add(limiterFullRetry)
+	return false
 }
 
 func (l *loginLimiter) size() (ips, accounts int) {
