@@ -59,6 +59,9 @@ export type SessionUser = {
   firstName?: string;
   lastName?: string;
   nickname?: string;
+  /** Present in administrator user listings; disabled accounts cannot sign in. */
+  disabled?: boolean;
+  disabledAt?: string | null;
 };
 
 export type AdminSettings = {
@@ -70,7 +73,10 @@ export type AdminSettings = {
 export type FeedRequest = {
   id: number;
   url: string;
+  /** First requester; kept for compatibility with older responses. */
   requestedBy: string;
+  /** Every requester's e-mail address in request order. */
+  requesters?: string[];
   folderId: number | null;
   folderName: string | null;
   title: string;
@@ -197,11 +203,12 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(user),
   }),
-  updateUser: (id: number, update: { role?: UserRole; refreshIntervalMinutes?: number | null }) =>
+  updateUser: (id: number, update: { role?: UserRole; refreshIntervalMinutes?: number | null; disabled?: boolean }) =>
     request<SessionUser>(`/admin/users/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(update),
     }),
+  signOutUser: (id: number) => request<void>(`/admin/users/${id}/sign-out`, { method: 'POST' }),
   getFeedRequests: () => request<FeedRequest[]>('/admin/feed-requests'),
   approveFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
   rejectFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}`, { method: 'DELETE' }),

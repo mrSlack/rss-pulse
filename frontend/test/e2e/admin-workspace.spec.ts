@@ -5,6 +5,8 @@ type TestUser = {
   email: string;
   role: 'Administrator' | 'Reader';
   refreshIntervalMinutes: number | null;
+  disabled?: boolean;
+  disabledAt?: string | null;
 };
 
 async function expectNoHorizontalOverflow(page: import('@playwright/test').Page) {
@@ -62,11 +64,13 @@ test('admin workspace visits every section without API, script, or layout errors
   };
   let users: TestUser[] = [
     currentUser,
-    { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null },
+    { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null, disabled: false, disabledAt: null },
+    { id: 4, email: 'former@example.com', role: 'Reader', refreshIntervalMinutes: 30, disabled: true, disabledAt: '2026-10-30T08:00:00Z' },
   ];
+  const signedOutUsers: number[] = [];
   let feedRequests = [
-    { id: 11, url: 'https://one.example/rss', requestedBy: 'reader@example.com', folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z' },
-    { id: 12, url: 'https://two.example/rss', requestedBy: 'reader@example.com', folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:01:00Z' },
+    { id: 11, url: 'https://one.example/rss', requestedBy: 'reader@example.com', requesters: ['reader@example.com', 'former@example.com'], folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z' },
+    { id: 12, url: 'https://two.example/rss', requestedBy: 'reader@example.com', requesters: ['reader@example.com'], folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:01:00Z' },
   ];
   let stopWords = [{ id: 21, term: 'pornography', createdAt: '2026-10-26T10:00:00Z' }];
   let blockedArticles = [{
@@ -148,10 +152,17 @@ test('admin workspace visits every section without API, script, or layout errors
     if (updateUser && method === 'PATCH') {
       const body = route.request().postDataJSON() as Partial<TestUser>;
       const id = Number(updateUser[1]);
-      users = users.map((user) => user.id === id ? { ...user, ...body } : user);
+      const disabledAt = body.disabled === undefined ? {} : { disabledAt: body.disabled ? '2026-11-01T09:00:00Z' : null };
+      users = users.map((user) => user.id === id ? { ...user, ...body, ...disabledAt } : user);
       const user = users.find((item) => item.id === id);
       if (!user) return json({ code: 'user.not_found', error: 'The user was not found.' }, 404);
       return json(user);
+    }
+
+    const signOutUser = path.match(/^\/api\/admin\/users\/(\d+)\/sign-out$/);
+    if (signOutUser && method === 'POST') {
+      signedOutUsers.push(Number(signOutUser[1]));
+      return route.fulfill({ status: 204 });
     }
 
     unexpectedAPIRequests.push(`${method} ${path}`);
@@ -168,6 +179,9 @@ test('admin workspace visits every section without API, script, or layout errors
   await page.getByRole('button', { name: 'Feed requests' }).click();
   await expect(page.getByRole('heading', { name: 'Feed requests' })).toBeVisible();
   await expect(page.getByText('https://one.example/rss')).toBeVisible();
+  const requestsLayout = await page.addStyleTag({ content: '.admin-workspace { grid-template-columns: minmax(0, 1fr) !important; } .admin-subnav { display: none !important; }' });
+  await expect(page.locator('section[aria-labelledby="feed-requests-title"]')).toHaveScreenshot('feed-requests-requesters.png');
+  await requestsLayout.evaluate((style) => style.parentNode?.removeChild(style));
   await page.locator('.admin-table tbody tr').filter({ hasText: 'https://one.example/rss' }).getByRole('button', { name: 'Approve' }).click();
   await expect(page.getByText('https://one.example/rss')).toHaveCount(0);
   await page.locator('.admin-table tbody tr').filter({ hasText: 'https://two.example/rss' }).getByRole('button', { name: 'Reject' }).click();
@@ -206,6 +220,23 @@ test('admin workspace visits every section without API, script, or layout errors
   await page.getByLabel('Role for reader@example.com').selectOption('Administrator');
   await page.getByLabel('Interval for reader@example.com').selectOption('60');
   await expect(page.getByText('User interval saved.')).toBeVisible();
+  await expect(page.getByLabel('Role for admin@example.com')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Disable admin@example.com' })).toHaveCount(0);
+  const usersLayout = await page.addStyleTag({ content: '.admin-workspace { grid-template-columns: minmax(0, 1fr) !important; } .admin-subnav { display: none !important; } .admin-notice { display: none !important; }' });
+  await expect(page.locator('section[aria-labelledby="users-title"]')).toHaveScreenshot('user-account-controls.png');
+  await usersLayout.evaluate((style) => style.parentNode?.removeChild(style));
+  const readerRow = page.locator('.admin-table tbody tr').filter({ hasText: 'reader@example.com' });
+  await readerRow.getByRole('button', { name: 'Disable reader@example.com' }).click();
+  await expect(readerRow.getByText(/They are signed out immediately/)).toBeVisible();
+  await readerRow.getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('Account disabled and signed out.')).toBeVisible();
+  await expect(readerRow.getByText('Disabled', { exact: true })).toBeVisible();
+  await page.locator('.admin-table tbody tr').filter({ hasText: 'former@example.com' }).getByRole('button', { name: 'Enable former@example.com' }).click();
+  await expect(page.getByText('Account enabled.')).toBeVisible();
+  await page.getByRole('button', { name: 'Sign out new@example.com everywhere' }).click();
+  await page.locator('.admin-table tbody tr').filter({ hasText: 'new@example.com' }).getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('User signed out on every device.')).toBeVisible();
+  expect(signedOutUsers).toEqual([3]);
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole('button', { name: 'Settings' }).click();

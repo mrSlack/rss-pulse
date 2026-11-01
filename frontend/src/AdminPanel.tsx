@@ -1,17 +1,29 @@
 import { useTranslation } from 'react-i18next';
 import './i18n';
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, stripMarkup, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type StopWord, type UserRole } from './api';
+import { api, stripMarkup, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type SessionUser, type StopWord, type UserRole } from './api';
 import { ErrorToast } from './ErrorToast';
 
 const intervalChoices = [5, 10, 15, 30, 60, 120, 360, 720, 1440];
 type AdminSection = 'settings' | 'feedRequests' | 'filter' | 'blocked' | 'users';
+type AccountAction = { userID: number; action: 'disable' | 'signOut' };
+
+type AdminPanelProps = {
+  /** The signed-in administrator; their own row cannot be disabled or change role. */
+  currentUserId?: number;
+  /** Called after the administrator signed themselves out everywhere. */
+  onSignedOut?: () => void;
+};
+
+function requestersOf(request: FeedRequest): string[] {
+  return request.requesters?.length ? request.requesters : [request.requestedBy];
+}
 
 function intervalOptions(current: number | null) {
   return [...new Set([...intervalChoices, ...(current === null ? [] : [current])])].sort((a, b) => a - b);
 }
 
-export function AdminPanel() {
+export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {}) {
   const { t, i18n } = useTranslation();
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [activeSection, setActiveSection] = useState<AdminSection>('settings');
@@ -29,6 +41,8 @@ export function AdminPanel() {
   const [notice, setNotice] = useState('');
   const [stopWordInput, setStopWordInput] = useState('');
   const [moderatingIDs, setModeratingIDs] = useState<number[]>([]);
+  const [confirmingAccount, setConfirmingAccount] = useState<AccountAction | null>(null);
+  const [accountBusyID, setAccountBusyID] = useState<number | null>(null);
 
   const sections: { id: AdminSection; label: string; icon: string; count?: number }[] = [
     { id: 'settings', label: t('admin.sectionSettings'), icon: '◷' },
@@ -198,6 +212,65 @@ export function AdminPanel() {
     }
   }
 
+  async function setAccountDisabled(user: SessionUser, disabled: boolean) {
+    if (!settings) return;
+    setError('');
+    setNotice('');
+    setConfirmingAccount(null);
+    setAccountBusyID(user.id);
+    try {
+      const updated = await api.updateUser(user.id, { disabled });
+      setSettings((current) => current && { ...current, users: current.users.map((item) => item.id === user.id ? updated : item) });
+      setNotice(t(disabled ? 'admin.accountDisabledNotice' : 'admin.accountEnabledNotice'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('errors.accountStatus'));
+      await loadSettings().catch(() => undefined);
+    } finally {
+      setAccountBusyID(null);
+    }
+  }
+
+  async function signOutEverywhere(user: SessionUser) {
+    setError('');
+    setNotice('');
+    setConfirmingAccount(null);
+    setAccountBusyID(user.id);
+    try {
+      await api.signOutUser(user.id);
+      if (user.id === currentUserId) {
+        onSignedOut?.();
+        return;
+      }
+      setNotice(t('admin.signedOutNotice'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t('errors.userSignOut'));
+    } finally {
+      setAccountBusyID(null);
+    }
+  }
+
+  function accountActions(user: SessionUser) {
+    const isSelf = user.id === currentUserId;
+    const busy = accountBusyID === user.id;
+    if (confirmingAccount?.userID === user.id) {
+      const disabling = confirmingAccount.action === 'disable';
+      const prompt = disabling ? t('admin.confirmDisable', { email: user.email }) : t(isSelf ? 'admin.confirmSignOutSelf' : 'admin.confirmSignOut', { email: user.email });
+      return <div className="admin-account-confirm" role="group" aria-label={prompt}>
+        <p>{prompt}</p>
+        <div className="admin-request-actions">
+          <button className="primary-button" type="button" disabled={busy} onClick={() => void (disabling ? setAccountDisabled(user, true) : signOutEverywhere(user))}>{t('admin.confirmAction')}</button>
+          <button className="secondary-button" type="button" onClick={() => setConfirmingAccount(null)}>{t('admin.cancelAction')}</button>
+        </div>
+      </div>;
+    }
+    return <div className="admin-account-actions">
+      {!isSelf && (user.disabled
+        ? <button className="secondary-button" type="button" disabled={busy} aria-label={t('admin.enableAccountFor', { email: user.email })} onClick={() => void setAccountDisabled(user, false)}>{t('admin.enableAccount')}</button>
+        : <button className="secondary-button admin-danger-button" type="button" disabled={busy} aria-label={t('admin.disableAccountFor', { email: user.email })} onClick={() => setConfirmingAccount({ userID: user.id, action: 'disable' })}>{t('admin.disableAccount')}</button>)}
+      {!user.disabled && <button className="secondary-button" type="button" disabled={busy} aria-label={t('admin.signOutEverywhereFor', { email: user.email })} onClick={() => setConfirmingAccount({ userID: user.id, action: 'signOut' })}>{t('admin.signOutEverywhere')}</button>}
+    </div>;
+  }
+
   return (
     <section className="admin-panel" aria-labelledby="admin-title">
       <header className="admin-heading">
@@ -254,10 +327,10 @@ export function AdminPanel() {
 
             {activeSection === 'feedRequests' && <section className="admin-card" aria-labelledby="feed-requests-title">
               <div className="admin-card-heading"><span className="admin-card-icon users-icon">⌁</span><div><h2 id="feed-requests-title">{t('admin.feedRequests')}</h2><p>{t('admin.feedRequestsDescription')}</p></div><span className="admin-user-count">{feedRequests.length}</span></div>
-              {feedRequests.length === 0 ? <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p> : <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
+              {feedRequests.length === 0 ? <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p> : <div className="admin-table-wrap"><table className="admin-table admin-requests-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
                 {feedRequests.map((request) => <tr key={request.id}>
                   <td><a href={request.url} target="_blank" rel="noreferrer">{request.url}</a></td>
-                  <td>{request.requestedBy}</td>
+                  <td><ul className="admin-requesters">{requestersOf(request).map((requester) => <li key={requester}>{requester}</li>)}</ul></td>
                   <td>{request.folderName || t('folder.none')}</td>
                   <td><div className="admin-request-actions"><button className="primary-button" type="button" onClick={() => void decideFeedRequest(request, true)}>{t('admin.approveFeed')}</button><button className="secondary-button" type="button" onClick={() => void decideFeedRequest(request, false)}>{t('admin.rejectFeed')}</button></div></td>
                 </tr>)}
@@ -310,11 +383,15 @@ export function AdminPanel() {
 
               <section className="admin-card" aria-labelledby="users-title">
                 <div className="admin-card-heading"><span className="admin-card-icon users-icon">◎</span><div><h2 id="users-title">{t('admin.users')}</h2><p>{t('admin.usersDescription')}</p></div><span className="admin-user-count" aria-label={t('admin.userCount', { count: settings?.users.length || 0 })}>{settings?.users.length || 0}</span></div>
-                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.userColumn')}</th><th scope="col">{t('admin.roleColumn')}</th><th scope="col">{t('admin.intervalColumn')}</th></tr></thead><tbody>
-                  {settings?.users.map((user) => <tr key={user.id}>
-                    <td><span className="admin-user-avatar">{user.email.slice(0, 1).toUpperCase()}</span><span className="admin-user-email">{user.email}</span></td>
-                    <td><label className="visually-hidden" htmlFor={`role-${user.id}`}>{t('admin.roleFor', { email: user.email })}</label><select id={`role-${user.id}`} className="admin-select table-select" value={user.role} onChange={(event) => void updateRole(user.id, event.target.value as UserRole)}><option value="Reader">{t('roles.reader')}</option><option value="Administrator">{t('roles.administrator')}</option></select></td>
+                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th scope="col">{t('admin.userColumn')}</th><th scope="col">{t('admin.roleColumn')}</th><th scope="col">{t('admin.intervalColumn')}</th><th scope="col">{t('admin.accountActionsColumn')}</th></tr></thead><tbody>
+                  {settings?.users.map((user) => <tr key={user.id} className={user.disabled ? 'admin-user-disabled' : undefined}>
+                    <td><span className="admin-user-avatar">{user.email.slice(0, 1).toUpperCase()}</span><span className="admin-user-identity"><span className="admin-user-email">{user.email}</span><span className="admin-user-badges">
+                      <span className={`admin-account-status ${user.disabled ? 'disabled' : 'active'}`}>{t(user.disabled ? 'admin.accountDisabled' : 'admin.accountActive')}</span>
+                      {user.id === currentUserId && <span className="admin-account-self">{t('admin.currentAccount')}</span>}
+                    </span></span></td>
+                    <td><label className="visually-hidden" htmlFor={`role-${user.id}`}>{t('admin.roleFor', { email: user.email })}</label><select id={`role-${user.id}`} className="admin-select table-select" value={user.role} disabled={user.id === currentUserId} title={user.id === currentUserId ? t('admin.ownRoleLocked') : undefined} onChange={(event) => void updateRole(user.id, event.target.value as UserRole)}><option value="Reader">{t('roles.reader')}</option><option value="Administrator">{t('roles.administrator')}</option></select></td>
                     <td><label className="visually-hidden" htmlFor={`interval-${user.id}`}>{t('admin.intervalFor', { email: user.email })}</label><select id={`interval-${user.id}`} className="admin-select table-select" value={user.refreshIntervalMinutes === null ? '' : String(user.refreshIntervalMinutes)} onChange={(event) => void updateUserInterval(user.id, event.target.value)}><option value="">{t('admin.defaultInterval', { minutes: settings.refreshIntervalMinutes })}</option>{intervalOptions(user.refreshIntervalMinutes).map((value) => <option key={value} value={value}>{t('admin.minutes', { count: value })}</option>)}</select></td>
+                    <td>{accountActions(user)}</td>
                   </tr>)}
                 </tbody></table></div>
                 <p className="admin-schedule-notice">{t('admin.scheduleNotice')}</p>

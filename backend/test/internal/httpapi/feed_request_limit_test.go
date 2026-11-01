@@ -58,7 +58,7 @@ func TestPendingFeedRequestsAreCappedPerUser(t *testing.T) {
 		t.Fatalf("subscribing to an approved source at the request cap = %d %s, want 201", approved.Code, approved.Body.String())
 	}
 	var pending int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_requests WHERE requested_by=$1`, readerID).Scan(&pending); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_request_requesters WHERE user_id=$1`, readerID).Scan(&pending); err != nil {
 		t.Fatal(err)
 	}
 	if pending != store.MaxPendingFeedRequestsPerUser {

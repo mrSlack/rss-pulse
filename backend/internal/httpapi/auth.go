@@ -118,6 +118,11 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.loginLimiter.succeed(attempt)
+	// Only reveal the disabled state after a correct password, and never create a session.
+	if user.Disabled {
+		writeError(w, http.StatusForbidden, "auth.account_disabled", "This account has been disabled. Contact an administrator.")
+		return
+	}
 	token, err := auth.NewSessionToken()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "auth.session_create_failed", "A session could not be created.")
@@ -139,8 +144,12 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	h.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {

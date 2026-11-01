@@ -541,15 +541,19 @@ function App() {
     }
   }
 
+  function resetSignedOutSession() {
+    setSessionUser(null);
+    setAdminView(false);
+    setFeeds([]);
+    setFolders([]);
+    setArticles([]);
+    setSelectedId(null);
+  }
+
   async function signOut() {
     try {
       await api.logout();
-      setSessionUser(null);
-      setAdminView(false);
-      setFeeds([]);
-      setFolders([]);
-      setArticles([]);
-      setSelectedId(null);
+      resetSignedOutSession();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('errors.signOut'));
     }
@@ -621,7 +625,7 @@ function App() {
         </header>
 
         <section className="content-area">
-          {adminView ? <AdminPanel /> : <>
+          {adminView ? <AdminPanel currentUserId={sessionUser.id} onSignedOut={resetSignedOutSession} /> : <>
           <div className="page-heading">
             <div>
               <h1>{pageTitle}</h1>
