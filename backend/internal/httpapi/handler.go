@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -129,10 +128,6 @@ func optionalID(raw string) (*int64, bool) {
 		return nil, false
 	}
 	return &id, true
-}
-
-func timeBoundContext(r *http.Request) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(r.Context(), 15*time.Second)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

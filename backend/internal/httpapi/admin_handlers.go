@@ -188,7 +188,7 @@ func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.control != nil {
-		h.control.Request(true)
+		h.control.RequestCycle()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

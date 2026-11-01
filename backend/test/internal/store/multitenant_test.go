@@ -123,9 +123,15 @@ func TestSourceLeasesFenceConcurrentAndStaleRefreshesAndHonorTTL(t *testing.T) {
 	if lastSuccess != nil {
 		t.Fatalf("failed fetch advanced TTL to %v", lastSuccess)
 	}
+	if _, claimed, err := store.New(pool).ClaimSource(ctx, sourceID, nil); err != nil || claimed {
+		t.Fatalf("claim right after failed fetch = (%v, %v), want failure backoff", claimed, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE feed_sources SET last_checked_at=NOW()-INTERVAL '1 day' WHERE id=$1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
 	newLease, claimed, err = store.New(pool).ClaimSource(ctx, sourceID, nil)
 	if err != nil || !claimed {
-		t.Fatalf("claim after failed fetch = (%v, %v), want retry lease", newLease, err)
+		t.Fatalf("claim after the failure backoff = (%v, %v), want retry lease", newLease, err)
 	}
 	if err := store.New(pool).CommitSourceRefresh(ctx, newLease, document); err != nil {
 		t.Fatalf("valid lease commit: %v", err)
