@@ -1,7 +1,6 @@
-import { useCallback, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { errorMessage, type Feed, type Folder, type SessionUser } from './api';
-import { AdminPanel } from './AdminPanel';
 import { Icon } from './AppChrome';
 import { ArticleListPane } from './ArticleListPane';
 import { ErrorToast } from './ErrorToast';
@@ -15,6 +14,9 @@ import { ReaderDialogs, type ReaderDialog } from './ReaderDialogs';
 import { ReaderPane } from './ReaderPane';
 import type { Theme } from './theme';
 import { Topbar, type TopbarHandle } from './Topbar';
+
+// Only administrators open the admin workspace; load it on demand.
+const AdminPanel = lazy(() => import('./AdminPanel').then((module) => ({ default: module.AdminPanel })));
 
 type ReaderProps = {
   user: SessionUser;
@@ -174,7 +176,9 @@ export function Reader({ user, theme, onToggleTheme, onUserUpdated, onSignOut, o
         />
 
         <section className="content-area">
-          {view.adminView ? <AdminPanel currentUserId={user.id} onSignedOut={onSignedOut} /> : <>
+          {view.adminView ? <Suspense fallback={<div className="list-loading" aria-busy="true"><span className="loader" />{t('states.loading')}</div>}>
+            <AdminPanel currentUserId={user.id} onSignedOut={onSignedOut} />
+          </Suspense> : <>
           <div className="page-heading">
             <div>
               <h1>{pageTitle}</h1>

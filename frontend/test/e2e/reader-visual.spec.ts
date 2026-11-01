@@ -39,7 +39,18 @@ function articlePage(url: URL, articleCount: number, readNumbers: Set<number>) {
 async function prepareReader(page: Page, options: MockOptions = {}) {
   const articleCount = options.articleCount ?? 3;
   const readNumbers = new Set<number>([2]);
-  let feeds: Array<{ id: number; title: string; url: string; folderId: number | null; folderName: string | null; unreadCount: number; lastCheckedAt: string; lastError: string | null }> = options.feedLimitScenario ? [] : [{
+  // The limit scenario starts one below the 100-feed limit; adding each feed
+  // through the dialog would take most of the test timeout.
+  let feeds: Array<{ id: number; title: string; url: string; folderId: number | null; folderName: string | null; unreadCount: number; lastCheckedAt: string; lastError: string | null }> = options.feedLimitScenario ? Array.from({ length: 99 }, (_, index) => ({
+    id: 99 - index,
+    title: `Limit test feed ${99 - index}`,
+    url: `https://example.com/limit-test/${99 - index}.xml`,
+    folderId: null,
+    folderName: null,
+    unreadCount: 0,
+    lastCheckedAt: '2026-04-15T11:55:00Z',
+    lastError: null,
+  })) : [{
     id: 1,
     title: 'The Daily Signal',
     url: 'https://example.com/feed.xml',
@@ -211,7 +222,6 @@ test('the 724px add-source dialog and folder picker fit the viewport', async ({ 
 });
 
 test('adding a feed at the subscription limit shows the limit error', async ({ page }) => {
-  test.setTimeout(120_000);
   await page.setViewportSize({ width: 1280, height: 900 });
   await prepareReader(page, { articleCount: 0, feedLimitScenario: true });
   let submittedCount = 0;
@@ -221,25 +231,27 @@ test('adding a feed at the subscription limit shows the limit error', async ({ p
     }
   });
   await page.goto('/');
-  const addFeedButton = page.getByRole('button', { name: 'Add feed' });
-  for (let index = 1; index <= 100; index += 1) {
-    await addFeedButton.click();
-    const dialog = page.getByRole('dialog', { name: 'Add source' });
-    await dialog.getByLabel('RSS feed URL').fill(`https://example.com/limit-test/${index}.xml`);
-    await dialog.getByRole('button', { name: 'Subscribe' }).click();
-    await expect(dialog).toBeHidden();
-  }
-  await expect(page.locator('.unfiled-folder .tree-feed-row .feed-name')).toHaveCount(100);
-  expect(submittedCount).toBe(100);
+  const feedNames = page.locator('.unfiled-folder .tree-feed-row .feed-name');
+  await expect(feedNames).toHaveCount(99);
 
+  // The 100th feed is still accepted.
+  const addFeedButton = page.getByRole('button', { name: 'Add feed' });
   await addFeedButton.click();
   const dialog = page.getByRole('dialog', { name: 'Add source' });
+  await dialog.getByLabel('RSS feed URL').fill('https://example.com/limit-test/100.xml');
+  await dialog.getByRole('button', { name: 'Subscribe' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(feedNames).toHaveCount(100);
+  expect(submittedCount).toBe(1);
+
+  // The 101st is refused, and the dialog stays open with the server's error.
+  await addFeedButton.click();
   await dialog.getByLabel('RSS feed URL').fill('https://example.com/limit-test/101.xml');
   await dialog.getByRole('button', { name: 'Subscribe' }).click();
   await expect(page.locator('.error-toast-message')).toHaveText('You can subscribe to up to 100 feeds.');
   await expect(dialog).toBeVisible();
-  expect(submittedCount).toBe(101);
-  await expect(page.locator('.unfiled-folder .tree-feed-row .feed-name')).toHaveCount(100);
+  expect(submittedCount).toBe(2);
+  await expect(feedNames).toHaveCount(100);
 });
 
 test('feed sources are nested under folders and can be collapsed', async ({ page }) => {

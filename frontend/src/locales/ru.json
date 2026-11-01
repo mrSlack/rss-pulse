@@ -445,5 +445,9 @@
   "apiErrors.opml.too_large": "OPML-файл не должен превышать 1 МиБ.",
   "apiErrors.opml.content_type_invalid": "Загрузите OPML-файл.",
   "apiErrors.opml.import_failed": "Не удалось импортировать подписки.",
-  "apiErrors.opml.export_failed": "Не удалось экспортировать подписки."
+  "apiErrors.opml.export_failed": "Не удалось экспортировать подписки.",
+  "offline.reader": "Нет подключения к сети. Загруженные ранее статьи по-прежнему доступны.",
+  "offline.signedOut": "Нет подключения к сети.",
+  "update.available": "Доступна новая версия Pulse.",
+  "update.reload": "Обновить"
 }
