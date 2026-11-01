@@ -24,6 +24,9 @@ const iconShapes: Record<string, ReactNode> = {
   logout: <><path d="M10 17l5-5-5-5M15 12H3" /><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6" /></>,
   edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" /></>,
   chevron: <path d="m7 10 5 5 5-5" />,
+  keyboard: <><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></>,
+  upload: <><path d="M12 15V4M7 9l5-5 5 5" /><path d="M5 15v4h14v-4" /></>,
+  download: <><path d="M12 4v11M7 10l5 5 5-5" /><path d="M5 15v4h14v-4" /></>,
 };
 
 export function Icon({ name, size = 18, className = '' }: { name: string; size?: number; className?: string }) {
@@ -40,6 +43,8 @@ export function ProfileMenu({
   adminActive,
   onAdmin,
   onEditProfile,
+  onImportSubscriptions,
+  onShowShortcuts,
   onSignOut,
 }: {
   user: SessionUser;
@@ -47,6 +52,8 @@ export function ProfileMenu({
   adminActive: boolean;
   onAdmin: () => void;
   onEditProfile: () => void;
+  onImportSubscriptions?: () => void;
+  onShowShortcuts?: () => void;
   onSignOut: () => void;
 }) {
   const { t } = useTranslation();
@@ -98,6 +105,15 @@ export function ProfileMenu({
         <button className="profile-menu-item" type="button" onClick={() => runAction(onEditProfile)}>
           <Icon name="user" size={17} /><span>{t('profile.edit')}</span>
         </button>
+        <a className="profile-menu-item" href="/api/opml" download="pulse-subscriptions.opml" onClick={() => { if (menuRef.current) menuRef.current.open = false; }}>
+          <Icon name="download" size={17} /><span>{t('opml.export')}</span>
+        </a>
+        {onImportSubscriptions && <button className="profile-menu-item" type="button" onClick={() => runAction(onImportSubscriptions)}>
+          <Icon name="upload" size={17} /><span>{t('opml.import')}</span>
+        </button>}
+        {onShowShortcuts && <button className="profile-menu-item" type="button" onClick={() => runAction(onShowShortcuts)}>
+          <Icon name="keyboard" size={17} /><span>{t('shortcuts.title')}</span>
+        </button>}
         <div className="profile-dropdown-separator" />
         <button className="profile-menu-item profile-menu-signout" type="button" onClick={() => runAction(onSignOut)}>
           <Icon name="logout" size={17} /><span>{t('profile.signOut')}</span>

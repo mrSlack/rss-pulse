@@ -17,7 +17,12 @@ test('reader and administrator sign in and complete their main workflows', async
       httpErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
     }
   });
-  page.on('requestfailed', (request) => failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`));
+  page.on('requestfailed', (request) => {
+    // Loads are cancelled on purpose when a view changes or unmounts (React
+    // StrictMode mounts every effect twice in development).
+    if (request.failure()?.errorText === 'net::ERR_ABORTED') return;
+    failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`);
+  });
 
   async function signIn(account: typeof e2eAccounts.admin | typeof e2eAccounts.reader) {
     await page.getByLabel('Email').fill(account.email);

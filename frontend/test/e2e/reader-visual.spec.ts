@@ -410,3 +410,95 @@ test('the unread view keeps every unread article when some are read between page
   expect(listRequests.map((url) => url.searchParams.get('before'))).toEqual([null, 'c21', 'c41']);
   expect(listRequests.every((url) => !url.searchParams.has('offset'))).toBe(true);
 });
+
+test('mark all as read marks the current view up to the newest loaded article', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page);
+  let markBody: unknown;
+  await page.route('**/api/articles/mark-read', async (route) => {
+    markBody = route.request().postDataJSON();
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ marked: 2 }) });
+  });
+  const articleRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.endsWith('/articles')) articleRequests.push(request.url());
+  });
+  await page.goto('/');
+  await expect(page.locator('.article-card.unread')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Mark all as read' }).click();
+  await expect(page.locator('.article-card.unread')).toHaveCount(0);
+  await expect(page.locator('.article-card')).toHaveCount(3);
+  expect(markBody).toEqual({ filter: 'all', upTo: '2026-04-15T11:59:00Z' });
+  expect(articleRequests).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Mark all as read' })).toBeDisabled();
+});
+
+test('keyboard shortcuts move through articles and open the help dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page);
+  await page.goto('/');
+  await expect(page.locator('.article-card')).toHaveCount(3);
+
+  await page.keyboard.press('j');
+  const reader = page.getByRole('dialog', { name: 'Article' });
+  await expect(reader.getByRole('heading', { name: 'A considered headline for article 1' })).toBeVisible();
+  await page.keyboard.press('j');
+  await expect(reader.getByRole('heading', { name: 'A considered headline for article 2' })).toBeVisible();
+  await page.keyboard.press('k');
+  await expect(reader.getByRole('heading', { name: 'A considered headline for article 1' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(reader).toBeHidden();
+
+  await page.keyboard.press('/');
+  const search = page.getByRole('textbox', { name: 'Search articles' });
+  await expect(search).toBeFocused();
+  await page.keyboard.type('jk');
+  await expect(search).toHaveValue('jk');
+  await expect(reader).toBeHidden();
+  await search.fill('');
+  await search.blur();
+
+  await page.keyboard.press('?');
+  const help = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+  await expect(help).toBeVisible();
+  await expect(help.getByRole('button', { name: 'Close' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(help.getByRole('button', { name: 'Close' })).toBeFocused();
+  await expect(page).toHaveScreenshot('keyboard-shortcuts.png', { fullPage: true });
+  await page.keyboard.press('j');
+  await expect(reader).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect(help).toBeHidden();
+});
+
+test('subscriptions can be exported and imported as OPML', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page);
+  let importRequest: { contentType: string | undefined; body: string | null } | undefined;
+  await page.route('**/api/opml', async (route) => {
+    importRequest = { contentType: route.request().headers()['content-type'], body: route.request().postData() };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ subscribed: 1, requested: 2, skipped: 1, failed: [{ url: 'not a url', reason: 'feed.url_invalid' }] }),
+    });
+  });
+  await page.goto('/');
+  await page.locator('.profile-menu-topbar > summary').click();
+  const menu = page.locator('.profile-menu-topbar .profile-dropdown');
+  await expect(menu.getByRole('link', { name: 'Export subscriptions' })).toHaveAttribute('href', '/api/opml');
+  await menu.getByRole('button', { name: 'Import subscriptions' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Import subscriptions' });
+  const opmlDocument = '<?xml version="1.0"?><opml version="2.0"><body><outline text="News"><outline text="Feed" xmlUrl="https://example.org/rss"/></outline></body></opml>';
+  await dialog.getByLabel('OPML file').setInputFiles({ name: 'feeds.opml', mimeType: 'text/x-opml', buffer: Buffer.from(opmlDocument) });
+  await dialog.getByRole('button', { name: 'Import' }).click();
+
+  const summary = dialog.getByRole('status');
+  await expect(summary).toContainText('1 feed added to your library.');
+  await expect(summary).toContainText('2 feeds sent for administrator approval.');
+  await expect(summary).toContainText('1 feed skipped');
+  await expect(summary).toContainText('not a url — Enter a valid HTTP or HTTPS feed URL.');
+  expect(importRequest).toEqual({ contentType: 'text/x-opml', body: opmlDocument });
+});
