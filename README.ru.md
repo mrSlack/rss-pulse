@@ -242,6 +242,46 @@ API пишет структурированные журналы (Go `log/slog`)
 
 `GET /api/health/live` сообщает, что процесс API работает, не обращаясь к базе. `GET /api/health/ready` дополнительно проверяет базу (тайм-аут 2 секунды) и отвечает `503`, если она недоступна; health checks в Compose используют этот адрес. `GET /api/health` остаётся псевдонимом проверки готовности. Метрики Prometheus API пока не экспортирует.
 
+### Обслуживание базы данных и медленные запросы
+
+Открыть `psql` в контейнере production-базы:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Размеры таблиц и индексов, «мёртвые» строки и время последнего VACUUM:
+
+```sql
+SELECT relname,
+       pg_size_pretty(pg_table_size(relid))          AS table_size,
+       pg_size_pretty(pg_indexes_size(relid))        AS index_size,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+       n_live_tup, n_dead_tup, last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(relid) DESC
+LIMIT 10;
+```
+
+Autovacuum включён по умолчанию, и в обычной работе его достаточно: удалённые и изменённые строки оставляют в файле таблицы свободное место, которое занимают новые статьи. Фоновое обновление поиска один раз перезаписывает каждую статью, поэтому `articles` вырастает почти на размер своих данных (в тесте с 1,2 ГБ до 1,7 ГБ для 500 000 статей). После этого оно само выполняет `VACUUM (ANALYZE) articles` (там около 10 секунд, без блокировки чтения и записи): место становится доступным для повторного использования, но размер файла не уменьшается. Ручной `VACUUM (ANALYZE, VERBOSE) articles;` всегда безопасен при работающем Pulse. Возвращать место на диске стоит, только если его мало: `VACUUM (FULL, ANALYZE) articles;` перезаписывает таблицу, до завершения блокирует любое чтение и запись в неё (в тесте 2 минуты 13 секунд для 500 000 статей) и требует свободного места на полную копию. Поэтому сначала сделайте резервную копию, остановите `web` и `api` (`docker compose --env-file .env.production -f compose.production.yml stop web api`), выполните команду и снова запустите сервисы (`... up -d --wait`). `pg_repack` умеет делать это без остановки, но не входит в официальный образ PostgreSQL. Подробности — в разделе «Database maintenance» файла `docs/PROJECT.md`.
+
+Production-база собирает статистику запросов через `pg_stat_statements`, записывает в журнал операторы, выполняющиеся не меньше `DB_LOG_MIN_DURATION_MS` миллисекунд (`.env.production`, по умолчанию 500; `-1` отключает, `0` записывает все; значения параметров никогда не записываются), и измеряет время ввода-вывода (`track_io_timing`). Это аргументы запуска PostgreSQL в `compose.production.yml`: первое обновление, которое их добавляет, и каждое изменение `DB_LOG_MIN_DURATION_MS` пересоздают контейнер `db`, что прерывает доступ к базе на несколько секунд; `scripts/update-production.sh` делает это через `up -d`. Операторы с наибольшим суммарным временем (для отдельных медленных — сортировка по `mean_exec_time`):
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+SELECT calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 2)  AS mean_ms,
+       left(regexp_replace(query, '\s+', ' ', 'g'), 120) AS query
+FROM pg_stat_statements
+WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+ORDER BY total_exec_time DESC
+LIMIT 15;
+```
+
+`SELECT pg_stat_statements_reset();` начинает новый период измерения. Медленные операторы в журнале: `docker compose --env-file .env.production -f compose.production.yml logs db | grep 'duration:'`. См. раздел «Slow-query visibility» в `docs/PROJECT.md`.
+
 ### Остановка
 
 Остановка локальных сервисов:

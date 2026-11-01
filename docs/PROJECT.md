@@ -204,7 +204,7 @@ Invalid retention values stop the API at startup.
 Measurements on a seeded dataset (500,000 articles, 50 users) and the procedure to repeat them are in [`2026-11-01-performance-baseline.md`](2026-11-01-performance-baseline.md).
 
 - **Search** matches a search key: the words of the lower-cased title and plain-text summary (tags replaced by spaces, entities decoded) joined by the letter `ǂ` (U+01C2) instead of spaces. Ingestion stores it in `articles.search_key`, computed in Go by `store.ArticleSearchKey` whenever it inserts or updates an article, including quarantine approvals. Queries are converted the same way in Go and matched with `LIKE '%…%'` (wildcards and the escape character escaped) against `COALESCE(search_key, pulse_article_search_key(title, summary))`: rows without a stored key (existing articles until the background backfill reaches them, or rows inserted by other code) are matched through `pulse_article_search_key` (migration `018_article_search_key.sql`), the same normalization in SQL, so search is correct at every stage of the upgrade. The trigram GIN index `articles_search_key_trgm_idx` (`pg_trgm`) covers that expression. pg_trgm extracts trigrams from runs of letters and digits; because the separator is a letter, the whole key is one run and the index also records the trigrams that span word boundaries (`yǂc` and `ǂcl` for "energy climate"). With spaces, the index only knew which words an article contains, so a phrase of common words made every article containing all of its words a candidate (`energy climate` took 3.0 s on the seeded data and takes 0.7 s now; phrases with more varied word boundaries 0.07–0.2 s). `ǂ` in article text or in a query counts as whitespace, so it only ever marks a word boundary; the matching semantics are unchanged (see "Reader experience and interaction"). Queries whose key has no run of three letters or digits (counting `ǂ`) cannot use trigrams and are matched with `STRPOS`, which scans the user's visible articles. Searches are sent with `pgx.QueryExecModeCacheDescribe` so PostgreSQL plans each one for its actual pattern: a cached generic plan always read the trigram index and took seconds for patterns found in most articles, while a plan for the actual pattern scans the user's articles in those cases. The separator trick relies on the database's character classification treating `ǂ` (and Cyrillic or German letters) as letters, which the official image's `en_US.utf8` libc locale does; with a `C` ctype, search stays correct but phrases are not indexed better than single words. Go's `strings.ToLower` and PostgreSQL's `lower()` agree for Cyrillic and German under that collation; on the seeded 500,000 articles the SQL function produced exactly the Go key for every row. Ingestion overwrites a key filled by SQL whenever a refresh sees the article again. The index takes about 470 MB on the seeded data next to 760 MB of articles, and it adds work to every article insert.
-- **Search upgrade without downtime.** Filling the search key and building the index take minutes on a large database, so they run after the API has started, in `store.ArticleSearchUpgrade` (started by `cmd/api` once the server listens, retried a minute after a failure, stopped on shutdown): it fills `search_key` in batches of 1,000 articles in id order (each batch its own short statement; rows locked by another transaction are skipped and stay correct through the SQL fallback), builds `articles_search_key_trgm_idx` with `CREATE INDEX CONCURRENTLY` (after dropping an invalid index left by an interrupted build), runs `ANALYZE articles` (the planner needs statistics of the index expression), and records `018_article_search_key.sql:background` in `schema_migrations`, so later starts skip it. A session advisory lock per schema serializes concurrent runs. The API logs `article search upgrade started`, backfill progress every 30 seconds, and `article search upgrade completed`. Until then searches are correct but slower (about 3 s per search on 500,000 articles while the keys are filled, because every visible row is normalized in SQL). On the seeded 500,000 articles the whole step took about 3 minutes 45 seconds (see the performance baseline). The seed tool runs the same step before it returns.
+- **Search upgrade without downtime.** Filling the search key and building the index take minutes on a large database, so they run after the API has started, in `store.ArticleSearchUpgrade` (started by `cmd/api` once the server listens, retried a minute after a failure, stopped on shutdown): it fills `search_key` in batches of 1,000 articles in id order (each batch its own short statement; rows locked by another transaction are skipped and stay correct through the SQL fallback), builds `articles_search_key_trgm_idx` with `CREATE INDEX CONCURRENTLY` (after dropping an invalid index left by an interrupted build), runs `VACUUM (ANALYZE) articles` (the planner needs statistics of the index expression; the vacuum makes the row versions replaced by the backfill reusable and marks the pages all-visible for index-only scans, see "Database maintenance"), and records `018_article_search_key.sql:background` in `schema_migrations`, so later starts skip it. A session advisory lock per schema serializes concurrent runs. The API logs `article search upgrade started`, backfill progress every 30 seconds, and `article search upgrade completed`. Until then searches are correct but slower (about 3 s per search on 500,000 articles while the keys are filled, because every visible row is normalized in SQL). On the seeded 500,000 articles the whole step took about 3 minutes 45 seconds (see the performance baseline). The seed tool runs the same step before it returns.
 - **`pg_trgm`** ships with the official PostgreSQL images (contrib) and has been a trusted extension since PostgreSQL 13, so a database owner without superuser rights can create it; the migration needs the `CREATE` privilege on the database, which the owner has. The extension is installed in `public` and the index names the schema the extension actually lives in.
 - **Unread counters** (`ListFeedsForUser`, `ListFoldersForUser`, `UpdateFolderForUser`) compute a subscription's unread count as its source's article count minus the user's read states for that source. Migration `017_unread_counters.sql` makes both counts index-only: `articles_source_published_id_idx (feed_source_id, published_at DESC, id DESC)` replaces `articles_source_published_idx`, and `user_article_states_read_idx (user_id, article_id) WHERE is_read` holds only read states. The cost is proportional to the subscribed sources' article count and the user's read states, without sorting or touching article rows.
 - **Ingestion** runs a fixed number of statements per refresh (see "Feed refresh and concurrency").
@@ -282,3 +282,80 @@ Use the language-specific README guides for requirements, local startup, Docker 
 - [English operator guide](../README.md)
 - [German operator guide](../README.de.md)
 - [Russian operator guide](../README.ru.md)
+
+The production commands below open `psql` in the `db` container of `compose.production.yml`:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+### Database maintenance
+
+PostgreSQL's MVCC writes a new row version for every `UPDATE`; the old version stays in the table file until `VACUUM` marks its space reusable. A plain `VACUUM` never returns space to the operating system except empty pages at the end of the file, so the file keeps its largest size and later inserts and updates fill the free space. Autovacuum (enabled by default) vacuums and analyzes a table once about 20 % of its rows are dead, which suffices for normal operation: refreshes insert articles, retention deletes them in batches, and the freed space is reused.
+
+**After the search-key backfill.** The background search upgrade (see "Performance notes") writes a new version of every article. On the seeded 500,000 articles (measured on PostgreSQL 18.6 with default settings): the table without search keys took 639 MB after `VACUUM FULL`; after the backfill it took 1,699 MB (autovacuum ran once during the backfill, so part of the dead rows was reused; without it the table roughly doubles), while a compact table with keys takes 1,184 MB. The upgrade therefore ends with `VACUUM (ANALYZE) articles` (9.5 seconds on that data; it takes a `SHARE UPDATE EXCLUSIVE` lock, which does not block reads or writes and waits only for another vacuum, analyze, index build, or schema change on the table): the dead rows become reusable, the visibility map is complete again (index-only scans of the unread counters do not visit the table), and the planner has statistics for the search index. The file stays at its size; new articles fill the free space over time, so with a steady article inflow no further action is needed. Reclaim the space only when the disk is tight or the table will not grow back (for example after lowering `ARTICLE_RETENTION_DAYS`).
+
+Check table and index sizes, dead rows, and the last vacuum:
+
+```sql
+SELECT relname,
+       pg_size_pretty(pg_table_size(relid))          AS table_size,
+       pg_size_pretty(pg_indexes_size(relid))        AS index_size,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+       n_live_tup, n_dead_tup, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(relid) DESC
+LIMIT 10;
+
+SELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
+FROM pg_stat_user_indexes
+WHERE relname = 'articles'
+ORDER BY pg_relation_size(indexrelid) DESC;
+```
+
+A large `table_size` with a small `n_dead_tup` after a vacuum means free space inside the file, not a problem by itself. Run a manual vacuum when `n_dead_tup` stays high (autovacuum has not caught up) or after a bulk change:
+
+```sql
+VACUUM (ANALYZE, VERBOSE) articles;
+```
+
+It is safe while Pulse runs. To return the free space to the operating system:
+
+- **`VACUUM FULL`** rewrites the table and all its indexes into new files. It holds an `ACCESS EXCLUSIVE` lock for the whole run, which blocks every read and write of the table: article lists, search, unread counters, and refreshes stall until it finishes. On the seeded 500,000 articles it took 2 minutes 13 seconds and shrank the table from 1,699 MB to 1,184 MB and the indexes from 583 MB to 520 MB. It needs free disk space for a full copy of the table and its indexes. Plan a maintenance window: create a backup (`scripts/backup-production.sh`), stop the API and the web server (`docker compose --env-file .env.production -f compose.production.yml stop web api`), run `VACUUM (FULL, ANALYZE) articles;`, and start them again (`... up -d --wait`).
+- **`pg_repack`** rebuilds a table online and holds an exclusive lock only briefly at the start and end. It is not part of the official PostgreSQL image: it needs the `pg_repack` extension installed in the server (a custom image) and a matching client binary, so Pulse does not ship it. Consider it only for databases too large for a maintenance window.
+
+### Slow-query visibility
+
+`compose.production.yml` starts PostgreSQL with these settings (as `postgres -c` arguments):
+
+| Setting | Value | Effect |
+| --- | --- | --- |
+| `shared_preload_libraries` | `pg_stat_statements` | Collects execution statistics of every normalized statement (constants replaced by `$n`) in shared memory. |
+| `pg_stat_statements.track` | `top` | Counts statements sent by clients, not statements inside functions. |
+| `log_min_duration_statement` | `DB_LOG_MIN_DURATION_MS` from `.env.production`, default `500` | Logs every statement that runs at least that many milliseconds to the container log (`-1` disables, `0` logs every statement). |
+| `log_parameter_max_length` | `0` | Slow-statement log lines never contain bind parameter values (e-mail addresses, search terms, hashes). |
+| `track_io_timing` | `on` | Adds block read/write times to `pg_stat_statements`, `EXPLAIN (ANALYZE, BUFFERS)`, and `pg_stat_database`. |
+
+Command-line settings override `postgresql.conf` and `ALTER SYSTEM`. `shared_preload_libraries` is read only at server start. A changed `command` (including a changed `DB_LOG_MIN_DURATION_MS`) changes the container configuration, so `docker compose ... up -d`, and therefore `scripts/update-production.sh`, recreates the `db` container and restarts PostgreSQL (verified with Compose; the data directory is kept). The first update with these settings, and every change of `DB_LOG_MIN_DURATION_MS`, interrupts database access for a few seconds; the API's connection pool reconnects. An invalid value stops PostgreSQL from starting; `docker compose ... logs db` shows the reason. The development, test, and end-to-end databases do not preload the library and are unaffected.
+
+The `pg_stat_statements` view needs the extension in the database. No migration creates it: creating it needs superuser rights (it is not a trusted extension), which an installation using `DATABASE_URL` with a non-superuser role may lack, and the development and test databases do not preload the library. Statistics are collected by the preloaded library whether or not the extension exists, so creating it when first needed loses nothing. In the production container `POSTGRES_USER` is a superuser:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+-- Statements by total execution time
+SELECT calls,
+       round(total_exec_time::numeric, 1)                      AS total_ms,
+       round(mean_exec_time::numeric, 2)                       AS mean_ms,
+       round(max_exec_time::numeric, 1)                        AS max_ms,
+       rows,
+       shared_blks_hit, shared_blks_read,
+       round((shared_blk_read_time + shared_blk_write_time)::numeric, 1) AS io_ms,
+       left(regexp_replace(query, '\s+', ' ', 'g'), 120)       AS query
+FROM pg_stat_statements
+WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+ORDER BY total_exec_time DESC
+LIMIT 15;
+```
+
+Order by `mean_exec_time` to find individually slow statements. `SELECT pg_stat_statements_reset();` starts a new measurement period, for example after an update. Slow statements in the log: `docker compose --env-file .env.production -f compose.production.yml logs db | grep 'duration:'`. Statistics are kept across restarts only on a clean shutdown.
