@@ -29,6 +29,7 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
   const [activeSection, setActiveSection] = useState<AdminSection>('settings');
   const [feedRequests, setFeedRequests] = useState<FeedRequest[]>([]);
   const [feedRequestTotal, setFeedRequestTotal] = useState(0);
+  const [feedRequestCursor, setFeedRequestCursor] = useState<string | null>(null);
   const [loadingMoreRequests, setLoadingMoreRequests] = useState(false);
   const [stopWords, setStopWords] = useState<StopWord[]>([]);
   const [blockedArticles, setBlockedArticles] = useState<BlockedFeedArticle[]>([]);
@@ -61,6 +62,7 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
     setSettings(next);
     setFeedRequests(requests.requests);
     setFeedRequestTotal(requests.total);
+    setFeedRequestCursor(requests.nextCursor);
     setStopWords(words);
     setBlockedArticles(blocked);
     setRefreshInterval(String(next.refreshIntervalMinutes));
@@ -78,6 +80,7 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
         setSettings(next);
         setFeedRequests(requests.requests);
         setFeedRequestTotal(requests.total);
+        setFeedRequestCursor(requests.nextCursor);
         setStopWords(words);
         setBlockedArticles(blocked);
         setRefreshInterval(String(next.refreshIntervalMinutes));
@@ -137,16 +140,19 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
   }
 
   async function loadMoreFeedRequests() {
+    if (feedRequestCursor === null) return;
     setError('');
     setLoadingMoreRequests(true);
     try {
-      // Decided requests are gone from the server too, so the loaded count is the offset.
-      const page = await api.getFeedRequests(undefined, feedRequests.length);
+      // The cursor marks the last loaded request, so requests decided meanwhile
+      // (here or by another administrator) do not shift the next page.
+      const page = await api.getFeedRequests(undefined, feedRequestCursor);
       setFeedRequests((current) => {
         const known = new Set(current.map((item) => item.id));
         return [...current, ...page.requests.filter((item) => !known.has(item.id))];
       });
       setFeedRequestTotal(page.total);
+      setFeedRequestCursor(page.nextCursor);
     } catch (reason) {
       setError(errorMessage(reason, t('errors.feedRequestsLoad')));
     } finally {
@@ -357,7 +363,7 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
 
             {activeSection === 'feedRequests' && <section className="admin-card" aria-labelledby="feed-requests-title">
               <div className="admin-card-heading"><span className="admin-card-icon users-icon">⌁</span><div><h2 id="feed-requests-title">{t('admin.feedRequests')}</h2><p>{t('admin.feedRequestsDescription')}</p></div><span className="admin-user-count">{feedRequestTotal}</span></div>
-              {feedRequests.length === 0 ? <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p> : <div className="admin-table-wrap"><table className="admin-table admin-requests-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
+              {feedRequests.length === 0 ? (feedRequestCursor === null && <p className="admin-schedule-notice">{t('admin.noFeedRequests')}</p>) : <div className="admin-table-wrap"><table className="admin-table admin-requests-table"><thead><tr><th scope="col">{t('admin.feedRequestUrl')}</th><th scope="col">{t('admin.feedRequestUser')}</th><th scope="col">{t('admin.feedRequestFolder')}</th><th scope="col">{t('admin.feedRequestActions')}</th></tr></thead><tbody>
                 {feedRequests.map((request) => <tr key={request.id}>
                   <td><a href={request.url} target="_blank" rel="noreferrer">{request.url}</a></td>
                   <td><ul className="admin-requesters">{requestersOf(request).map((requester) => <li key={requester}>{requester}</li>)}</ul></td>
@@ -365,7 +371,7 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
                   <td><div className="admin-request-actions"><button className="primary-button" type="button" onClick={() => void decideFeedRequest(request, true)}>{t('admin.approveFeed')}</button><button className="secondary-button" type="button" onClick={() => void decideFeedRequest(request, false)}>{t('admin.rejectFeed')}</button></div></td>
                 </tr>)}
               </tbody></table></div>}
-              {feedRequests.length > 0 && feedRequests.length < feedRequestTotal && <div className="admin-requests-more">
+              {feedRequestCursor !== null && <div className="admin-requests-more">
                 <p>{t('admin.feedRequestsShown', { shown: feedRequests.length, total: feedRequestTotal })}</p>
                 <button className="secondary-button" type="button" disabled={loadingMoreRequests} onClick={() => void loadMoreFeedRequests()}>{loadingMoreRequests ? t('states.loading') : t('actions.loadMore')}</button>
               </div>}

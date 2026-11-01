@@ -42,7 +42,7 @@ beforeEach(() => {
   apiMock.getFolders.mockResolvedValue([]);
   apiMock.getArticles.mockResolvedValue({ items: [], hasMore: false });
   apiMock.getAdminSettings.mockResolvedValue({ refreshIntervalMinutes: 15, sharedFeedTTLMinutes: 15, users: [] });
-  apiMock.getFeedRequests.mockResolvedValue({ requests: [], total: 0 });
+  apiMock.getFeedRequests.mockResolvedValue({ requests: [], total: 0, nextCursor: null });
   apiMock.getStopWords.mockResolvedValue([]);
   apiMock.addStopWord.mockResolvedValue({ id: 1, term: 'blocked', createdAt: '2026-10-26T09:00:00Z' });
   apiMock.deleteStopWord.mockResolvedValue(undefined);

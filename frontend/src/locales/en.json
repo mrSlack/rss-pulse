@@ -328,6 +328,7 @@
   "apiErrors.admin.blocked_articles_load_failed": "The blocked-article log could not be loaded.",
   "apiErrors.feed.requests_load_failed": "Feed requests could not be loaded.",
   "apiErrors.feed.requests_limit_invalid": "The feed request limit must be between 1 and 200.",
+  "apiErrors.feed.requests_cursor_invalid": "The feed request page cursor is invalid.",
   "apiErrors.feed.request_id_invalid": "The feed request ID is invalid.",
   "apiErrors.feed.request_not_found": "The feed request could not be found.",
   "apiErrors.feed.request_approve_failed": "The feed request could not be approved.",

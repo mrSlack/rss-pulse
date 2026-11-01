@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -163,21 +164,60 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 	return FeedRequestResult{RequestID: requestID}, nil
 }
 
-// ListPendingFeedRequests returns up to limit pending requests after skipping
-// offset, oldest first, and the total number of pending requests.
-func (s *Store) ListPendingFeedRequests(ctx context.Context, limit, offset int) ([]FeedRequest, int, error) {
+// FeedRequestCursor is the position of a request in the queue order
+// (created_at, id), oldest first. A page requested after a cursor contains only
+// requests strictly after that position, so requests decided meanwhile do not
+// shift the next page.
+type FeedRequestCursor struct {
+	CreatedAt time.Time
+	ID        int64
+}
+
+// EncodeFeedRequestCursor returns an opaque, URL-safe cursor in the same
+// format as article cursors.
+func EncodeFeedRequestCursor(cursor FeedRequestCursor) string {
+	return EncodeArticleCursor(ArticleCursor{PublishedAt: cursor.CreatedAt, ID: cursor.ID})
+}
+
+// DecodeFeedRequestCursor parses a cursor produced by EncodeFeedRequestCursor
+// and returns ErrInvalidCursor for anything else.
+func DecodeFeedRequestCursor(encoded string) (FeedRequestCursor, error) {
+	cursor, err := DecodeArticleCursor(encoded)
+	if err != nil {
+		return FeedRequestCursor{}, err
+	}
+	return FeedRequestCursor{CreatedAt: cursor.PublishedAt, ID: cursor.ID}, nil
+}
+
+// FeedRequestPage is one page of the pending queue. Next is set when more
+// requests follow; Total counts every pending request.
+type FeedRequestPage struct {
+	Requests []FeedRequest
+	Total    int
+	Next     *FeedRequestCursor
+}
+
+// ListPendingFeedRequests returns up to limit pending requests after the cursor
+// (from the start when after is nil), oldest first, and the total number of
+// pending requests.
+func (s *Store) ListPendingFeedRequests(ctx context.Context, limit int, after *FeedRequestCursor) (FeedRequestPage, error) {
 	// Read the page and the total from one snapshot so they agree.
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return nil, 0, err
+		return FeedRequestPage{}, err
 	}
 	defer tx.Rollback(ctx)
-	var total int
+	page := FeedRequestPage{Requests: make([]FeedRequest, 0)}
 	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM feed_requests fr
-		WHERE EXISTS(SELECT 1 FROM feed_request_requesters r WHERE r.request_id=fr.id)`).Scan(&total); err != nil {
-		return nil, 0, err
+		WHERE EXISTS(SELECT 1 FROM feed_request_requesters r WHERE r.request_id=fr.id)`).Scan(&page.Total); err != nil {
+		return FeedRequestPage{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT fr.id,fr.url,fu.email,first.folder_id,f.name,first.title,fr.created_at::text,
+	var afterTime *time.Time
+	var afterID *int64
+	if after != nil {
+		afterTime, afterID = &after.CreatedAt, &after.ID
+	}
+	rows, err := tx.Query(ctx, `SELECT fr.id,fr.url,fu.email,first.folder_id,f.name,first.title,fr.created_at::text,fr.created_at,
 			ARRAY(SELECT u.email FROM feed_request_requesters r JOIN users u ON u.id=r.user_id
 				WHERE r.request_id=fr.id ORDER BY r.created_at,r.user_id)
 		FROM feed_requests fr
@@ -185,22 +225,31 @@ func (s *Store) ListPendingFeedRequests(ctx context.Context, limit, offset int) 
 			WHERE r.request_id=fr.id ORDER BY r.created_at,r.user_id LIMIT 1) first ON TRUE
 		JOIN users fu ON fu.id=first.user_id
 		LEFT JOIN folders f ON f.id=first.folder_id AND f.owner_user_id=first.user_id
-		ORDER BY fr.created_at,fr.id LIMIT $1 OFFSET $2`, limit, offset)
+		WHERE $2::timestamptz IS NULL OR (fr.created_at,fr.id) > ($2::timestamptz,$3::bigint)
+		ORDER BY fr.created_at,fr.id LIMIT $1`, limit+1, afterTime, afterID)
 	if err != nil {
-		return nil, 0, err
+		return FeedRequestPage{}, err
 	}
-	requests, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (FeedRequest, error) {
+	positions := make([]time.Time, 0, limit+1)
+	for rows.Next() {
 		var request FeedRequest
-		err := row.Scan(&request.ID, &request.URL, &request.RequestedBy, &request.FolderID, &request.FolderName, &request.Title, &request.CreatedAt, &request.Requesters)
-		return request, err
-	})
-	if err != nil {
-		return nil, 0, err
+		var createdAt time.Time
+		if err := rows.Scan(&request.ID, &request.URL, &request.RequestedBy, &request.FolderID, &request.FolderName, &request.Title, &request.CreatedAt, &createdAt, &request.Requesters); err != nil {
+			rows.Close()
+			return FeedRequestPage{}, err
+		}
+		page.Requests = append(page.Requests, request)
+		positions = append(positions, createdAt)
 	}
-	if requests == nil {
-		requests = make([]FeedRequest, 0)
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return FeedRequestPage{}, err
 	}
-	return requests, total, nil
+	if len(page.Requests) > limit {
+		page.Requests = page.Requests[:limit]
+		page.Next = &FeedRequestCursor{CreatedAt: positions[limit-1], ID: page.Requests[limit-1].ID}
+	}
+	return page, nil
 }
 
 type feedRequester struct {

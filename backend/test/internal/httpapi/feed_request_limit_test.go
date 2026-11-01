@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pulse-reader/app/internal/httpapi"
@@ -67,11 +68,12 @@ func TestPendingFeedRequestsAreCappedPerUser(t *testing.T) {
 }
 
 type feedRequestPage struct {
-	Requests []store.FeedRequest `json:"requests"`
-	Total    int                 `json:"total"`
+	Requests   []store.FeedRequest `json:"requests"`
+	Total      int                 `json:"total"`
+	NextCursor *string             `json:"nextCursor"`
 }
 
-func TestAdminFeedRequestListIsPagedWithTotal(t *testing.T) {
+func TestAdminFeedRequestListIsPagedByCursorWithTotal(t *testing.T) {
 	ctx := context.Background()
 	pool, _, readerID := isolatedAPIDatabase(t)
 	repository := store.New(pool)
@@ -91,28 +93,48 @@ func TestAdminFeedRequestListIsPagedWithTotal(t *testing.T) {
 		}
 		return page
 	}
+	urls := func(page feedRequestPage) string {
+		result := ""
+		for _, request := range page.Requests {
+			result += strings.TrimSuffix(strings.TrimPrefix(request.URL, "https://pending.example/feed-"), ".xml")
+		}
+		return result
+	}
 
-	if page := list(""); len(page.Requests) != 5 || page.Total != 5 {
-		t.Fatalf("default list = %d requests, total %d; want 5 and 5", len(page.Requests), page.Total)
+	if page := list(""); urls(page) != "01234" || page.Total != 5 || page.NextCursor != nil {
+		t.Fatalf("default list = %q, total %d, next %v; want all 5 oldest first and no cursor", urls(page), page.Total, page.NextCursor)
 	}
 	first := list("?limit=2")
-	if len(first.Requests) != 2 || first.Total != 5 || first.Requests[0].URL != "https://pending.example/feed-0.xml" {
-		t.Fatalf("limit=2 = %+v, want the two oldest requests and total 5", first)
+	if urls(first) != "01" || first.Total != 5 || first.NextCursor == nil {
+		t.Fatalf("limit=2 = %q, total %d, next %v; want the two oldest requests, total 5 and a cursor", urls(first), first.Total, first.NextCursor)
 	}
-	next := list("?limit=2&offset=2")
-	if len(next.Requests) != 2 || next.Total != 5 || next.Requests[0].URL != "https://pending.example/feed-2.xml" {
-		t.Fatalf("limit=2&offset=2 = %+v, want requests 3 and 4 and total 5", next)
+	// Another administrator decides a request on the loaded page. Offset paging
+	// would now skip request 2; the cursor continues after the last loaded request.
+	if response := authenticatedRequest(t, handler, http.MethodDelete, "/api/admin/feed-requests/"+intString(first.Requests[0].ID), "", adminCookie); response.Code != http.StatusNoContent {
+		t.Fatalf("reject = %d, want 204", response.Code)
 	}
-	if past := list("?offset=10"); len(past.Requests) != 0 || past.Total != 5 {
-		t.Fatalf("offset past the end = %+v, want an empty page with total 5", past)
+	second := list("?limit=2&after=" + *first.NextCursor)
+	if urls(second) != "23" || second.Total != 4 || second.NextCursor == nil {
+		t.Fatalf("second page = %q, total %d, next %v; want requests 2 and 3, total 4 and a cursor", urls(second), second.Total, second.NextCursor)
+	}
+	last := list("?limit=2&after=" + *second.NextCursor)
+	if urls(last) != "4" || last.Total != 4 || last.NextCursor != nil {
+		t.Fatalf("last page = %q, total %d, next %v; want request 4 and no cursor", urls(last), last.Total, last.NextCursor)
+	}
+	// A cursor of a request that has since been decided still marks a position.
+	if response := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/feed-requests/"+intString(second.Requests[1].ID)+"/approve", "{}", adminCookie); response.Code != http.StatusNoContent {
+		t.Fatalf("approve = %d, want 204", response.Code)
+	}
+	if page := list("?limit=2&after=" + *second.NextCursor); urls(page) != "4" || page.Total != 3 {
+		t.Fatalf("page after a decided request = %q, total %d; want request 4, total 3", urls(page), page.Total)
 	}
 	for _, raw := range []string{"0", "201", "-1", "abc", "1.5"} {
 		response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?limit="+raw, "", adminCookie)
 		assertErrorCode(t, response, http.StatusBadRequest, "feed.requests_limit_invalid")
 	}
-	for _, raw := range []string{"-1", "abc", "1.5"} {
-		response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?offset="+raw, "", adminCookie)
-		assertErrorCode(t, response, http.StatusBadRequest, "feed.requests_offset_invalid")
+	for _, raw := range []string{"", "abc", "MTph", "-1", *first.NextCursor + "="} {
+		response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?after="+raw, "", adminCookie)
+		assertErrorCode(t, response, http.StatusBadRequest, "feed.requests_cursor_invalid")
 	}
 	if response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?limit=200", "", adminCookie); response.Code != http.StatusOK {
 		t.Fatalf("limit=200 = %d, want 200", response.Code)

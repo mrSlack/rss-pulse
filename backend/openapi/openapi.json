@@ -2788,14 +2788,12 @@
             }
           },
           {
-            "name": "offset",
+            "name": "after",
             "in": "query",
             "required": false,
-            "description": "Number of pending requests to skip (oldest first).",
+            "description": "Opaque cursor from `nextCursor` of the previous page; the page starts after that request. Requests decided in the meantime do not shift the next page.",
             "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "default": 0
+              "type": "string"
             }
           }
         ],
@@ -2808,7 +2806,8 @@
                   "type": "object",
                   "required": [
                     "requests",
-                    "total"
+                    "total",
+                    "nextCursor"
                   ],
                   "properties": {
                     "requests": {
@@ -2820,7 +2819,14 @@
                     "total": {
                       "type": "integer",
                       "minimum": 0,
-                      "description": "Number of pending requests, independent of limit and offset."
+                      "description": "Number of pending requests, independent of limit and cursor."
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Pass as `after` to load the next page; null when no more requests follow."
                     }
                   }
                 }
@@ -2828,10 +2834,10 @@
             }
           },
           "400": {
-            "description": "Invalid limit or offset. Error codes: `feed.requests_limit_invalid`, `feed.requests_offset_invalid`.",
+            "description": "Invalid limit or cursor. Error codes: `feed.requests_limit_invalid`, `feed.requests_cursor_invalid`.",
             "x-error-codes": [
               "feed.requests_limit_invalid",
-              "feed.requests_offset_invalid"
+              "feed.requests_cursor_invalid"
             ],
             "content": {
               "application/json": {
