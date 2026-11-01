@@ -45,12 +45,9 @@ func (h *Handler) createFolder(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	folder, err := h.store.CreateFolderForUser(r.Context(), user.ID, name, request.Color)
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "folder.name_taken", "A folder with this name already exists.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "folder.create_failed", "The folder could not be created.")
+		writeStoreError(w, err, []storeError{{store.ErrDuplicate, errFolderNameTaken}},
+			apiError{http.StatusInternalServerError, "folder.create_failed", "The folder could not be created."})
 		return
 	}
 	writeJSON(w, http.StatusCreated, folder)
@@ -83,16 +80,9 @@ func (h *Handler) updateFolder(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	folder, err := h.store.UpdateFolderForUser(r.Context(), user.ID, *folderID, name, request.Color)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "folder.not_found", "The folder could not be found.")
-		return
-	}
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "folder.name_taken", "A folder with this name already exists.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "folder.update_failed", "The folder could not be updated.")
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, errFolderNotFound}, {store.ErrDuplicate, errFolderNameTaken}},
+			apiError{http.StatusInternalServerError, "folder.update_failed", "The folder could not be updated."})
 		return
 	}
 	writeJSON(w, http.StatusOK, folder)
@@ -112,19 +102,15 @@ func (h *Handler) deleteFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := currentUser(r)
-	err := h.store.DeleteFolderForUser(r.Context(), user.ID, *folderID, request.Action, request.TargetFolderID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, "folder.not_found", "The folder could not be found.")
-	case errors.Is(err, store.ErrFolderUnavailable):
-		writeError(w, http.StatusBadRequest, "folder.target_unavailable", "Choose another folder owned by your account.")
-	case errors.Is(err, store.ErrInvalidFolderOperation):
-		writeError(w, http.StatusBadRequest, "folder.delete_action_invalid", "Choose whether to remove the sources or move them to another folder.")
-	case err != nil:
-		writeError(w, http.StatusInternalServerError, "folder.delete_failed", "The folder could not be deleted.")
-	default:
-		w.WriteHeader(http.StatusNoContent)
+	if err := h.store.DeleteFolderForUser(r.Context(), user.ID, *folderID, request.Action, request.TargetFolderID); err != nil {
+		writeStoreError(w, err, []storeError{
+			{store.ErrNotFound, errFolderNotFound},
+			{store.ErrFolderUnavailable, apiError{http.StatusBadRequest, "folder.target_unavailable", "Choose another folder owned by your account."}},
+			{store.ErrInvalidFolderOperation, apiError{http.StatusBadRequest, "folder.delete_action_invalid", "Choose whether to remove the sources or move them to another folder."}},
+		}, apiError{http.StatusInternalServerError, "folder.delete_failed", "The folder could not be deleted."})
+		return
 	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) listFeeds(w http.ResponseWriter, r *http.Request) {
@@ -157,27 +143,13 @@ func (h *Handler) createFeed(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r)
 	result, err := h.store.RequestFeedApproval(r.Context(), user.ID, request.URL, "", request.FolderID, nil)
 	if err != nil {
-		if errors.Is(err, store.ErrDuplicate) {
-			writeError(w, http.StatusConflict, "feed.already_added", "This feed has already been added.")
-			return
-		}
-		if errors.Is(err, store.ErrFeedLimitReached) {
-			writeError(w, http.StatusConflict, "feed.limit_reached", "You have reached the maximum of 100 feeds.")
-			return
-		}
-		if errors.Is(err, store.ErrFolderUnavailable) {
-			writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
-			return
-		}
-		if errors.Is(err, store.ErrInvalidFeedURL) {
-			writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
-			return
-		}
-		if errors.Is(err, store.ErrFeedRequestLimitReached) {
-			writeFeedRequestLimitReached(w)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "feed.save_failed", "The feed could not be saved.")
+		writeStoreError(w, err, []storeError{
+			{store.ErrDuplicate, errFeedAlreadyAdded},
+			{store.ErrFeedLimitReached, errFeedLimitReached},
+			{store.ErrFolderUnavailable, errFolderUnavailable},
+			{store.ErrInvalidFeedURL, errFeedURLInvalid},
+			{store.ErrFeedRequestLimitReached, errFeedRequestLimitReached},
+		}, errFeedSaveFailed)
 		return
 	}
 	if !result.Approved {
@@ -185,20 +157,12 @@ func (h *Handler) createFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	feed, err := h.store.SubscribeSource(r.Context(), user.ID, result.SourceID, request.FolderID)
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "feed.already_added", "This feed has already been added.")
-		return
-	}
-	if errors.Is(err, store.ErrFeedLimitReached) {
-		writeError(w, http.StatusConflict, "feed.limit_reached", "You have reached the maximum of 100 feeds.")
-		return
-	}
 	if err != nil {
-		if errors.Is(err, store.ErrFolderUnavailable) {
-			writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "feed.save_failed", "The feed could not be saved.")
+		writeStoreError(w, err, []storeError{
+			{store.ErrDuplicate, errFeedAlreadyAdded},
+			{store.ErrFeedLimitReached, errFeedLimitReached},
+			{store.ErrFolderUnavailable, errFolderUnavailable},
+		}, errFeedSaveFailed)
 		return
 	}
 	writeJSON(w, http.StatusCreated, feed)
@@ -234,24 +198,13 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	result, err := h.store.RequestFeedApproval(r.Context(), user.ID, request.URL, request.Title, request.FolderID, feedID)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "feed.not_found", "The feed could not be found.")
-		return
-	}
-	if errors.Is(err, store.ErrFeedRequestLimitReached) {
-		writeFeedRequestLimitReached(w)
-		return
-	}
-	if errors.Is(err, store.ErrFolderUnavailable) {
-		writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
-		return
-	}
-	if errors.Is(err, store.ErrInvalidFeedURL) {
-		writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "feed.update_failed", "The feed could not be updated.")
+		writeStoreError(w, err, []storeError{
+			{store.ErrNotFound, errFeedNotFound},
+			{store.ErrFeedRequestLimitReached, errFeedRequestLimitReached},
+			{store.ErrFolderUnavailable, errFolderUnavailable},
+			{store.ErrInvalidFeedURL, errFeedURLInvalid},
+		}, errFeedUpdateFailed)
 		return
 	}
 	if !result.Approved {
@@ -259,44 +212,25 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sourceID, sourceCreated, urlChanged, err := h.store.PrepareFeedUpdate(r.Context(), user.ID, *feedID, request.URL, request.FolderID)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "feed.not_found", "The feed could not be found.")
-		return
-	}
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "feed.already_added", "This feed has already been added.")
-		return
-	}
-	if errors.Is(err, store.ErrFolderUnavailable) {
-		writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
-		return
-	}
-	if errors.Is(err, store.ErrInvalidFeedURL) {
-		writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "feed.update_failed", "The feed could not be updated.")
+		writeStoreError(w, err, []storeError{
+			{store.ErrNotFound, errFeedNotFound},
+			{store.ErrDuplicate, errFeedAlreadyAdded},
+			{store.ErrFolderUnavailable, errFolderUnavailable},
+			{store.ErrInvalidFeedURL, errFeedURLInvalid},
+		}, errFeedUpdateFailed)
 		return
 	}
 	feed, err := h.store.UpdateFeedForUser(r.Context(), user.ID, *feedID, sourceID, request.Title, request.FolderID)
-	if errors.Is(err, store.ErrNotFound) {
-		if sourceCreated {
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) && sourceCreated {
 			_ = h.store.DiscardEmptySource(r.Context(), sourceID)
 		}
-		writeError(w, http.StatusNotFound, "feed.not_found", "The feed could not be found.")
-		return
-	}
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "feed.already_added", "This feed has already been added.")
-		return
-	}
-	if errors.Is(err, store.ErrFolderUnavailable) {
-		writeError(w, http.StatusBadRequest, "folder.unavailable", "The selected folder is unavailable.")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "feed.update_failed", "The feed could not be updated.")
+		writeStoreError(w, err, []storeError{
+			{store.ErrNotFound, errFeedNotFound},
+			{store.ErrDuplicate, errFeedAlreadyAdded},
+			{store.ErrFolderUnavailable, errFolderUnavailable},
+		}, errFeedUpdateFailed)
 		return
 	}
 	if urlChanged && h.control != nil {
@@ -305,8 +239,4 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		h.control.RequestUser(user.ID)
 	}
 	writeJSON(w, http.StatusOK, feed)
-}
-
-func writeFeedRequestLimitReached(w http.ResponseWriter) {
-	writeError(w, http.StatusConflict, "feed.request_limit_reached", "You already have 10 feed requests waiting for approval. Wait until an administrator reviews them.")
 }

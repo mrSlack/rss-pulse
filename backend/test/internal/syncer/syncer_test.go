@@ -3,6 +3,7 @@ package syncer_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ type fakeRefreshRepository struct {
 	maxActive      atomic.Int32
 	claimHook      func(context.Context, int64)
 	claimLeases    bool
+	unclaimed      map[int64]bool
 	abandoned      []abandonCall
 	released       []store.SourceLease
 	committed      []store.SourceLease
@@ -69,10 +71,10 @@ func (f *fakeRefreshRepository) ClaimSource(ctx context.Context, sourceID int64,
 	if f.claimHook != nil {
 		f.claimHook(ctx, sourceID)
 	}
-	if !f.claimLeases {
+	if !f.claimLeases || f.unclaimed[sourceID] {
 		return store.SourceLease{}, false, nil
 	}
-	return store.SourceLease{ID: sourceID, URL: "https://example.com/feed", Token: "token", Validators: feeds.Validators{ETag: `"old"`}}, true, nil
+	return store.SourceLease{ID: sourceID, URL: "https://example.com/feed/" + strconv.FormatInt(sourceID, 10), Token: "token", Validators: feeds.Validators{ETag: `"old"`}}, true, nil
 }
 
 func (f *fakeRefreshRepository) ReleaseSourceLease(_ context.Context, lease store.SourceLease, _ string) error {

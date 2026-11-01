@@ -70,14 +70,14 @@ Für eine weitere Sprache erstellen Sie eine JSON-Datei auf Basis der Schlüssel
 
 ## Agent-Skills
 
-Projektspezifische Skills liegen in `.agents/skills/` und sind Teil des Repositorys. Öffnen Sie nach dem Klonen das Projektverzeichnis in Codex; eine globale Installation ist nicht erforderlich. `skills-lock.json` erfasst Skills mit Upstream-Quelle. Das Projektskript verwendet Node.js 24 zum Wiederherstellen oder Aktualisieren:
+Projektspezifische Skills liegen in `.agents/skills/`. Dieses Verzeichnis steht in `.gitignore`; die Skills gehören also nicht zum Repository, und ein frischer Klon enthält keine. `skills-lock.json` erfasst die extern gepflegten Skills mit ihrer Upstream-Quelle; das Projektskript stellt sie mit Node.js 24 wieder her oder aktualisiert sie:
 
 ```sh
 bash scripts/sync-skills.sh install  # Skills aus der Lock-Datei wiederherstellen, falls nötig
 bash scripts/sync-skills.sh update   # Lock-verwaltete Skills aktualisieren
 ```
 
-Das Skript fügt die Pulse-spezifischen Regeln nach dem Wiederherstellen oder Aktualisieren wieder zum Projekt-Skill `handoff` hinzu. Die Superpowers-Workflow-Skills stammen aus der aktuellen Quelle `obra/superpowers-skills`. `diagnosing-superpowers` bleibt erhalten, da es dort nicht mehr veröffentlicht wird; der ältere Name `using-superpowers` bleibt neben seinem Nachfolger `using-skills` bestehen. Installieren Sie Projekt-Skills nicht global.
+Das Skript fügt die Pulse-spezifischen Regeln nach dem Wiederherstellen oder Aktualisieren wieder zum Projekt-Skill `handoff` hinzu. Skills, die nicht in `skills-lock.json` stehen, etwa die Superpowers-Workflow-Skills (`obra/superpowers-skills`) und `diagnosing-superpowers`, stellt das Skript nicht wieder her; kopieren Sie sie bei Bedarf selbst nach `.agents/skills/`. Installieren Sie Projekt-Skills nicht global.
 
 ## Produktionsbuild und Bereitstellung
 
@@ -110,7 +110,7 @@ Erstellen Sie vor Produktionsupdates eine Datenbanksicherung. Danach bauen und s
 ./scripts/update-production.sh
 ```
 
-Es benötigt einen sauberen Checkout auf `master`, speichert einen Datenbankdump unter `backups/production/`, aktualisiert per Fast-Forward von `origin/master`, prüft die Compose-Konfiguration, baut die Dienste neu und wartet auf Health Checks. Verwenden Sie den lokalen Datenbank-Compose nicht mit dem Produktionsdatenverzeichnis.
+Es benötigt einen sauberen Checkout auf `master`, erstellt mit `scripts/backup-production.sh` eine Datenbanksicherung (siehe [Produktionssicherungen](#produktionssicherungen); schlägt sie fehl, bricht das Update ab), aktualisiert per Fast-Forward von `origin/master`, prüft die Compose-Konfiguration, baut die Dienste neu und wartet auf Health Checks. Verwenden Sie den lokalen Datenbank-Compose nicht mit dem Produktionsdatenverzeichnis.
 
 Die Artikelsuche verwendet die PostgreSQL-Erweiterung `pg_trgm`, die Migration `016_article_search.sql` anlegt. Sie ist in den offiziellen PostgreSQL-Images enthalten und eine vertrauenswürdige (trusted) Erweiterung, daher kann der Eigentümer der Datenbank sie ohne Superuser-Rechte anlegen; bei einer anderen PostgreSQL-Installation müssen die contrib-Erweiterungen installiert sein. Die Migration schreibt jeden gespeicherten Artikel einmal neu und baut einen Suchindex auf; im Test dauerte das für 500.000 Artikel etwa 3 Minuten. Die API nimmt erst danach Verbindungen an. Der Health-Check der Produktions-API erlaubt daher eine Startphase von 15 Minuten, und das Update-Skript wartet bis zu 900 Sekunden auf die Health-Checks (anpassbar mit `DEPLOY_WAIT_TIMEOUT=<Sekunden> scripts/update-production.sh`). Reicht auch das nicht, verfolgen Sie `docker compose --env-file .env.production -f compose.production.yml logs -f api`, bis die API meldet, dass sie lauscht.
 
@@ -136,13 +136,107 @@ Ein Wartungsjob läuft etwa eine Minute nach dem API-Start und danach alle 6 Stu
 
 ## Sicherung, Logs und Stoppen
 
-Erstellen Sie vor einem Umzug oder Upgrade einen Datenbankdump:
+### Lokaler Datenbankdump
+
+Erstellen Sie vor einem Umzug oder Upgrade einen Dump der lokalen Entwicklungsdatenbank:
 
 ```sh
 docker compose -f compose.database.yml exec -T db pg_dump -U pulse pulse > pulse-backup.sql
 ```
 
-Falls `POSTGRES_USER` oder `POSTGRES_DB` in `.env` abweichen, verwenden Sie diese Werte. Logs zeigen Sie mit `docker compose -f <compose-datei> logs -f` an. Lokale Dienste stoppen:
+Falls `POSTGRES_USER` oder `POSTGRES_DB` in `.env` abweichen, verwenden Sie diese Werte.
+
+### Produktionssicherungen
+
+`scripts/backup-production.sh` schreibt ein komprimiertes `pg_dump`-Archiv (Custom-Format) der Produktionsdatenbank nach `backups/production/pulse-<UTC-Zeitstempel>.dump`. Das Verzeichnis erhält den Modus 700, jede Sicherung den Modus 600. Der Dump wird zunächst in eine temporäre Datei geschrieben und erst umbenannt, wenn er nicht leer ist und `pg_restore --list` ihn lesen kann. Danach löscht das Skript Sicherungen, die älter als `BACKUP_KEEP_DAYS` Tage sind (Standard 14), einschließlich reiner `.sql`-Dumps älterer Versionen des Update-Skripts, aber nie die neueste Sicherung. Der Dienst `db` muss laufen. Fortschrittsmeldungen gehen nach stderr, der Pfad der neuen Sicherung nach stdout.
+
+```sh
+./scripts/backup-production.sh
+BACKUP_KEEP_DAYS=30 ./scripts/backup-production.sh
+```
+
+Die Sicherungen liegen auf demselben Host wie die Datenbank. Kopieren Sie `backups/production/` regelmäßig auf einen anderen Rechner oder Speicher.
+
+Für eine tägliche Sicherung per cron tragen Sie eine Zeile wie diese in die crontab eines Benutzers ein, der `docker` ausführen darf (ersetzen Sie `/srv/pulse` durch den Pfad des Checkouts):
+
+```cron
+17 3 * * * cd /srv/pulse && ./scripts/backup-production.sh >> /var/log/pulse-backup.log 2>&1
+```
+
+Oder verwenden Sie einen systemd-Timer. `/etc/systemd/system/pulse-backup.service`:
+
+```ini
+[Unit]
+Description=Pulse production database backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/pulse
+Environment=BACKUP_KEEP_DAYS=14
+ExecStart=/srv/pulse/scripts/backup-production.sh
+```
+
+`/etc/systemd/system/pulse-backup.timer`:
+
+```ini
+[Unit]
+Description=Daily Pulse production database backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Aktivieren Sie ihn mit `sudo systemctl daemon-reload && sudo systemctl enable --now pulse-backup.timer` und prüfen Sie ihn mit `systemctl list-timers pulse-backup.timer` und `journalctl -u pulse-backup.service`. Der Dienst läuft als root, sofern Sie nicht `User=` mit einem Konto der Gruppe `docker` ergänzen.
+
+### Produktion wiederherstellen
+
+```sh
+./scripts/restore-production.sh --yes backups/production/pulse-20261101T031700Z.dump
+```
+
+Ohne `--yes` erklärt das Skript nur, was es ersetzen würde. Mit `--yes` prüft es, ob das Archiv lesbar ist, sichert die aktuelle Datenbank mit `backup-production.sh` (`--skip-safety-backup` überspringt das, wenn sich die aktuelle Datenbank nicht sichern lässt), stoppt `api` und `web`, löscht die Datenbank und legt sie neu an, stellt das Archiv mit `pg_restore` wieder her, startet alle Dienste und wartet bis zu `DEPLOY_WAIT_TIMEOUT` Sekunden (Standard 900) auf ihre Health Checks. Alles, was nach der Sicherung geschrieben wurde, geht verloren, auch neuere Sitzungen; Benutzer müssen sich eventuell erneut anmelden.
+
+Reine SQL-Dumps (`*.sql` älterer Versionen des Update-Skripts) stellt das Skript nicht wieder her. Stoppen Sie `api` und `web`, legen Sie die Datenbank im Container `db` neu an (`dropdb --force` und `createdb` als `POSTGRES_USER`), laden Sie die Datei mit `psql -v ON_ERROR_STOP=1 -U <benutzer> -d <datenbank> < <datei>.sql` über `docker compose ... exec -T db` und starten Sie die Dienste wieder.
+
+**Ein Upgrade zurücknehmen.** Migrationen laufen nur vorwärts; es gibt keine Down-Skripte. Um zur vorherigen Version zurückzukehren, bauen Sie zuerst die Images des vorherigen Commits und stellen danach die Sicherung wieder her, die `update-production.sh` vor dem Upgrade angelegt hat. So startet die alte API nie gegen das neuere Schema:
+
+```sh
+git checkout <vorheriger-commit>
+docker compose --env-file .env.production -f compose.production.yml build
+./scripts/restore-production.sh --yes backups/production/<sicherung-des-updates>.dump
+```
+
+Wechseln Sie vor dem nächsten Lauf von `update-production.sh` zurück auf `master` (`git checkout master`).
+
+### Wiederherstellungsprobe
+
+Testen Sie die Wiederherstellung regelmäßig, etwa alle drei Monate und nach Änderungen an der Sicherung, an einer Wegwerfkopie und nie am Produktionsprojekt. Die Probe vom 2026-11-01 lief so ab:
+
+1. `compose.production.yml` in ein leeres Verzeichnis kopieren und `name:` auf einen unbenutzten Projektnamen ändern (`pulse-s9-prod`). `scripts/backup-production.sh` und `scripts/restore-production.sh` in ein Unterverzeichnis `scripts/` kopieren, `backend` und `frontend` als symbolische Links auf den Checkout anlegen und eine `.env.production` mit Testpasswort, Test-Administrator und unbenutztem `WEB_PORT` erstellen. Das relative Volume `./data/postgres-production` zeigt dann in die Kopie; das echte Datenverzeichnis bleibt unberührt.
+2. `docker compose --env-file .env.production -f compose.production.yml up -d --build --wait`, über den Web-Port anmelden und einen Ordner „Before backup“ anlegen.
+3. `scripts/backup-production.sh` erzeugte ein 42-KB-Archiv mit Modus 600 in einem Verzeichnis mit Modus 700.
+4. Einen Ordner „After backup“ anlegen. `scripts/restore-production.sh <archiv>` ohne `--yes` verweigerte die Ausführung; mit `--yes` legte es eine Sicherheitssicherung an, stoppte `api` und `web`, legte die Datenbank neu an, stellte sie wieder her, und alle drei Dienste wurden wieder healthy.
+5. Nach erneuter Anmeldung enthielt die Ordnerliste „Before backup“, aber nicht „After backup“: Die Datenbank war auf den Stand der Sicherung zurückgesetzt. Auch die Rotation wurde geprüft: Mit `BACKUP_KEEP_DAYS=14` wurden Sicherungen mit 20 Tage alter Änderungszeit gelöscht, die neueste Sicherung blieb auch mit alter Änderungszeit erhalten.
+6. Aufräumen mit `docker compose --env-file .env.production -f compose.production.yml down -v --rmi local` und die Kopie löschen.
+
+### Logs und Health Checks
+
+Die API schreibt strukturierte Logs (Go `log/slog`) nach stderr. `LOG_FORMAT` wählt `text` (Standard, in den lokalen Compose-Dateien) oder `json` (Standard in `compose.production.yml`); `LOG_LEVEL` ist `debug`, `info` (Standard), `warn` oder `error`. Ein ungültiger Wert stoppt die API beim Start. Jede Anfrage erzeugt einen Eintrag `http request` mit `method`, `path` (nie die Query, die Suchbegriffe enthalten kann), `status`, `bytes`, `duration_ms`, `request_id` und bei angemeldeten Benutzern `user_id`; Health Checks werden nur auf `debug` protokolliert. Jede Antwort trägt einen Header `X-Request-ID` mit derselben ID: Ein wohlgeformter eingehender `X-Request-ID` (bis zu 64 Zeichen aus Buchstaben, Ziffern, `.`, `_`, `:` und `-`) wird übernommen, alles andere durch eine erzeugte ID ersetzt. Geben Sie sie bei Fehlermeldungen an. Der Aktualisierungsplaner schreibt pro Zyklus oder manueller Aktualisierung einen Eintrag `rss refresh cycle finished` mit der Zahl der Quellen (`targets`) und wie viele davon `refreshed`, `not_modified`, `failed` oder `skipped` waren; Zyklen ohne fällige Quellen erscheinen nur auf `debug`.
+
+Logs verfolgen Sie mit `docker compose -f <compose-datei> logs -f api`. Bei JSON-Logs zeigt etwa `docker compose --env-file .env.production -f compose.production.yml logs --no-log-prefix api | jq 'select(.status >= 500)'` fehlgeschlagene Anfragen.
+
+`GET /api/health/live` meldet, dass der API-Prozess läuft, ohne die Datenbank anzusprechen. `GET /api/health/ready` prüft zusätzlich die Datenbank (2 Sekunden Timeout) und antwortet `503`, wenn sie nicht erreichbar ist; die Compose-Health-Checks verwenden diesen Endpunkt. `GET /api/health` bleibt ein Alias der Bereitschaftsprüfung. Prometheus-Metriken exportiert die API noch nicht.
+
+### Stoppen
+
+Lokale Dienste stoppen:
 
 ```sh
 docker compose -f compose.frontend.yml down
@@ -160,3 +254,5 @@ PostgreSQL-Daten bleiben in `data/postgres/`. Löschen Sie den Ordner nicht, wen
 - `data/postgres/` — lokal eingebundene PostgreSQL-Daten.
 - `compose.frontend.yml`, `compose.backend.yml`, `compose.database.yml` — unabhängige lokale Dienstgruppen.
 - `compose.production.yml` — Produktionsbuild und Bereitstellung.
+- `scripts/` — Skripte für Produktionsupdate, Sicherung und Wiederherstellung sowie zum Abgleich der Agent-Skills.
+- `backend/openapi/openapi.json` — OpenAPI-3.1-Beschreibung der HTTP-API.

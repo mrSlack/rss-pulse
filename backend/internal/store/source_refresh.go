@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -80,17 +79,6 @@ func (s *Store) SourcesForUser(ctx context.Context, userID int64) ([]FeedTarget,
 		result = append(result, target)
 	}
 	return result, rows.Err()
-}
-
-func (s *Store) CheckUserFeedLimit(ctx context.Context, userID int64) error {
-	var count int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_feeds WHERE user_id=$1`, userID).Scan(&count); err != nil {
-		return err
-	}
-	if count >= MaxFeedsPerUser {
-		return ErrFeedLimitReached
-	}
-	return nil
 }
 
 func (s *Store) ClaimSource(ctx context.Context, sourceID int64, userID *int64) (SourceLease, bool, error) {
@@ -201,44 +189,6 @@ func (s *Store) ReleaseSourceLease(ctx context.Context, lease SourceLease, messa
 		return ErrLeaseLost
 	}
 	return nil
-}
-
-func (s *Store) EnsureFeedSourceForUser(ctx context.Context, userID int64, rawURL string, folderID *int64) (int64, bool, error) {
-	normalizedURL, err := NormalizeFeedURL(rawURL)
-	if err != nil {
-		return 0, false, err
-	}
-	if folderID != nil {
-		var exists bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM folders WHERE id=$1 AND owner_user_id=$2)`, *folderID, userID).Scan(&exists); err != nil {
-			return 0, false, err
-		}
-		if !exists {
-			return 0, false, ErrFolderUnavailable
-		}
-	}
-	var alreadySubscribed bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_feeds uf JOIN feed_sources fs ON fs.id=uf.feed_source_id WHERE uf.user_id=$1 AND fs.normalized_url=$2)`, userID, normalizedURL).Scan(&alreadySubscribed); err != nil {
-		return 0, false, err
-	}
-	if alreadySubscribed {
-		return 0, false, ErrDuplicate
-	}
-	if err := s.CheckUserFeedLimit(ctx, userID); err != nil {
-		return 0, false, err
-	}
-	parsed, _ := url.Parse(normalizedURL)
-	fallbackTitle := parsed.Hostname()
-	var id int64
-	err = s.pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,added_by_user_id) VALUES ($1,$2,$1,$3) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, fallbackTitle, userID).Scan(&id)
-	if err == nil {
-		return id, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, err
-	}
-	err = s.pool.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&id)
-	return id, false, err
 }
 
 func (s *Store) SubscribeSource(ctx context.Context, userID, sourceID int64, folderID *int64) (Feed, error) {

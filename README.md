@@ -70,14 +70,14 @@ To add a language, create a locale JSON file using the keys in `en.json`, add it
 
 ## Agent skills
 
-Project-scoped skills are stored in `.agents/skills/` and included with the repository. After cloning, open the project root in Codex; no global installation is required. `skills-lock.json` tracks skills with upstream sources. Node.js 24 is used by the project script to restore or update those skills:
+Project-scoped skills live in `.agents/skills/`. That directory is listed in `.gitignore`, so the skills are not part of the repository and a fresh clone has none. `skills-lock.json` records the externally maintained skills and their upstream sources; the project script restores or updates them with Node.js 24:
 
 ```sh
 bash scripts/sync-skills.sh install  # restore lock-tracked skills, if needed
 bash scripts/sync-skills.sh update   # update lock-tracked skills
 ```
 
-The script reapplies Pulse-specific rules to the project `handoff` skill after restoration or update. Superpowers workflow skills are vendored from the current `obra/superpowers-skills` source; `diagnosing-superpowers` remains because it is no longer published there, and the older `using-superpowers` name is retained alongside its successor, `using-skills`. Do not install the project skills globally.
+The script reapplies Pulse-specific rules to the project `handoff` skill after restoration or update. Skills that are not in `skills-lock.json`, such as the Superpowers workflow skills (`obra/superpowers-skills`) and `diagnosing-superpowers`, are not restored by the script; copy them into `.agents/skills/` yourself if you use them. Do not install the project skills globally.
 
 ## Production build and deployment
 
@@ -110,7 +110,7 @@ Before updating production, back up the database. Then build and start the updat
 ./scripts/update-production.sh
 ```
 
-It requires a clean checkout on `master`, saves a database dump under `backups/production/`, fast-forwards from `origin/master`, validates Compose configuration, rebuilds the services, and waits for health checks. Do not run the local database Compose group against the production data directory.
+It requires a clean checkout on `master`, creates a database backup with `scripts/backup-production.sh` (see [Production backups](#production-backups); the update stops if the backup fails), fast-forwards from `origin/master`, validates Compose configuration, rebuilds the services, and waits for health checks. Do not run the local database Compose group against the production data directory.
 
 Article search uses the PostgreSQL extension `pg_trgm`, which migration `016_article_search.sql` creates. It ships with the official PostgreSQL images and is a trusted extension, so the database owner can create it without superuser rights; with another PostgreSQL installation, make sure the contrib extensions are installed. The migration rewrites every stored article once and builds a search index, which took about 3 minutes for 500,000 articles in testing. The API starts listening only afterwards. The production API health check therefore allows a 15-minute start period, and the update script waits up to 900 seconds for health checks (override with `DEPLOY_WAIT_TIMEOUT=<seconds> scripts/update-production.sh`). If even that is exceeded, follow `docker compose --env-file .env.production -f compose.production.yml logs -f api` until the API reports that it is listening.
 
@@ -138,13 +138,107 @@ A background maintenance job runs about one minute after API start and then ever
 
 ## Backups, logs, and shutdown
 
-Create a database dump before moving or upgrading data:
+### Local database dump
+
+Create a dump of the local development database before moving or upgrading data:
 
 ```sh
 docker compose -f compose.database.yml exec -T db pg_dump -U pulse pulse > pulse-backup.sql
 ```
 
-If `POSTGRES_USER` or `POSTGRES_DB` differs in `.env`, use those values instead. Follow logs with `docker compose -f <compose-file> logs -f`. Stop the local stack with:
+If `POSTGRES_USER` or `POSTGRES_DB` differs in `.env`, use those values instead.
+
+### Production backups
+
+`scripts/backup-production.sh` writes a compressed `pg_dump` archive (custom format) of the production database to `backups/production/pulse-<UTC timestamp>.dump`. The directory gets mode 700 and every backup mode 600. The dump is written to a temporary file and renamed only when it is not empty and `pg_restore --list` can read it. Afterwards the script deletes backups older than `BACKUP_KEEP_DAYS` days (default 14), including plain `.sql` dumps from older versions of the update script, but never the newest backup. The `db` service must be running. Progress goes to stderr and the path of the new backup to stdout.
+
+```sh
+./scripts/backup-production.sh
+BACKUP_KEEP_DAYS=30 ./scripts/backup-production.sh
+```
+
+The backups are stored on the same host as the database. Copy `backups/production/` to another machine or storage regularly.
+
+To back up daily with cron, add a line like this to the crontab of a user who may run `docker` (replace `/srv/pulse` with the checkout path):
+
+```cron
+17 3 * * * cd /srv/pulse && ./scripts/backup-production.sh >> /var/log/pulse-backup.log 2>&1
+```
+
+Or use a systemd timer. `/etc/systemd/system/pulse-backup.service`:
+
+```ini
+[Unit]
+Description=Pulse production database backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/pulse
+Environment=BACKUP_KEEP_DAYS=14
+ExecStart=/srv/pulse/scripts/backup-production.sh
+```
+
+`/etc/systemd/system/pulse-backup.timer`:
+
+```ini
+[Unit]
+Description=Daily Pulse production database backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it with `sudo systemctl daemon-reload && sudo systemctl enable --now pulse-backup.timer`, and check it with `systemctl list-timers pulse-backup.timer` and `journalctl -u pulse-backup.service`. The service runs as root unless you add `User=` with an account in the `docker` group.
+
+### Restoring production
+
+```sh
+./scripts/restore-production.sh --yes backups/production/pulse-20261101T031700Z.dump
+```
+
+Without `--yes` the script only explains what it would replace. With it, the script checks that the archive is readable, saves the current database with `backup-production.sh` (`--skip-safety-backup` skips this when the current database cannot be dumped), stops `api` and `web`, drops and recreates the database, restores the archive with `pg_restore`, starts all services, and waits up to `DEPLOY_WAIT_TIMEOUT` seconds (default 900) for their health checks. Everything written after the backup is lost, including newer sessions, so users may have to sign in again.
+
+Plain SQL dumps (`*.sql` from older versions of the update script) are not restored by the script. Stop `api` and `web`, recreate the database inside the `db` container (`dropdb --force` and `createdb` as `POSTGRES_USER`), load the file with `psql -v ON_ERROR_STOP=1 -U <user> -d <database> < <file>.sql` through `docker compose ... exec -T db`, and start the services again.
+
+**Rolling back an upgrade.** Migrations only move forward; there are no down scripts. To return to the previous version, build the previous commit's images first and then restore the backup that `update-production.sh` made before the upgrade, so the old API never starts against the newer schema:
+
+```sh
+git checkout <previous-commit>
+docker compose --env-file .env.production -f compose.production.yml build
+./scripts/restore-production.sh --yes backups/production/<backup-made-by-the-update>.dump
+```
+
+Return to `master` (`git checkout master`) before the next `update-production.sh` run.
+
+### Restore rehearsal
+
+Test the restore regularly, for example every three months and after changing the backup setup, on a disposable copy and never on the production project. The rehearsal of 2026-11-01 used this procedure:
+
+1. Copy `compose.production.yml` into an empty directory and change its `name:` to an unused project name (`pulse-s9-prod`). Copy `scripts/backup-production.sh` and `scripts/restore-production.sh` into a `scripts/` subdirectory, symlink `backend` and `frontend` to the checkout, and create a `.env.production` with a test password, test administrator credentials, and an unused `WEB_PORT`. The relative volume `./data/postgres-production` then points into the copy, so the real data directory is not touched.
+2. `docker compose --env-file .env.production -f compose.production.yml up -d --build --wait`, sign in through the web port, and create a folder "Before backup".
+3. `scripts/backup-production.sh` created a 42 KB archive with mode 600 in a directory with mode 700.
+4. Create a folder "After backup". `scripts/restore-production.sh <archive>` without `--yes` refused; with `--yes` it took a safety backup, stopped `api` and `web`, recreated and restored the database, and all three services became healthy again.
+5. After signing in again, the folder list contained "Before backup" and not "After backup": the restore returned the database to the backup. Rotation was checked as well: with `BACKUP_KEEP_DAYS=14`, backups whose modification time was 20 days old were deleted, while the newest backup was kept even with an old modification time.
+6. Clean up with `docker compose --env-file .env.production -f compose.production.yml down -v --rmi local` and delete the copy.
+
+### Logs and health checks
+
+The API writes structured logs (Go `log/slog`) to stderr. `LOG_FORMAT` selects `text` (default, used by the local Compose files) or `json` (default in `compose.production.yml`); `LOG_LEVEL` is `debug`, `info` (default), `warn`, or `error`. An invalid value stops the API at startup. Every request produces one `http request` record with `method`, `path` (never the query string, which can contain search terms), `status`, `bytes`, `duration_ms`, `request_id`, and `user_id` for signed-in users; health checks are logged only at `debug`. Every response carries an `X-Request-ID` header with the same ID: a well-formed incoming `X-Request-ID` (up to 64 characters of letters, digits, `.`, `_`, `:` and `-`) is kept, anything else is replaced by a generated ID. Include it when reporting a problem. The refresh scheduler logs one `rss refresh cycle finished` record per cycle or manual refresh with the number of sources (`targets`) and how many were `refreshed`, `not_modified`, `failed`, or `skipped`; cycles without due sources are logged only at `debug`.
+
+Follow logs with `docker compose -f <compose-file> logs -f api`. With JSON logs, a filter such as `docker compose --env-file .env.production -f compose.production.yml logs --no-log-prefix api | jq 'select(.status >= 500)'` shows failed requests.
+
+`GET /api/health/live` reports that the API process is running without contacting the database. `GET /api/health/ready` also checks the database (2-second timeout) and answers `503` when it is unavailable; the Compose health checks use it. `GET /api/health` remains an alias of the readiness check. The API does not export Prometheus metrics yet.
+
+### Shutdown
+
+Stop the local stack with:
 
 ```sh
 docker compose -f compose.frontend.yml down
@@ -162,3 +256,5 @@ PostgreSQL data remains in `data/postgres/`. Do not remove it if you want to kee
 - `data/postgres/` — bind-mounted local PostgreSQL data.
 - `compose.frontend.yml`, `compose.backend.yml`, `compose.database.yml` — independent local service groups.
 - `compose.production.yml` — production build and deployment.
+- `scripts/` — production update, backup, and restore scripts, and the agent-skill sync script.
+- `backend/openapi/openapi.json` — OpenAPI 3.1 description of the HTTP API.

@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -66,20 +66,20 @@ func RunOnce(ctx context.Context, repository Repository, config Config) error {
 		if err != nil {
 			failures = append(failures, fmt.Errorf("article retention: %w", err))
 		}
-		log.Printf("maintenance: deleted %d articles older than %d days", count, config.ArticleRetentionDays)
+		slog.Info("maintenance: deleted expired articles", slog.Int64("count", count), slog.Int("retention_days", config.ArticleRetentionDays))
 	}
 	if config.QuarantineRetentionDays > 0 {
 		count, err := repository.DeleteExpiredQuarantine(ctx, config.QuarantineRetentionDays)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("quarantine retention: %w", err))
 		}
-		log.Printf("maintenance: deleted %d quarantine records older than %d days", count, config.QuarantineRetentionDays)
+		slog.Info("maintenance: deleted expired quarantine records", slog.Int64("count", count), slog.Int("retention_days", config.QuarantineRetentionDays))
 	}
 	count, err := repository.DeleteExpiredSessions(ctx)
 	if err != nil {
 		failures = append(failures, fmt.Errorf("session cleanup: %w", err))
 	}
-	log.Printf("maintenance: deleted %d expired sessions", count)
+	slog.Info("maintenance: deleted expired sessions", slog.Int64("count", count))
 	return errors.Join(failures...)
 }
 
@@ -110,7 +110,7 @@ func (j Job) Start(ctx context.Context) <-chan struct{} {
 			case <-timer.C:
 			}
 			if err := RunOnce(ctx, j.Repository, j.Config); err != nil && ctx.Err() == nil {
-				log.Printf("maintenance failed: %v", err)
+				slog.Error("maintenance failed", slog.String("error", err.Error()))
 			}
 			timer.Reset(interval)
 		}

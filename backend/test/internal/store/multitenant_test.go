@@ -252,22 +252,24 @@ func TestSubscribeSourceRejectsSubscriptionsAbovePerUserLimit(t *testing.T) {
 		VALUES ('https://another.example/feed','Another','https://another.example/feed') RETURNING id`).Scan(&newSourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.New(pool).CheckUserFeedLimit(ctx, adminID); !errors.Is(err, store.ErrFeedLimitReached) {
-		t.Fatalf("CheckUserFeedLimit() error = %v, want ErrFeedLimitReached", err)
-	}
-	var sourceCountBefore int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources`).Scan(&sourceCountBefore); err != nil {
+	var sourceCountBefore, requestCountBefore int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM feed_sources),(SELECT COUNT(*) FROM feed_requests)`).Scan(&sourceCountBefore, &requestCountBefore); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.New(pool).EnsureFeedSourceForUser(ctx, adminID, "https://blocked-by-limit.example/rss", nil); !errors.Is(err, store.ErrFeedLimitReached) {
-		t.Fatalf("EnsureFeedSourceForUser() error = %v, want ErrFeedLimitReached", err)
+	// Adding a feed goes through RequestFeedApproval first; at the limit it must
+	// fail before creating a source or a pending request.
+	if _, err := store.New(pool).RequestFeedApproval(ctx, adminID, "https://blocked-by-limit.example/rss", "", nil, nil); !errors.Is(err, store.ErrFeedLimitReached) {
+		t.Fatalf("RequestFeedApproval() error = %v, want ErrFeedLimitReached", err)
 	}
-	var sourceCountAfter int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources`).Scan(&sourceCountAfter); err != nil {
+	if _, err := store.New(pool).RequestFeedApproval(ctx, adminID, "https://another.example/feed", "", nil, nil); !errors.Is(err, store.ErrFeedLimitReached) {
+		t.Fatalf("RequestFeedApproval(existing source) error = %v, want ErrFeedLimitReached", err)
+	}
+	var sourceCountAfter, requestCountAfter int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM feed_sources),(SELECT COUNT(*) FROM feed_requests)`).Scan(&sourceCountAfter, &requestCountAfter); err != nil {
 		t.Fatal(err)
 	}
-	if sourceCountAfter != sourceCountBefore {
-		t.Fatalf("feed source count changed at limit: before %d, after %d", sourceCountBefore, sourceCountAfter)
+	if sourceCountAfter != sourceCountBefore || requestCountAfter != requestCountBefore {
+		t.Fatalf("counts changed at limit: sources %d -> %d, requests %d -> %d", sourceCountBefore, sourceCountAfter, requestCountBefore, requestCountAfter)
 	}
 	if _, err := store.New(pool).SubscribeSource(ctx, adminID, newSourceID, nil); !errors.Is(err, store.ErrFeedLimitReached) {
 		t.Fatalf("SubscribeSource() error = %v, want ErrFeedLimitReached", err)
@@ -371,7 +373,11 @@ func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.
 	if err := pool.QueryRow(ctx, `SELECT normalized_url FROM feed_sources LIMIT 1`).Scan(&normalizedURL); err != nil {
 		t.Fatal(err)
 	}
-	readerFeed, err := store.New(pool).SubscribeFeed(ctx, readerID, normalizedURL, feeds.Document{Title: "ignored"}, &readerFolder.ID)
+	approval, err := store.New(pool).RequestFeedApproval(ctx, readerID, normalizedURL, "", &readerFolder.ID, nil)
+	if err != nil || !approval.Approved {
+		t.Fatalf("RequestFeedApproval(existing source) = %#v, %v; want approved", approval, err)
+	}
+	readerFeed, err := store.New(pool).SubscribeSource(ctx, readerID, approval.SourceID, &readerFolder.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,8 +418,8 @@ func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.
 	if len(adminArticle) != 1 || adminArticle[0].IsRead || !adminArticle[0].IsSaved {
 		t.Fatalf("admin state changed after reader update: %#v", adminArticle)
 	}
-	if _, err := store.New(pool).SubscribeFeed(ctx, readerID, normalizedURL, feeds.Document{}, &folderID); err == nil {
-		t.Fatal("subscription to another user's folder must be rejected")
+	if _, err := store.New(pool).RequestFeedApproval(ctx, readerID, normalizedURL, "", &folderID, nil); !errors.Is(err, store.ErrFolderUnavailable) {
+		t.Fatalf("subscription to another user's folder: error = %v, want ErrFolderUnavailable", err)
 	}
 }
 
