@@ -181,19 +181,48 @@ func resolve(base *url.URL, raw string) string {
 	return resolved.String()
 }
 
+// rfc822Zones maps the zone names allowed by RFC 822 to numeric offsets. Go's
+// time package only knows the offset of a named zone when it is the local zone,
+// so these names are rewritten before parsing.
+var rfc822Zones = map[string]string{
+	"UT": "+0000", "UTC": "+0000", "GMT": "+0000", "Z": "+0000",
+	"EST": "-0500", "EDT": "-0400",
+	"CST": "-0600", "CDT": "-0500",
+	"MST": "-0700", "MDT": "-0600",
+	"PST": "-0800", "PDT": "-0700",
+}
+
+// dateLayouts covers RFC 3339/ISO 8601 and RFC 822/1123 dates as they appear in
+// real feeds: one- or two-digit days, optional weekday and seconds, two- or
+// four-digit years, and numeric offsets with or without a colon. Layouts
+// without a zone are interpreted as UTC.
+var dateLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05Z07:00",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+	"Mon, 2 Jan 2006 15:04:05 -0700",
+	"Mon, 2 Jan 2006 15:04:05 -07:00",
+	"Mon, 2 Jan 2006 15:04 -0700",
+	"Mon, 2 Jan 06 15:04:05 -0700",
+	"2 Jan 2006 15:04:05 -0700",
+	"2 Jan 2006 15:04 -0700",
+	"Mon, 2 Jan 2006 15:04:05 MST",
+	"2 Jan 2006 15:04:05 MST",
+	"Monday, 02-Jan-06 15:04:05 MST",
+}
+
 func parseDate(value string) (time.Time, bool) {
-	value = strings.TrimSpace(value)
-	layouts := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		time.RFC1123Z,
-		time.RFC1123,
-		time.RFC822Z,
-		time.RFC822,
-		"Mon, 02 Jan 2006 15:04:05 -0700",
-		"2006-01-02 15:04:05",
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return time.Time{}, false
 	}
-	for _, layout := range layouts {
+	if offset, ok := rfc822Zones[strings.ToUpper(fields[len(fields)-1])]; ok && len(fields) > 1 {
+		fields[len(fields)-1] = offset
+	}
+	value = strings.Join(fields, " ")
+	for _, layout := range dateLayouts {
 		if parsed, err := time.Parse(layout, value); err == nil {
 			return parsed, true
 		}
