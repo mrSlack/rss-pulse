@@ -54,7 +54,7 @@ docker compose -f compose.frontend.yml exec frontend npm run test -- --run
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e
 ```
 
-Playwright starts a local Vite server and uses deterministic API fixtures. Screenshot baselines are stored under `frontend/test/e2e/`. After an intentional visual change, review and update them with:
+Playwright starts a local Vite server and uses deterministic API fixtures. The offline and installation tests (`frontend/test/e2e/pwa.spec.ts`) run against a production build that Playwright serves with `vite preview` on port 4173. Screenshot baselines are stored under `frontend/test/e2e/`. After an intentional visual change, review and update them with:
 
 ```sh
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e:update
@@ -66,7 +66,7 @@ The Compose files use the external `rss-reader-net` network so each service grou
 
 The interface is available in English, German, and Russian. The first visit defaults to English. Choose a language from the selector in the toolbar or sign-in screen; the preference is stored in browser local storage. Translation catalogs are plain JSON files in `frontend/src/locales/`.
 
-To add a language, create a locale JSON file using the keys in `en.json`, add its language code to `supportedLanguages` and `resources` in `frontend/src/i18n.ts`, and add its native display name to `frontend/src/LanguageSelector.tsx`. English is the source catalog and fallback.
+To add a language, create a locale JSON file using the keys in `en.json`, add its language code to `supportedLanguages` and a loader to `catalogLoaders` in `frontend/src/i18n.ts`, and add its native display name to `frontend/src/LanguageSelector.tsx`. English is the source catalog and fallback.
 
 ## Agent skills
 
@@ -131,6 +131,8 @@ Sessions use a random HttpOnly cookie with `SameSite=Strict` and expire after 14
 Sign-in is rate limited: after 10 failed attempts for an account within 15 minutes, or 30 attempts from one client address within a minute, the API answers `429` until the window allows again. The API reads the client address from `X-Real-IP` only when the request comes from a network in `TRUSTED_PROXY_CIDRS` (comma-separated CIDRs; empty uses loopback, RFC 1918 and `fc00::/7`, which covers the Docker network of the bundled Nginx; `none` ignores the header). An invalid value stops the API at startup. Each user may have at most 10 feed requests awaiting approval.
 
 The bundled Nginx sends a Content Security Policy and other browser security headers. It does not terminate TLS and therefore does not send `Strict-Transport-Security`; configure HSTS on the TLS-terminating reverse proxy (for example `add_header Strict-Transport-Security "max-age=31536000" always;` in a host-level Nginx).
+
+Pulse can be installed as an app and keeps recently loaded article lists readable offline. This uses a service worker, which browsers only allow over HTTPS (or on `localhost`). The stored articles and the remembered account are deleted from the device on sign-out, when the session expires, and when another account signs in. A reverse proxy in front of Pulse must not cache `/sw.js` or `/manifest.webmanifest` longer than the bundled Nginx does (`no-cache`); otherwise updates reach installed apps late. After a deployment, open pages offer a "Reload" button to switch to the new version. See "Installation and offline reading" in `docs/PROJECT.md`.
 
 ### Data retention
 

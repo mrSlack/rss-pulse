@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { serviceWorker } from './vite-plugin-service-worker.ts';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), serviceWorker()],
   build: {
     rolldownOptions: {
       output: {

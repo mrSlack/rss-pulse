@@ -54,7 +54,7 @@ docker compose -f compose.frontend.yml exec frontend npm run test -- --run
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e
 ```
 
-Playwright startet einen lokalen Vite-Server und verwendet deterministische API-Fixtures. Screenshot-Baselines liegen unter `frontend/test/e2e/`. Nach einer beabsichtigten visuellen Änderung prüfen und aktualisieren:
+Playwright startet einen lokalen Vite-Server und verwendet deterministische API-Fixtures. Die Offline- und Installationstests (`frontend/test/e2e/pwa.spec.ts`) laufen gegen einen Produktions-Build, den Playwright mit `vite preview` auf Port 4173 ausliefert. Screenshot-Baselines liegen unter `frontend/test/e2e/`. Nach einer beabsichtigten visuellen Änderung prüfen und aktualisieren:
 
 ```sh
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e:update
@@ -66,7 +66,7 @@ Alle Compose-Dateien verwenden das externe Netzwerk `rss-reader-net`, damit die 
 
 Die Oberfläche ist auf Englisch, Deutsch und Russisch verfügbar. Beim ersten Besuch wird Englisch verwendet. Wählen Sie die Sprache über die Auswahl in der Werkzeugleiste oder auf der Anmeldeseite; die Auswahl wird im lokalen Browserspeicher abgelegt. Die JSON-Übersetzungen liegen in `frontend/src/locales/`.
 
-Für eine weitere Sprache erstellen Sie eine JSON-Datei auf Basis der Schlüssel in `en.json`, ergänzen den Sprachcode in `supportedLanguages` und `resources` in `frontend/src/i18n.ts` und fügen den nativen Namen in `frontend/src/LanguageSelector.tsx` hinzu. Englisch ist Quellsprache und Fallback.
+Für eine weitere Sprache erstellen Sie eine JSON-Datei auf Basis der Schlüssel in `en.json`, ergänzen den Sprachcode in `supportedLanguages` und einen Loader in `catalogLoaders` in `frontend/src/i18n.ts` und fügen den nativen Namen in `frontend/src/LanguageSelector.tsx` hinzu. Englisch ist Quellsprache und Fallback.
 
 ## Agent-Skills
 
@@ -129,6 +129,8 @@ Sitzungen verwenden ein zufälliges HttpOnly-Cookie mit `SameSite=Strict` und la
 Anmeldungen sind begrenzt: Nach 10 fehlgeschlagenen Versuchen für ein Konto innerhalb von 15 Minuten oder 30 Versuchen von einer Client-Adresse innerhalb einer Minute antwortet die API mit `429`, bis das Zeitfenster wieder Versuche zulässt. Die API übernimmt die Client-Adresse aus `X-Real-IP` nur, wenn die Anfrage aus einem Netz in `TRUSTED_PROXY_CIDRS` kommt (kommagetrennte CIDRs; leer bedeutet Loopback, RFC 1918 und `fc00::/7`, also auch das Docker-Netz des mitgelieferten Nginx; `none` ignoriert den Header). Ein ungültiger Wert verhindert den Start der API. Jede Person kann höchstens 10 Feed-Anfragen gleichzeitig zur Freigabe offen haben.
 
 Der mitgelieferte Nginx sendet eine Content Security Policy und weitere Browser-Sicherheitsheader. Er terminiert kein TLS und sendet deshalb kein `Strict-Transport-Security`; konfigurieren Sie HSTS am TLS-terminierenden Reverse Proxy (zum Beispiel `add_header Strict-Transport-Security "max-age=31536000" always;` in einem Nginx auf dem Host).
+
+Pulse lässt sich als App installieren und hält zuletzt geladene Artikellisten offline lesbar. Dafür wird ein Service Worker verwendet, den Browser nur über HTTPS (oder auf `localhost`) zulassen. Gespeicherte Artikel und das gemerkte Konto werden beim Abmelden, bei abgelaufener Sitzung und bei der Anmeldung eines anderen Kontos vom Gerät gelöscht. Ein vorgeschalteter Reverse Proxy darf `/sw.js` und `/manifest.webmanifest` nicht länger cachen als der mitgelieferte Nginx (`no-cache`), sonst erreichen Updates installierte Apps verspätet. Nach einem Deployment bieten geöffnete Seiten eine Schaltfläche „Neu laden“ zum Wechsel auf die neue Version an. Details stehen unter „Installation and offline reading“ in `docs/PROJECT.md`.
 
 ### Datenaufbewahrung
 

@@ -432,5 +432,9 @@
   "apiErrors.opml.too_large": "Die OPML-Datei darf nicht größer als 1 MiB sein.",
   "apiErrors.opml.content_type_invalid": "Laden Sie eine OPML-Datei hoch.",
   "apiErrors.opml.import_failed": "Die Abonnements konnten nicht importiert werden.",
-  "apiErrors.opml.export_failed": "Die Abonnements konnten nicht exportiert werden."
+  "apiErrors.opml.export_failed": "Die Abonnements konnten nicht exportiert werden.",
+  "offline.reader": "Sie sind offline. Zuvor geladene Artikel bleiben lesbar.",
+  "offline.signedOut": "Sie sind offline.",
+  "update.available": "Eine neue Version von Pulse ist verfügbar.",
+  "update.reload": "Neu laden"
 }

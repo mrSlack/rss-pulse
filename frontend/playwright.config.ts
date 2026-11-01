@@ -1,4 +1,11 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
+
+/** Port of the production preview server used by test/e2e/pwa.spec.ts. */
+const previewPort = 4173;
+// Outside dist/, which may belong to another user in the dev containers.
+const previewDir = join(tmpdir(), 'pulse-e2e-preview');
 
 export default defineConfig({
   testDir: './test/e2e',
@@ -22,10 +29,17 @@ export default defineConfig({
       args: ['--no-sandbox'],
     },
   },
-  webServer: {
+  webServer: [{
     command: 'npm run dev -- --host 127.0.0.1',
     url: 'http://127.0.0.1:5173',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
-  },
+  }, {
+    // A production build for the service worker tests (pwa.spec.ts); the dev
+    // server registers no service worker. It proxies /api like the dev server.
+    command: `npx vite build --outDir ${previewDir} --emptyOutDir --logLevel warn && npx vite preview --outDir ${previewDir} --host 127.0.0.1 --port ${previewPort} --strictPort`,
+    url: `http://127.0.0.1:${previewPort}`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+  }],
 });

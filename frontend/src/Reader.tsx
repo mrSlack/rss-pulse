@@ -176,7 +176,7 @@ export function Reader({ user, theme, onToggleTheme, onUserUpdated, onSignOut, o
         />
 
         <section className="content-area">
-          {view.adminView ? <Suspense fallback={<div className="list-loading" role="status"><span className="loader" />{t('states.loading')}</div>}>
+          {view.adminView ? <Suspense fallback={<div className="list-loading" aria-busy="true"><span className="loader" />{t('states.loading')}</div>}>
             <AdminPanel currentUserId={user.id} onSignedOut={onSignedOut} />
           </Suspense> : <>
           <div className="page-heading">
