@@ -234,7 +234,9 @@ Die API schreibt strukturierte Logs (Go `log/slog`) nach stderr. `LOG_FORMAT` w�
 
 Logs verfolgen Sie mit `docker compose -f <compose-datei> logs -f api`. Bei JSON-Logs zeigt etwa `docker compose --env-file .env.production -f compose.production.yml logs --no-log-prefix api | jq 'select(.status >= 500)'` fehlgeschlagene Anfragen.
 
-`GET /api/health/live` meldet, dass der API-Prozess läuft, ohne die Datenbank anzusprechen. `GET /api/health/ready` prüft zusätzlich die Datenbank (2 Sekunden Timeout) und antwortet `503`, wenn sie nicht erreichbar ist; die Compose-Health-Checks verwenden diesen Endpunkt. `GET /api/health` bleibt ein Alias der Bereitschaftsprüfung. Prometheus-Metriken exportiert die API noch nicht.
+`GET /api/health/live` meldet, dass der API-Prozess läuft, ohne die Datenbank anzusprechen. `GET /api/health/ready` prüft zusätzlich die Datenbank (2 Sekunden Timeout) und antwortet `503`, wenn sie nicht erreichbar ist; die Compose-Health-Checks verwenden diesen Endpunkt. `GET /api/health` bleibt ein Alias der Bereitschaftsprüfung.
+
+Mit `METRICS_ADDR` (zum Beispiel `METRICS_ADDR=:9090`; standardmäßig leer, also ohne Metriken) exportiert die API Prometheus-Metriken auf einem eigenen Listener unter `http://api:9090/metrics`. Er gehört nicht zur öffentlichen Website: Nginx leitet nur `/api/` an Port 8080 weiter, und die Compose-Dateien geben Port 9090 nur per `expose` frei, ohne Host-Port. Betreiben Sie Prometheus als Container im selben Docker-Netzwerk (`rss-reader-net` lokal, `pulse-production_default` in Produktion) und lassen Sie es `api:9090` abfragen; jeder Container in diesem Netzwerk erreicht den Port, verbinden Sie also nur vertrauenswürdige Dienste. Ein ungültiger Wert oder der API-Port 8080 stoppt die API beim Start. Die Metriken umfassen API-Anfragen nach Route, Ergebnisse und Rückstand der Feed-Aktualisierung, Anmeldeergebnisse, Wartungsläufe, das Such-Upgrade und den Datenbank-Pool; [docs/PROJECT.md](docs/PROJECT.md#metrics) listet sie mit einer Beispiel-Scrape-Konfiguration und Alarmregeln auf (englisch).
 
 ### Stoppen
 

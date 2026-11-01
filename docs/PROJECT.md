@@ -24,11 +24,95 @@ The frontend is a static React build. The backend owns authentication, authoriza
 
 The API logs through Go's `log/slog`; `cmd/api` builds the logger from `LOG_FORMAT` (`text` by default, `json` in `compose.production.yml`) and `LOG_LEVEL` (`debug`, `info` by default, `warn`, `error`), rejects invalid values at startup, and installs it as the default logger, so the syncer, the maintenance job, and `net/http` server errors write through the same handler.
 
-The router's middleware chain is `requestID`, `accessLog`, chi's `Recoverer`, and `sameOrigin`. `requestID` reuses an incoming `X-Request-ID` only when it matches `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` and otherwise generates 16 random bytes in hex; it stores the ID where chi's `middleware.GetReqID` finds it and returns it in the `X-Request-ID` response header. `accessLog` writes one `http request` record per request with `method`, `path` (`r.URL.Path`; the query string is never logged because it can contain search terms), `status`, `bytes`, `duration_ms`, `request_id`, and `user_id`. The user is only known inside `authenticate`, which runs later in route-specific middleware, so `accessLog` places a mutable per-request holder in the context and `authenticate` records the user ID in it. `Recoverer` runs inside `accessLog`, so a recovered panic is logged with status 500. Requests under `/api/health` are logged at debug level. The bundled Nginx forwards its own `$request_id` as `X-Request-ID` and writes it to its access log (`request_id=`), so proxy and API log lines can be matched; like the API, its log format records the path without the query string.
+The router's middleware chain is `requestID`, `accessLog`, `instrument` (request metrics, only when metrics are enabled), chi's `Recoverer`, and `sameOrigin`. `requestID` reuses an incoming `X-Request-ID` only when it matches `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` and otherwise generates 16 random bytes in hex; it stores the ID where chi's `middleware.GetReqID` finds it and returns it in the `X-Request-ID` response header. `accessLog` writes one `http request` record per request with `method`, `path` (`r.URL.Path`; the query string is never logged because it can contain search terms), `status`, `bytes`, `duration_ms`, `request_id`, and `user_id`. The user is only known inside `authenticate`, which runs later in route-specific middleware, so `accessLog` places a mutable per-request holder in the context and `authenticate` records the user ID in it. `Recoverer` runs inside `accessLog` and `instrument`, so a recovered panic is logged and counted with status 500. Requests under `/api/health` are logged at debug level. The bundled Nginx forwards its own `$request_id` as `X-Request-ID` and writes it to its access log (`request_id=`), so proxy and API log lines can be matched; like the API, its log format records the path without the query string.
 
 The syncer logs one `rss refresh cycle finished` record per scheduled cycle (`trigger=schedule`) or manual refresh (`trigger=user`, `user_id`) with `targets`, `refreshed`, `not_modified`, `failed`, `skipped` (not claimed or cancelled), and `duration_ms`; cycles without targets are logged at debug level. Individual fetch failures are logged at debug level because they are expected and shown per feed in the UI; claim, commit, and lease errors are logged as errors. The maintenance job logs its deletion counts.
 
-`GET /api/health/live` answers `200 {"status":"ok"}` without touching the database (liveness). `GET /api/health/ready` pings PostgreSQL with a 2-second timeout and answers `503 system.database_unavailable` when that fails (readiness). `GET /api/health` is kept as an alias of the readiness check for existing monitors. The health checks of `compose.backend.yml`, `compose.production.yml`, and `compose.e2e.yml` call `/api/health/ready`. Prometheus metrics are not implemented (see deferred work).
+`GET /api/health/live` answers `200 {"status":"ok"}` without touching the database (liveness). `GET /api/health/ready` pings PostgreSQL with a 2-second timeout and answers `503 system.database_unavailable` when that fails (readiness). `GET /api/health` is kept as an alias of the readiness check for existing monitors. The health checks of `compose.backend.yml`, `compose.production.yml`, and `compose.e2e.yml` call `/api/health/ready`. Prometheus metrics are served on a separate listener (see "Metrics").
+
+## Metrics
+
+The API exports Prometheus metrics when `METRICS_ADDR` is set (empty by default: metrics disabled, nothing is recorded and no listener is opened). `METRICS_ADDR` is a `host:port` or `:port` for a second HTTP listener, for example `:9090`; it must not use the API port 8080, and an invalid value stops the API at startup. That listener serves only `GET /metrics` (404 for every other path); the API router on port 8080 has no metrics route. The bundled Nginx proxies only `/api/` to `api:8080`, so metrics are never reachable through the public site. `compose.backend.yml` and `compose.production.yml` pass `METRICS_ADDR` through and declare port 9090 with `expose` only (no host port): a Prometheus container on the same Docker network (`rss-reader-net` locally, `pulse-production_default` in production) scrapes `api:9090`. `expose` does not restrict access; every container on that network can reach the port, so attach only trusted services, and publish a host port only bound to loopback if a host-level Prometheus needs it. The metrics contain no user data, but they reveal activity such as sign-in failures.
+
+The implementation in `internal/metrics` uses `github.com/prometheus/client_golang` (pinned in `go.mod`). It adds seven small modules (client_model, common, procfs, perks, xxhash, goautoneg, protobuf) and brings the standard Go runtime and process collectors, correct histogram and text-format encoding, and `promhttp`; a hand-written exposition would have had to reimplement those. All methods of a nil `*metrics.Metrics` do nothing, so the syncer, the maintenance job, and the router run unchanged without metrics.
+
+Every label has a small fixed set of values: `route` is the chi route pattern (for example `/api/feeds/{id}`; requests that match no route are `unmatched`), `method` is a standard HTTP method or `OTHER`, `status_class` is `2xx`…`5xx`, and `outcome` and `kind` are the values listed below. User IDs, e-mail addresses, URLs, and feed IDs are never labels; a test fails when a `pulse_` metric gains any other label name.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `pulse_http_requests_total{route,method,status_class}` | counter | API requests. |
+| `pulse_http_request_duration_seconds{route,method,status_class}` | histogram | API request duration (default Prometheus buckets, 5 ms–10 s). |
+| `pulse_feed_refresh_attempts_total{outcome}` | counter | Refreshes of a claimed source: `ok` (new content committed), `not_modified` (HTTP 304), `error` (fetch, claim, or commit failed). Sources claimed by another worker or not yet due, and refreshes canceled by shutdown, are not counted. |
+| `pulse_feed_fetch_duration_seconds` | histogram | Feed download duration, successful or not (buckets 0.1–15 s; the fetch timeout is 15 s). |
+| `pulse_feed_articles_inserted_total` | counter | New articles stored by refreshes (updates and merged duplicates are not counted). |
+| `pulse_feed_articles_quarantined_total` | counter | Items newly held in quarantine by the stop-word filter; items already in quarantine are not counted again. Quarantine is per article, so it is not a refresh outcome. |
+| `pulse_feed_sources_due` | gauge | Sources with an enabled subscriber whose refresh interval has elapsed (what the next scheduler cycle would pick up). Briefly non-zero between cycles is normal. |
+| `pulse_feed_sources_overdue` | gauge | Due sources that have been due for more than 5 minutes: the scheduler is not keeping up. |
+| `pulse_feed_oldest_overdue_seconds` | gauge | How long the longest-waiting due source has been due; a never-fetched source counts from its creation. 0 without due sources. |
+| `pulse_feed_active_leases` | gauge | Sources being refreshed right now (unexpired lease). |
+| `pulse_feed_manual_refresh_queue_length` | gauge | Manual "refresh now" requests waiting for the worker (the one being processed is not included). |
+| `pulse_feed_requests_pending` | gauge | Feed requests waiting for an administrator (same count as the administration screen). |
+| `pulse_quarantine_pending` | gauge | Quarantined articles without a decision. |
+| `pulse_operational_stats_errors_total` | counter | Failed queries for the five database-derived gauges above. After a failure the last successful values are reported; before the first success the gauges are absent. |
+| `pulse_signin_attempts_total{outcome}` | counter | `POST /api/auth/login` by outcome: `success` (session created), `failure` (malformed request, wrong credentials, or a disabled account), `rate_limited` (HTTP 429), `error` (database or session failure). |
+| `pulse_maintenance_runs_total{outcome}` | counter | Retention maintenance runs, `success` or `failure` (any step failed). |
+| `pulse_maintenance_last_run_duration_seconds` | gauge | Duration of the latest run. |
+| `pulse_maintenance_last_success_timestamp_seconds` | gauge | Unix time of the latest run without failures; 0 until the first one (the first run starts one minute after start-up, then every 6 hours). |
+| `pulse_maintenance_deleted_rows_total{kind}` | counter | Rows deleted by maintenance: `articles`, `quarantine`, `unsubscribed_sources`, `unsubscribed_source_articles`, `sessions`. |
+| `pulse_search_upgrade_done` | gauge | 1 once the background article search upgrade has completed (immediately on later starts), else 0. |
+| `pulse_search_upgrade_backfilled_articles_total` | counter | Articles whose search key the upgrade filled since start. The remaining number is not exported: counting rows without a key needs a full scan of `articles`. |
+| `pulse_db_pool_acquired_connections`, `pulse_db_pool_idle_connections`, `pulse_db_pool_total_connections`, `pulse_db_pool_max_connections` | gauge | pgx pool state (`pgxpool.Stat`). |
+| `pulse_db_pool_acquires_total`, `pulse_db_pool_acquire_duration_seconds_total` | counter | Successful acquisitions and their total time. |
+| `pulse_db_pool_empty_acquires_total`, `pulse_db_pool_empty_acquire_wait_seconds_total` | counter | Acquisitions that had to wait for a connection, and the total wait. A steadily rising wait means `DB_MAX_CONNS` is too small for the load. |
+| `pulse_db_pool_canceled_acquires_total` | counter | Acquisitions canceled while waiting. |
+| `go_*`, `process_*`, `promhttp_metric_handler_*` | | Standard Go runtime, process, and scrape-handler collectors. |
+
+The pool, queue-length, and database-derived gauges are read during a scrape. The database-derived ones (`sources_due` … `quarantine_pending`) come from one statement, `store.OperationalStats`, whose due-source part reuses the scheduler's `DueSources` policy and costs about as much as one scheduler cycle; the result is cached for 15 seconds, and concurrent scrapes share one query (3-second timeout), so frequent or parallel scrapes do not load the database.
+
+Example Prometheus scrape configuration for a Prometheus container on the same Docker network:
+
+```yaml
+scrape_configs:
+  - job_name: pulse
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["api:9090"]
+```
+
+Suggested alert rules (thresholds are starting points):
+
+```yaml
+groups:
+  - name: pulse
+    rules:
+      - alert: PulseFeedRefreshErrorsHigh
+        expr: |
+          sum(rate(pulse_feed_refresh_attempts_total{outcome="error"}[30m]))
+            / sum(rate(pulse_feed_refresh_attempts_total[30m])) > 0.5
+        for: 30m
+        annotations:
+          summary: More than half of feed refreshes fail (network or DNS problem?)
+      - alert: PulseRefreshBacklog
+        expr: pulse_feed_oldest_overdue_seconds > 1800
+        for: 15m
+        annotations:
+          summary: A feed source has waited more than 30 minutes past its schedule
+      - alert: PulseMaintenanceStale
+        expr: |
+          time() - pulse_maintenance_last_success_timestamp_seconds > 86400
+            and on() time() - process_start_time_seconds > 86400
+        annotations:
+          summary: Retention maintenance has not succeeded for 24 hours
+      - alert: PulseSignInRateLimitedSpike
+        expr: increase(pulse_signin_attempts_total{outcome="rate_limited"}[15m]) > 20
+        annotations:
+          summary: Many throttled sign-in attempts (password guessing?)
+      - alert: PulseDatabasePoolWaiting
+        expr: rate(pulse_db_pool_empty_acquire_wait_seconds_total[5m]) > 0.5
+        for: 10m
+        annotations:
+          summary: Requests wait for database connections; consider raising DB_MAX_CONNS
+```
 
 ## Reader experience and interaction
 
@@ -224,6 +308,7 @@ Measurements on a seeded dataset (500,000 articles, 50 users) and the procedure 
 - `backend/internal/store/` — PostgreSQL persistence, account/library operations, and migrations.
 - `backend/internal/syncer/` — scheduled and manual refresh coordination and worker pool.
 - `backend/internal/maintenance/` — periodic retention cleanup of articles, quarantine records, and sessions.
+- `backend/internal/metrics/` — Prometheus collectors and the `/metrics` handler of the separate metrics listener; `metricstest` reads sample values in tests.
 - `backend/cmd/seed/` — development tool that fills an empty database with a large synthetic dataset for performance measurements.
 - `backend/cmd/perfbench/` — development tool that times searches and 200-item refresh commits on a seeded database.
 - `backend/test/internal/<package>/` — external Go test packages (`package <name>_test`) for the exported API of `backend/internal/<package>`; most backend tests, including the PostgreSQL integration tests, live here. Tests of unexported code stay beside their package as `*_internal_test.go` (or `*_test.go` in the same package), for example in `internal/httpapi`, `internal/store`, `internal/feeds`, `internal/auth`, `cmd/api`, and `cmd/seed`.
@@ -273,7 +358,6 @@ Migrations run before the API listens, so each must stay short: on the seeded 50
 - Arbitrary HTML rendering of feed content.
 - Translating RSS/user-created content or synchronizing language preferences between devices.
 - Distributed refresh scheduling across independent backend deployments.
-- Prometheus metrics (refresh durations and errors, HTTP latency) on an internal port; structured logs and the refresh cycle summaries cover operations for now.
 
 ## Operational instructions
 
