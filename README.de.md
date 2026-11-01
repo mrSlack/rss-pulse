@@ -49,6 +49,7 @@ docker compose -f compose.backend.yml restart api
 Komponententests und Playwright-Browsertests im Frontend-Container ausführen:
 
 ```sh
+docker compose -f compose.frontend.yml exec frontend npm run lint
 docker compose -f compose.frontend.yml exec frontend npm run test -- --run
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e
 ```
@@ -122,6 +123,10 @@ Die gemeinsame Feed-TTL beträgt standardmäßig 15 Minuten (zulässig sind 5 bi
 Zulässig sind nur öffentliche HTTP/HTTPS-RSS- und Atom-URLs. Loopback-, private und lokale Netzwerkadressen werden blockiert. Pulse speichert Feed-Metadaten und Zusammenfassungen; der vollständige Artikel bleibt auf der Website der Quelle.
 
 Sitzungen verwenden ein zufälliges HttpOnly-Cookie mit `SameSite=Strict` und laufen nach 14 Tagen ab. Passwörter werden als Argon2id-Hashes gespeichert. Außerhalb der lokalen Loopback-Entwicklung sind HTTPS und `SESSION_COOKIE_SECURE=true` erforderlich.
+
+Anmeldungen sind begrenzt: Nach 10 fehlgeschlagenen Versuchen für ein Konto innerhalb von 15 Minuten oder 30 Versuchen von einer Client-Adresse innerhalb einer Minute antwortet die API mit `429`, bis das Zeitfenster wieder Versuche zulässt. Die API übernimmt die Client-Adresse aus `X-Real-IP` nur, wenn die Anfrage aus einem Netz in `TRUSTED_PROXY_CIDRS` kommt (kommagetrennte CIDRs; leer bedeutet Loopback, RFC 1918 und `fc00::/7`, also auch das Docker-Netz des mitgelieferten Nginx; `none` ignoriert den Header). Ein ungültiger Wert verhindert den Start der API. Jede Person kann höchstens 10 Feed-Anfragen gleichzeitig zur Freigabe offen haben.
+
+Der mitgelieferte Nginx sendet eine Content Security Policy und weitere Browser-Sicherheitsheader. Er terminiert kein TLS und sendet deshalb kein `Strict-Transport-Security`; konfigurieren Sie HSTS am TLS-terminierenden Reverse Proxy (zum Beispiel `add_header Strict-Transport-Security "max-age=31536000" always;` in einem Nginx auf dem Host).
 
 ## Sicherung, Logs und Stoppen
 

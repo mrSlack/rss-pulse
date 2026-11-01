@@ -49,6 +49,7 @@ docker compose -f compose.backend.yml restart api
 Run component tests and Playwright browser tests in the frontend container:
 
 ```sh
+docker compose -f compose.frontend.yml exec frontend npm run lint
 docker compose -f compose.frontend.yml exec frontend npm run test -- --run
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e
 ```
@@ -124,6 +125,10 @@ Only public HTTP/HTTPS RSS and Atom URLs are accepted. The API blocks loopback, 
 Before storing a fetched article, Pulse checks its title and summary against the administrator-managed blocked-word dictionary. Matching is case-insensitive and respects whole words; phrases also match across punctuation. Matching articles are skipped and shown in the administration panel with their feed, the matched term, and the account that first added the feed. Other articles from that feed continue to load. The initial Russian, English, and German dictionary covers spam/fraud and erotic/pornographic terms; administrators can add or remove words. The panel shows the 100 most recently blocked articles. Removing a dictionary entry does not restore previously blocked articles.
 
 Sessions use a random HttpOnly cookie with `SameSite=Strict` and expire after 14 days. Passwords are stored as Argon2id hashes. Use HTTPS and `SESSION_COOKIE_SECURE=true` outside local loopback development.
+
+Sign-in is rate limited: after 10 failed attempts for an account within 15 minutes, or 30 attempts from one client address within a minute, the API answers `429` until the window allows again. The API reads the client address from `X-Real-IP` only when the request comes from a network in `TRUSTED_PROXY_CIDRS` (comma-separated CIDRs; empty uses loopback, RFC 1918 and `fc00::/7`, which covers the Docker network of the bundled Nginx; `none` ignores the header). An invalid value stops the API at startup. Each user may have at most 10 feed requests awaiting approval.
+
+The bundled Nginx sends a Content Security Policy and other browser security headers. It does not terminate TLS and therefore does not send `Strict-Transport-Security`; configure HSTS on the TLS-terminating reverse proxy (for example `add_header Strict-Transport-Security "max-age=31536000" always;` in a host-level Nginx).
 
 ## Backups, logs, and shutdown
 
