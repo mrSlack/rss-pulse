@@ -405,9 +405,10 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	if folderID != nil {
 		conditions = append(conditions, "uf.folder_id = "+add(*folderID))
 	}
-	if pattern := searchPattern(query); pattern != "" {
-		// Served by the trigram index articles_search_text_trgm_idx.
-		conditions = append(conditions, "a.search_text LIKE "+add(pattern)+` ESCAPE '\'`)
+	searching := false
+	if condition := searchCondition(query, add); condition != "" {
+		conditions = append(conditions, condition)
+		searching = true
 	}
 	if before != nil {
 		conditions = append(conditions, "(a.published_at, a.id) < ("+add(before.PublishedAt)+"::timestamptz, "+add(before.ID)+"::bigint)")
@@ -421,6 +422,12 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	}
 	limitArg := add(limit + 1)
 	offsetArg := add(offset)
+	if searching {
+		// Plan every search with its actual pattern. A cached prepared statement may
+		// switch to a generic plan that always reads the trigram index, which takes
+		// seconds for patterns that occur in most articles.
+		args = append([]any{pgx.QueryExecModeCacheDescribe}, args...)
+	}
 	rows, err := s.pool.Query(ctx, `SELECT a.id, uf.id, COALESCE(uf.title_override, fs.title), fs.url, a.title, a.url, a.summary, a.published_at,
 		COALESCE(state.is_read, FALSE), COALESCE(state.is_saved, FALSE)
 		FROM articles a JOIN user_feeds uf ON uf.feed_source_id = a.feed_source_id
