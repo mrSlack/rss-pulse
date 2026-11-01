@@ -1,8 +1,72 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, extractArticleImages, folderColorClass, folderColorStyle } from '../../src/api';
+import { ApiError, api, extractArticleImages, folderColorClass, folderColorStyle, isAbortError, setUnauthorizedHandler } from '../../src/api';
 import i18n from '../../src/i18n';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setUnauthorizedHandler(null);
+});
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+describe('typed API errors', () => {
+  it('throws an ApiError with the status, stable code and localized message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ code: 'feed.limit_reached', error: 'Limit.' }, 409)));
+    const error = await api.getFeeds().catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 409, code: 'feed.limit_reached', message: i18n.t('apiErrors.feed.limit_reached') });
+  });
+
+  it('reports network failures as an ApiError with status 0', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const error = await api.getFeeds().catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 0, code: 'network', message: i18n.t('apiErrors.network') });
+  });
+
+  it('passes an AbortSignal to fetch and rethrows aborts as abort errors', async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const pending = api.getArticles(new URLSearchParams({ filter: 'all' }), controller.signal).catch((reason: unknown) => reason);
+    controller.abort();
+    const error = await pending;
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+    expect(isAbortError(error)).toBe(true);
+    expect(error).not.toBeInstanceOf(ApiError);
+  });
+});
+
+describe('expired sessions', () => {
+  it('notifies the unauthorized handler for an authenticated call that returns 401', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ code: 'auth.session_expired', error: 'Expired.' }, 401)));
+    await expect(api.getFolders()).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it('does not treat the session probe or a failed sign-in as an expired session', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ code: 'auth.invalid_credentials', error: 'No.' }, 401))));
+    await expect(api.currentUser()).rejects.toMatchObject({ status: 401 });
+    await expect(api.login('reader@example.com', 'wrong-password')).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('does not report other statuses as an expired session', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ code: 'auth.administrator_required', error: 'No.' }, 403)));
+    await expect(api.getAdminSettings()).rejects.toMatchObject({ status: 403 });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+});
 
 describe('authenticated API', () => {
   it.each(['null', '[]', '42', '{"error":{"message":"bad"},"code":42}', '<html>Bad Gateway</html>'])(
