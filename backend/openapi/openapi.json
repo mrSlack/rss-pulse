@@ -1634,6 +1634,153 @@
         }
       }
     },
+    "/api/articles/mark-read": {
+      "post": {
+        "summary": "Mark every article of the current view as read",
+        "description": "Marks read, for the signed-in user, every article that `GET /api/articles` would return for the same `filter`, `feedId`, `folderId`, `q`, and `since`, limited to articles published at or before `upTo` (normally the newest article the reader has loaded), so articles that arrived later stay unread.",
+        "tags": [
+          "Articles"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "upTo"
+                ],
+                "properties": {
+                  "filter": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "all",
+                      "unread",
+                      "today",
+                      "saved"
+                    ],
+                    "description": "Empty means `all`."
+                  },
+                  "feedId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                  },
+                  "folderId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                  },
+                  "q": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Search text, at most 200 characters after trimming."
+                  },
+                  "since": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Start of the day for the `today` filter."
+                  },
+                  "upTo": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Only articles published at or before this time are marked."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Number of articles that changed from unread to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "marked"
+                  ],
+                  "properties": {
+                    "marked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `article.filter_invalid`, `feed.id_invalid`, `folder.id_invalid`, `article.search_too_long`, `article.date_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "article.filter_invalid",
+              "feed.id_invalid",
+              "folder.id_invalid",
+              "article.search_too_long",
+              "article.date_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `article.mark_read_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "article.mark_read_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/refresh": {
       "get": {
         "summary": "Manual refresh status",
@@ -1752,6 +1899,231 @@
           "500": {
             "description": "Server or database error. Error codes: `auth.session_check_failed`.",
             "x-error-codes": [
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/opml": {
+      "get": {
+        "summary": "Export the user's subscriptions as OPML 2.0",
+        "description": "Feeds without a folder come first, then one outline group per folder; feeds are sorted by personal title. Each feed outline has `text`/`title` (personal title), `type=\"rss\"`, and `xmlUrl` (source URL).",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OPML document, served as an attachment named `pulse-subscriptions.opml` with `Cache-Control: no-store`.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`attachment; filename=\"pulse-subscriptions.opml\"`"
+              }
+            },
+            "content": {
+              "text/x-opml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `opml.export_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "opml.export_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Import subscriptions from an OPML document",
+        "description": "The raw OPML document is the request body (at most 1 MiB, 1,000 outlines, nesting depth 5). Outlines with `xmlUrl` are feeds; the nearest ancestor outline without `xmlUrl` names the folder (created if missing, matched case-insensitively). Feeds of already approved sources are subscribed directly; unknown URLs become approval requests, subject to the 10 pending requests and 100 subscriptions limits. Feeds the user already follows are skipped.",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/x-opml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "application/xml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/xml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Import summary. `failed` lists at most 100 entries; `reason` is one of `feed.url_invalid`, `feed.url_too_long`, `feed.limit_reached`, `feed.request_limit_reached`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "subscribed",
+                    "requested",
+                    "skipped",
+                    "failed"
+                  ],
+                  "properties": {
+                    "subscribed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "requested": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skipped": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "failed": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "url",
+                          "reason"
+                        ],
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a valid OPML subscription list (malformed XML, root other than `<opml>`, more than 1,000 outlines, or nesting deeper than 5). Error codes: `opml.invalid`.",
+            "x-error-codes": [
+              "opml.invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The document is larger than 1 MiB. Error codes: `opml.too_large`.",
+            "x-error-codes": [
+              "opml.too_large"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Content-Type; use `text/x-opml`, `application/xml`, or `text/xml`. Error codes: `opml.content_type_invalid`.",
+            "x-error-codes": [
+              "opml.content_type_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `opml.import_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "opml.import_failed",
               "auth.session_check_failed"
             ],
             "content": {
