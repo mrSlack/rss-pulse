@@ -44,8 +44,12 @@ func NormalizeFeedURL(raw string) (string, error) {
 // counting articles without a read state. Both counts use index-only scans of
 // articles_source_published_id_idx and user_article_states_read_idx instead of
 // joining every article with its state.
+//
 // The user id is repeated as a parameter (not joined from subs) so the planner
-// can use the partial index for that user.
+// can use the partial index for that user, and subs must be declared NOT
+// MATERIALIZED: a materialized CTE hides the user_feeds statistics, and the
+// resulting row estimate of 1 led to a nested loop that re-aggregated the read
+// counts once per subscription (80 ms instead of 25 ms on the seeded data).
 func unreadCountsCTE(userParam string) string {
 	return `
 		read_counts AS (
@@ -65,7 +69,7 @@ func unreadCountsCTE(userParam string) string {
 
 func (s *Store) ListFoldersForUser(ctx context.Context, userID int64) ([]Folder, error) {
 	rows, err := s.pool.Query(ctx, `
-		WITH subs AS (
+		WITH subs AS NOT MATERIALIZED (
 			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf
 			WHERE uf.user_id = $1 AND uf.folder_id IS NOT NULL
 		),`+unreadCountsCTE("$1")+`
@@ -106,7 +110,7 @@ func (s *Store) UpdateFolderForUser(ctx context.Context, userID, folderID int64,
 			WHERE id=$1 AND owner_user_id=$2
 			RETURNING id, name, color
 		),
-		subs AS (
+		subs AS NOT MATERIALIZED (
 			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf
 			WHERE uf.user_id = $2 AND uf.folder_id = $1
 		),`+unreadCountsCTE("$2")+`
@@ -179,7 +183,7 @@ func (s *Store) DeleteFolderForUser(ctx context.Context, userID, folderID int64,
 
 func (s *Store) ListFeedsForUser(ctx context.Context, userID int64) ([]Feed, error) {
 	rows, err := s.pool.Query(ctx, `
-		WITH subs AS (
+		WITH subs AS NOT MATERIALIZED (
 			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf WHERE uf.user_id = $1
 		),`+unreadCountsCTE("$1")+`
 		SELECT uf.id, COALESCE(uf.title_override, fs.title), fs.url, uf.folder_id, d.name,
