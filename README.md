@@ -118,7 +118,7 @@ The first Administrator receives the existing library when the shared-feed migra
 
 Each user can subscribe to up to 100 feeds. The API checks the limit before fetching a new source and enforces it again when saving the subscription, including concurrent requests.
 
-The shared feed TTL defaults to 15 minutes (allowed range 5–1,440 minutes). The background scheduler currently runs every 15 minutes. Scheduler and per-user refresh intervals can be saved in the administration screen; they are not yet connected to scheduling. The API refreshes unique feeds concurrently using a bounded Go worker pool. Set `RSS_REFRESH_CONCURRENCY` in `.env` to a value from 1 to 32 (default 4). A database lease and the shared TTL prevent duplicate requests for a feed while a refresh is running or until its TTL expires.
+The shared feed TTL defaults to 15 minutes (allowed range 5–1,440 minutes). The background scheduler currently runs every 15 minutes. Scheduler and per-user refresh intervals can be saved in the administration screen; they are not yet connected to scheduling. The API refreshes unique feeds concurrently using a bounded Go worker pool. Set `RSS_REFRESH_CONCURRENCY` in `.env` to a value from 1 to 32 (default 4). A database lease and the shared TTL prevent duplicate requests for a feed while a refresh is running or until its TTL expires. The API keeps at most `DB_MAX_CONNS` PostgreSQL connections open (default 12, allowed 2–100; keep it below the server's `max_connections`, 100 by default); an invalid value stops the API at startup.
 
 Only public HTTP/HTTPS RSS and Atom URLs are accepted. The API blocks loopback, private, and local network addresses. Pulse stores feed metadata and summaries; the full article remains on its source website.
 
