@@ -87,3 +87,7 @@ Manual refresh requests are queued per user: a FIFO of distinct user IDs. A user
 - **Conditional GET:** a `304` counts as a successful attempt (both timestamps advance, `last_error` cleared), without touching articles.
 - **Clock:** all comparisons use the database clock (`NOW()`), so multiple API processes agree.
 - **Approval of a new feed** queues a scheduled cycle; the new source is never checked and therefore due immediately.
+
+## Disabled accounts
+
+Added when account disabling was merged: subscriptions of disabled users are ignored when computing the effective interval and when deciding whether a source has subscribers, for both `DueSources` and scheduled `ClaimSource` (`JOIN users u ON u.id = uf.user_id AND u.disabled_at IS NULL`). Disabled users cannot request manual refreshes because their sessions are rejected.

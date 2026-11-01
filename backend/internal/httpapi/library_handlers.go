@@ -238,10 +238,6 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "feed.not_found", "The feed could not be found.")
 		return
 	}
-	if errors.Is(err, store.ErrFeedRequestPending) {
-		writeError(w, http.StatusConflict, "feed.request_pending", "A request for this feed is already pending.")
-		return
-	}
 	if errors.Is(err, store.ErrFeedRequestLimitReached) {
 		writeFeedRequestLimitReached(w)
 		return

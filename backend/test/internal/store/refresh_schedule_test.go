@@ -179,6 +179,31 @@ func TestRefreshScheduleFollowsSettingChanges(t *testing.T) {
 	}
 }
 
+func TestRefreshScheduleIgnoresDisabledSubscribers(t *testing.T) {
+	// TTL 20 minutes, global scheduler interval 60 minutes.
+	f := newScheduleFixture(t, 20, 60)
+	active := f.user(t, "active@example.com", nil)             // 60 (inherited)
+	disabled := f.user(t, "disabled@example.com", minutes(20)) // short override, but disabled
+	if _, err := f.pool.Exec(f.ctx, `UPDATE users SET disabled_at=NOW() WHERE id=$1`, disabled); err != nil {
+		t.Fatal(err)
+	}
+	shared := f.source(t, "shared", minutes(30), minutes(30), active, disabled)
+	onlyDisabled := f.source(t, "onlydisabled", nil, nil, disabled)
+
+	due, err := f.store.DueSources(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("DueSources() = %v; a disabled subscriber's override must not shorten the interval and a source followed only by disabled users must not be scheduled", due)
+	}
+	for _, id := range []int64{shared, onlyDisabled} {
+		if _, ok, err := f.store.ClaimSource(f.ctx, id, nil); err != nil || ok {
+			t.Fatalf("scheduled ClaimSource(%d) = %v, %v; want not claimed", id, ok, err)
+		}
+	}
+}
+
 func TestConditionalRefreshCommits(t *testing.T) {
 	f := newScheduleFixture(t, 15, 15)
 	source := f.source(t, "conditional", nil, nil, f.adminID)

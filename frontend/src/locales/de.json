@@ -330,7 +330,6 @@
   "apiErrors.feed.request_not_found": "Die Feed-Anfrage wurde nicht gefunden.",
   "apiErrors.feed.request_approve_failed": "Die Feed-Anfrage konnte nicht freigegeben werden.",
   "apiErrors.feed.request_reject_failed": "Die Feed-Anfrage konnte nicht abgelehnt werden.",
-  "apiErrors.feed.request_pending": "Für diesen Feed steht bereits eine Anfrage aus.",
   "apiErrors.feed.request_limit_reached": "Sie haben bereits 10 Feed-Anfragen, die auf Freigabe warten. Warten Sie, bis ein Administrator sie geprüft hat.",
   "apiErrors.system.database_unavailable": "Die Datenbank ist vorübergehend nicht verfügbar.",
   "apiErrors.folder.load_failed": "Ordner konnten nicht geladen werden.",

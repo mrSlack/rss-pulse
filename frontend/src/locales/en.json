@@ -330,7 +330,6 @@
   "apiErrors.feed.request_not_found": "The feed request could not be found.",
   "apiErrors.feed.request_approve_failed": "The feed request could not be approved.",
   "apiErrors.feed.request_reject_failed": "The feed request could not be rejected.",
-  "apiErrors.feed.request_pending": "A request for this feed is already pending.",
   "apiErrors.feed.request_limit_reached": "You already have 10 feed requests waiting for approval. Wait until an administrator reviews them.",
   "apiErrors.system.database_unavailable": "The database is temporarily unavailable.",
   "apiErrors.folder.load_failed": "Folders could not be loaded.",

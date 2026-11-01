@@ -49,9 +49,6 @@ type FeedRequestResult struct {
 }
 
 var (
-	// ErrFeedRequestPending is no longer returned: a second requester joins the
-	// pending request. Kept until every handler mapping has been removed.
-	ErrFeedRequestPending      = errors.New("a request for this feed is already pending")
 	ErrFeedRequestLimitReached = errors.New("the user has reached the pending feed request limit")
 )
 

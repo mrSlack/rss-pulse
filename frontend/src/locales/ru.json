@@ -334,7 +334,6 @@
   "apiErrors.feed.request_not_found": "Заявка на ленту не найдена.",
   "apiErrors.feed.request_approve_failed": "Не удалось одобрить заявку на ленту.",
   "apiErrors.feed.request_reject_failed": "Не удалось отклонить заявку на ленту.",
-  "apiErrors.feed.request_pending": "Заявка на эту ленту уже ожидает решения.",
   "apiErrors.feed.request_limit_reached": "У вас уже 10 заявок на ленты, ожидающих одобрения. Дождитесь, пока администратор их рассмотрит.",
   "apiErrors.system.database_unavailable": "База данных временно недоступна.",
   "apiErrors.folder.load_failed": "Не удалось загрузить папки.",

@@ -35,14 +35,15 @@ const refreshSettingsSQL = `settings AS (
 const sourceDueSQL = `(GREATEST(fs.last_checked_at, fs.last_success_at) IS NULL
 	OR GREATEST(fs.last_checked_at, fs.last_success_at) + p.effective <= NOW())`
 
-// DueSources lists subscribed sources due for a scheduled refresh: the
+// DueSources lists sources with at least one enabled subscriber that are due
+// for a scheduled refresh (subscriptions of disabled accounts are ignored): the
 // effective interval is the shortest subscriber interval (per-user override or
 // global default), but never shorter than the shared-source TTL.
 func (s *Store) DueSources(ctx context.Context) ([]FeedTarget, error) {
 	rows, err := s.pool.Query(ctx, `WITH `+refreshSettingsSQL+`, policy AS (
 			SELECT uf.feed_source_id AS source_id,
 				GREATEST(MIN(st.ttl_minutes), MIN(COALESCE(u.refresh_interval_minutes, st.global_minutes))) * INTERVAL '1 minute' AS effective
-			FROM user_feeds uf JOIN users u ON u.id=uf.user_id CROSS JOIN settings st
+			FROM user_feeds uf JOIN users u ON u.id=uf.user_id AND u.disabled_at IS NULL CROSS JOIN settings st
 			GROUP BY uf.feed_source_id
 		)
 		SELECT fs.id, fs.url FROM feed_sources fs JOIN policy p ON p.source_id=fs.id
@@ -107,7 +108,7 @@ func (s *Store) ClaimSource(ctx context.Context, sourceID int64, userID *int64) 
 					THEN GREATEST(st.ttl_minutes, MIN(COALESCE(u.refresh_interval_minutes, st.global_minutes)))
 					ELSE st.ttl_minutes END * INTERVAL '1 minute' AS effective,
 				BOOL_OR(uf.user_id = $3::bigint) AS requester_subscribed
-			FROM user_feeds uf JOIN users u ON u.id=uf.user_id CROSS JOIN settings st
+			FROM user_feeds uf JOIN users u ON u.id=uf.user_id AND u.disabled_at IS NULL CROSS JOIN settings st
 			WHERE uf.feed_source_id=$1
 			GROUP BY st.ttl_minutes, st.global_minutes
 		)
