@@ -17,6 +17,7 @@ const apiMock = vi.hoisted(() => ({
   updateAdminSettings: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
+  signOutUser: vi.fn(),
 }));
 
 vi.mock('../../src/api', async (importOriginal) => ({
@@ -210,5 +211,77 @@ describe('AdminPanel', () => {
     expect(originalWordRow).toBeTruthy();
     await user.click(within(originalWordRow!).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(apiMock.deleteStopWord).toHaveBeenCalledWith(4));
+  });
+  it('disables and re-enables another account after confirmation', async () => {
+    const user = userEvent.setup();
+    apiMock.updateUser.mockResolvedValueOnce({ id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null, disabled: true, disabledAt: '2026-11-01T09:00:00Z' })
+      .mockResolvedValueOnce({ id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null, disabled: false, disabledAt: null });
+    render(<AdminPanel currentUserId={1} />);
+    await user.click(await screen.findByRole('button', { name: 'Users' }));
+
+    const ownRow = screen.getByText('admin@example.com').closest('tr')!;
+    expect(within(ownRow).getByText('This is you')).toBeTruthy();
+    expect(within(ownRow).queryByRole('button', { name: /^Disable/ })).toBeNull();
+    expect((screen.getByLabelText('Role for admin@example.com') as HTMLSelectElement).disabled).toBe(true);
+
+    const readerRow = screen.getByText('reader@example.com').closest('tr')!;
+    expect(within(readerRow).getByText('Active')).toBeTruthy();
+    await user.click(within(readerRow).getByRole('button', { name: 'Disable reader@example.com' }));
+    expect(apiMock.updateUser).not.toHaveBeenCalled();
+    expect(within(readerRow).getByText(/Disable reader@example.com\? They are signed out immediately/)).toBeTruthy();
+    await user.click(within(readerRow).getByRole('button', { name: 'Cancel' }));
+    expect(apiMock.updateUser).not.toHaveBeenCalled();
+
+    await user.click(within(readerRow).getByRole('button', { name: 'Disable reader@example.com' }));
+    await user.click(within(readerRow).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(apiMock.updateUser).toHaveBeenCalledWith(2, { disabled: true }));
+    expect(await screen.findByText('Account disabled and signed out.')).toBeTruthy();
+    expect(within(readerRow).getByText('Disabled')).toBeTruthy();
+    expect(readerRow.className).toContain('admin-user-disabled');
+    expect(within(readerRow).queryByRole('button', { name: /Sign out/ })).toBeNull();
+
+    await user.click(within(readerRow).getByRole('button', { name: 'Enable reader@example.com' }));
+    await waitFor(() => expect(apiMock.updateUser).toHaveBeenLastCalledWith(2, { disabled: false }));
+    expect(await screen.findByText('Account enabled.')).toBeTruthy();
+    expect(within(readerRow).getByText('Active')).toBeTruthy();
+  });
+
+  it('signs a user out everywhere and returns to sign-in after signing yourself out', async () => {
+    const user = userEvent.setup();
+    const onSignedOut = vi.fn();
+    apiMock.signOutUser.mockResolvedValue(undefined);
+    render(<AdminPanel currentUserId={1} onSignedOut={onSignedOut} />);
+    await user.click(await screen.findByRole('button', { name: 'Users' }));
+
+    await user.click(screen.getByRole('button', { name: 'Sign out reader@example.com everywhere' }));
+    expect(screen.getByText('Sign reader@example.com out on every device?')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(apiMock.signOutUser).toHaveBeenCalledWith(2));
+    expect(await screen.findByText('User signed out on every device.')).toBeTruthy();
+    expect(onSignedOut).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Sign out admin@example.com everywhere' }));
+    expect(screen.getByText('Sign yourself out on every device, including this one?')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(apiMock.signOutUser).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(onSignedOut).toHaveBeenCalledTimes(1));
+  });
+
+  it('lists every requester of a shared feed request', async () => {
+    const user = userEvent.setup();
+    apiMock.getFeedRequests.mockResolvedValueOnce([{
+      id: 14,
+      url: 'https://shared.example/rss',
+      requestedBy: 'reader@example.com',
+      requesters: ['reader@example.com', 'second@example.com'],
+      folderId: null,
+      folderName: null,
+      title: '',
+      createdAt: '2026-10-26T09:00:00Z',
+    }]);
+    render(<AdminPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Feed requests' }));
+    const row = (await screen.findByText('https://shared.example/rss')).closest('tr')!;
+    expect(within(row).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['reader@example.com', 'second@example.com']);
   });
 });

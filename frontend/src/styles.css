@@ -632,6 +632,23 @@ a { color: inherit; text-decoration: none; }
 .admin-table td:first-child { display: flex; align-items: center; gap: 9px; min-width: 200px; }
 .admin-user-avatar { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; color: #567964; background: var(--green-pale); border-radius: 9px; font-size: 12px; font-weight: 700; }
 .admin-user-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-user-identity { display: grid; min-width: 0; gap: 4px; }
+.admin-user-badges { display: flex; flex-wrap: wrap; gap: 5px; }
+.admin-account-status,.admin-account-self { display: inline-flex; align-items: center; min-height: 20px; padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.admin-account-status.active { color: #2f6c48; background: #e7f1e9; }
+.admin-account-status.disabled { color: #8a3b32; background: #f7e6e3; }
+.admin-account-self { color: var(--muted); background: var(--surface-soft); }
+.admin-user-disabled .admin-user-avatar { color: var(--muted); background: var(--surface-soft); }
+.admin-user-disabled .admin-user-email { color: var(--muted); text-decoration: line-through; }
+.admin-account-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-account-actions button,.admin-account-confirm button { min-height: 34px; padding: 0 10px; font-size: 12px; }
+.admin-account-actions .secondary-button,.admin-account-confirm .secondary-button { color: var(--text-body); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; box-shadow: none; font-weight: 600; cursor: pointer; }
+.admin-account-actions .secondary-button:hover,.admin-account-confirm .secondary-button:hover { background: var(--surface-hover); }
+.admin-account-actions .admin-danger-button { color: #8a3b32; }
+.admin-account-confirm { display: grid; gap: 8px; max-width: 320px; }
+.admin-account-confirm p { margin: 0; color: var(--text-body); font-size: 12px; line-height: 1.5; }
+.admin-requesters { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.admin-requests-table td:first-child { display: table-cell; }
 .table-select { min-width: 145px; height: 40px; padding: 0 9px; font-size: 12px; }
 .admin-schedule-notice { padding: 12px 14px; margin: 14px 0 0; color: var(--muted); background: var(--surface-soft); border-radius: 8px; font-size: 12px; line-height: 1.55; }
 .admin-notice { padding: 12px 14px; margin: -11px 0 14px; color: #326c49; background: #eaf4ed; border: 1px solid #d9eadd; border-radius: 8px; font-size: 13px; }
@@ -641,6 +658,9 @@ a { color: inherit; text-decoration: none; }
 :root[data-theme="dark"] .admin-notice { color: #b9e1c2; background: #26382d; border-color: #344b3a; }
 :root[data-theme="dark"] .admin-setting-status.active { color: #b9e1c2; background: #26382d; }
 :root[data-theme="dark"] .admin-setting-status.pending { color: #c1cbc3; background: #303832; }
+:root[data-theme="dark"] .admin-account-status.active { color: #b9e1c2; background: #26382d; }
+:root[data-theme="dark"] .admin-account-status.disabled,:root[data-theme="dark"] .admin-account-actions .admin-danger-button { color: #f0b8b0; }
+:root[data-theme="dark"] .admin-account-status.disabled { background: #43292a; }
 
 @media (max-width: 760px) {
   .admin-workspace { grid-template-columns: 1fr; gap: 12px; }
