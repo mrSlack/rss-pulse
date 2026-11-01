@@ -25,12 +25,14 @@ type Props = {
   adminActive: boolean;
   onAdmin: () => void;
   onEditProfile: () => void;
+  onImportSubscriptions: () => void;
+  onShowShortcuts: () => void;
   onSignOut: () => void;
 };
 
 export function Topbar({
   ref, user, search, onSearchChange, theme, onToggleTheme, refreshing, onRefresh, mobileNavOpen, onToggleMobileNav,
-  adminActive, onAdmin, onEditProfile, onSignOut,
+  adminActive, onAdmin, onEditProfile, onImportSubscriptions, onShowShortcuts, onSignOut,
 }: Props) {
   const { t } = useTranslation();
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
@@ -80,7 +82,7 @@ export function Topbar({
           <Icon name="refresh" size={18} />
         </button>
         <span className="topbar-divider" />
-        <ProfileMenu user={user} placement="topbar" adminActive={adminActive} onAdmin={onAdmin} onEditProfile={onEditProfile} onSignOut={onSignOut} />
+        <ProfileMenu user={user} placement="topbar" adminActive={adminActive} onAdmin={onAdmin} onEditProfile={onEditProfile} onImportSubscriptions={onImportSubscriptions} onShowShortcuts={onShowShortcuts} onSignOut={onSignOut} />
       </div>
     </header>
   );

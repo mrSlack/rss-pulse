@@ -34,6 +34,8 @@ type Props = {
   onEditFeed: (feed: Feed) => void;
   onAdmin: () => void;
   onEditProfile: () => void;
+  onImportSubscriptions?: () => void;
+  onShowShortcuts?: () => void;
   onSignOut: () => void;
   onCloseMobileNav: () => void;
 };
@@ -62,6 +64,8 @@ export function LibrarySidebar({
   onEditFeed,
   onAdmin,
   onEditProfile,
+  onImportSubscriptions,
+  onShowShortcuts,
   onSignOut,
   onCloseMobileNav,
 }: Props) {
@@ -160,7 +164,7 @@ export function LibrarySidebar({
 
       <div className="sidebar-bottom">
         <div className="sync-indicator"><span className="sync-dot" /><span>{t('nav.localLibrary')}</span></div>
-        <ProfileMenu user={user} placement="sidebar" adminActive={adminView} onAdmin={onAdmin} onEditProfile={onEditProfile} onSignOut={onSignOut} />
+        <ProfileMenu user={user} placement="sidebar" adminActive={adminView} onAdmin={onAdmin} onEditProfile={onEditProfile} onImportSubscriptions={onImportSubscriptions} onShowShortcuts={onShowShortcuts} onSignOut={onSignOut} />
       </div>
     </aside>
     {mobileNavOpen && <button className="mobile-scrim" aria-label={t('nav.closeMenu')} onClick={onCloseMobileNav} />}

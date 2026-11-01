@@ -159,6 +159,33 @@ export function useArticleFeed({ filter, feedId, folderId, search }: ArticleView
     }
   }, [onError, t]);
 
+  /**
+   * Marks every article of the loaded view as read on the server, bounded by
+   * the newest loaded article so articles that arrived since stay unread, and
+   * updates the loaded pages and counters without reloading the list.
+   */
+  const markAllRead = useCallback(async () => {
+    if (!loadedQuery) return 0;
+    // Send the server's own timestamp: it keeps sub-millisecond precision.
+    const newest = articles.reduce<string | null>((best, item) => best === null || Date.parse(item.publishedAt) > Date.parse(best) ? item.publishedAt : best, null);
+    const upTo = newest ?? new Date().toISOString();
+    const { marked } = await api.markArticlesRead(loadedQuery, upTo);
+    const bound = Date.parse(upTo);
+    setArticles((current) => current.map((item) => !item.isRead && Date.parse(item.publishedAt) <= bound ? { ...item, isRead: true } : item));
+    await onCountsChanged();
+    return marked;
+  }, [articles, loadedQuery, onCountsChanged]);
+
+  /** Opens the next (delta 1) or previous (delta -1) article of the list. */
+  const selectRelative = useCallback((delta: 1 | -1) => {
+    if (articles.length === 0) return;
+    const index = articles.findIndex((item) => item.id === selectedId);
+    const next = index < 0 ? 0 : index + delta;
+    if (next < 0 || next >= articles.length) return;
+    void chooseArticle(articles[next]);
+    if (next >= articles.length - 3 && nextCursor) void loadMore();
+  }, [articles, chooseArticle, loadMore, nextCursor, selectedId]);
+
   const selectedArticle = useMemo(() => articles.find((item) => item.id === selectedId) || null, [articles, selectedId]);
 
   return {
@@ -176,6 +203,7 @@ export function useArticleFeed({ filter, feedId, folderId, search }: ArticleView
     chooseArticle,
     toggleRead,
     toggleSaved,
-    setReadLocally,
+    markAllRead,
+    selectRelative,
   };
 }
