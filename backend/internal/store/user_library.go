@@ -385,37 +385,9 @@ func (s *Store) SubscribeFeed(ctx context.Context, userID int64, rawURL string, 
 // cursor (keyset paging) only articles strictly after that position are
 // returned and offset is ignored; offset paging is kept for older clients.
 func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter string, feedID, folderID *int64, query string, since *time.Time, limit, offset int, before *ArticleCursor) ([]Article, error) {
-	conditions := []string{"uf.user_id = $1"}
-	args := []any{userID}
-	add := func(value any) string {
-		args = append(args, value)
-		return "$" + itoa(len(args))
-	}
-	switch filter {
-	case "unread":
-		conditions = append(conditions, "COALESCE(state.is_read, FALSE) = FALSE")
-	case "saved":
-		conditions = append(conditions, "COALESCE(state.is_saved, FALSE) = TRUE")
-	case "today":
-		if since != nil {
-			conditions = append(conditions, "a.published_at >= "+add(*since))
-		} else {
-			conditions = append(conditions, "a.published_at >= date_trunc('day', NOW())")
-		}
-	}
-	if feedID != nil {
-		conditions = append(conditions, "uf.id = "+add(*feedID))
-	}
-	if folderID != nil {
-		conditions = append(conditions, "uf.folder_id = "+add(*folderID))
-	}
-	searching := false
-	if condition := searchCondition(query, add); condition != "" {
-		conditions = append(conditions, condition)
-		searching = true
-	}
+	q := newArticleQuery(userID, ArticleFilter{Filter: filter, FeedID: feedID, FolderID: folderID, Query: query, Since: since})
 	if before != nil {
-		conditions = append(conditions, "(a.published_at, a.id) < ("+add(before.PublishedAt)+"::timestamptz, "+add(before.ID)+"::bigint)")
+		q.conditions = append(q.conditions, "(a.published_at, a.id) < ("+q.add(before.PublishedAt)+"::timestamptz, "+q.add(before.ID)+"::bigint)")
 		offset = 0
 	}
 	if limit < 1 || limit > 200 {
@@ -424,9 +396,10 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	if offset < 0 || offset > 100000 {
 		offset = 0
 	}
-	limitArg := add(limit + 1)
-	offsetArg := add(offset)
-	if searching {
+	limitArg := q.add(limit + 1)
+	offsetArg := q.add(offset)
+	args := q.args
+	if q.searching {
 		// Plan every search with its actual pattern. A cached prepared statement may
 		// switch to a generic plan that always reads the trigram index, which takes
 		// seconds for patterns that occur in most articles.
@@ -437,7 +410,7 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 		FROM articles a JOIN user_feeds uf ON uf.feed_source_id = a.feed_source_id
 		JOIN feed_sources fs ON fs.id = a.feed_source_id
 		LEFT JOIN user_article_states state ON state.user_id = uf.user_id AND state.article_id = a.id
-		WHERE `+strings.Join(conditions, " AND ")+`
+		WHERE `+strings.Join(q.conditions, " AND ")+`
 		ORDER BY a.published_at DESC, a.id DESC LIMIT `+limitArg+` OFFSET `+offsetArg, args...)
 	if err != nil {
 		return nil, err
