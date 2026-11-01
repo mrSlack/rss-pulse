@@ -16,8 +16,9 @@ import (
 func TestRefreshRecordsOutcomesFetchDurationsAndArticleCounts(t *testing.T) {
 	repository := &fakeRefreshRepository{
 		claimLeases:  true,
-		userSources:  map[int64][]store.FeedTarget{5: {{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}}},
+		userSources:  map[int64][]store.FeedTarget{5: {{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}, {ID: 5}}},
 		unclaimed:    map[int64]bool{4: true}, // claimed elsewhere: not an attempt
+		claimErrors:  map[int64]bool{5: true}, // claim query failed: not an attempt either
 		commitCounts: store.RefreshCounts{Inserted: 2, Quarantined: 1},
 	}
 	fetch := func(_ context.Context, url string, _ feeds.Validators) (feeds.Result, error) {
@@ -48,6 +49,9 @@ func TestRefreshRecordsOutcomesFetchDurationsAndArticleCounts(t *testing.T) {
 		if got := metricstest.Value(t, m.Registry(), "pulse_feed_refresh_attempts_total", map[string]string{"outcome": outcome}); got != want {
 			t.Errorf("refresh attempts %s = %v, want %v", outcome, got, want)
 		}
+	}
+	if got := metricstest.Value(t, m.Registry(), "pulse_feed_claim_errors_total", nil); got != 1 {
+		t.Errorf("claim errors = %v, want 1", got)
 	}
 	if got := metricstest.Value(t, m.Registry(), "pulse_feed_fetch_duration_seconds", nil); got != 3 {
 		t.Errorf("fetch duration samples = %v, want 3", got)

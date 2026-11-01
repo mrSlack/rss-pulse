@@ -11,6 +11,7 @@ import (
 
 	"github.com/pulse-reader/app/internal/httpapi"
 	"github.com/pulse-reader/app/internal/metrics"
+	"github.com/pulse-reader/app/internal/metrics/metricstest"
 	"github.com/pulse-reader/app/internal/store"
 	"github.com/pulse-reader/app/internal/syncer"
 )
@@ -33,9 +34,8 @@ func TestMetricsListenerReportsAPIRequestsAndSignIns(t *testing.T) {
 	m := metrics.New()
 	m.RegisterPool(pool.Stat)
 	repository := store.New(pool)
-	m.RegisterOperationalStats(func(ctx context.Context) (metrics.OperationalStats, error) {
-		stats, err := repository.OperationalStats(ctx, metrics.OverdueTolerance)
-		return metrics.OperationalStats(stats), err
+	m.RegisterOperationalStats(func(ctx context.Context) (store.OperationalStats, error) {
+		return repository.OperationalStats(ctx, metrics.OverdueTolerance)
 	}, metrics.DefaultOperationalStatsTTL)
 	clock := &testClock{now: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}
 	handler := httpapi.New(repository, syncer.NewControl(), false, httpapi.WithClock(clock.Now), httpapi.WithMetrics(m))
@@ -95,5 +95,34 @@ func TestMetricsListenerReportsAPIRequestsAndSignIns(t *testing.T) {
 		if strings.Contains(body, private) {
 			t.Errorf("metrics output contains request data %q", private)
 		}
+	}
+}
+
+func TestRequestsRejectedBeforeRoutingAreNotCountedAsUnmatched(t *testing.T) {
+	m := metrics.New()
+	handler := httpapi.New(store.New(nil), syncer.NewControl(), false, httpapi.WithMetrics(m))
+
+	// A cross-site POST to an existing route is rejected by sameOrigin before routing.
+	crossSite := httptest.NewRequest(http.MethodPost, "/api/feeds", strings.NewReader(`{}`))
+	crossSite.Header.Set("Origin", "https://evil.example")
+	rejected := httptest.NewRecorder()
+	handler.ServeHTTP(rejected, crossSite)
+	if rejected.Code != http.StatusForbidden {
+		t.Fatalf("cross-site POST = %d, want 403", rejected.Code)
+	}
+	notFound := httptest.NewRecorder()
+	handler.ServeHTTP(notFound, httptest.NewRequest(http.MethodGet, "/api/no-such-route", nil))
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("GET unknown route = %d, want 404", notFound.Code)
+	}
+
+	if got := metricstest.Value(t, m.Registry(), "pulse_http_requests_total", map[string]string{"route": metrics.RejectedRoute, "method": "POST", "status_class": "4xx"}); got != 1 {
+		t.Errorf("rejected requests = %v, want 1", got)
+	}
+	if got := metricstest.Value(t, m.Registry(), "pulse_http_requests_total", map[string]string{"route": metrics.UnmatchedRoute, "method": "GET", "status_class": "4xx"}); got != 1 {
+		t.Errorf("unmatched requests = %v, want 1", got)
+	}
+	if got, ok := metricstest.Lookup(t, m.Registry(), "pulse_http_requests_total", map[string]string{"route": metrics.UnmatchedRoute, "method": "POST", "status_class": "4xx"}); ok {
+		t.Errorf("the rejected request was counted as unmatched (%v)", got)
 	}
 }

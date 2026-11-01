@@ -10,6 +10,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -19,6 +20,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/pulse-reader/app/internal/store"
 )
 
 // Feed refresh outcomes (label outcome of pulse_feed_refresh_attempts_total).
@@ -46,14 +49,24 @@ const (
 	MaintenanceLoginAttempts              = "login_attempts"
 )
 
-// UnmatchedRoute is the route label of requests that matched no API route.
+// UnmatchedRoute is the route label of requests that reached the router but matched
+// no API route (404 or 405).
 const UnmatchedRoute = "unmatched"
+
+// RejectedRoute is the route label of requests that a middleware rejected before
+// routing, for example cross-site writes refused by the same-origin check.
+const RejectedRoute = "rejected"
 
 // DefaultOperationalStatsTTL is how long the database-derived gauges are reused
 // between scrapes before they are queried again.
 const DefaultOperationalStatsTTL = 15 * time.Second
 
 const operationalStatsTimeout = 3 * time.Second
+
+// operationalStatsStaleAfter is how many TTLs the last successful values of the
+// database-derived gauges stay exported while their query fails. Older values are
+// dropped so a database outage cannot freeze the backlog gauges at a harmless value.
+const operationalStatsStaleAfter = 3
 
 // OverdueTolerance is how late a due source may be before it counts as overdue
 // (pulse_feed_sources_overdue). The scheduler checks for due sources every minute and
@@ -68,6 +81,7 @@ type Metrics struct {
 	httpDuration *prometheus.HistogramVec
 
 	refreshAttempts     *prometheus.CounterVec
+	claimErrors         prometheus.Counter
 	fetchDuration       prometheus.Histogram
 	articlesInserted    prometheus.Counter
 	articlesQuarantined prometheus.Counter
@@ -101,6 +115,10 @@ func New() *Metrics {
 			Name: "pulse_feed_refresh_attempts_total",
 			Help: "Feed source refresh attempts that claimed a source, by outcome (ok, not_modified, error).",
 		}, []string{"outcome"}),
+		claimErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "pulse_feed_claim_errors_total",
+			Help: "Database errors while claiming a feed source for refresh; no fetch happened, so they are not refresh attempts.",
+		}),
 		fetchDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "pulse_feed_fetch_duration_seconds",
 			Help:    "Duration of feed downloads, successful or not.",
@@ -159,7 +177,7 @@ func New() *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.httpRequests, m.httpDuration,
-		m.refreshAttempts, m.fetchDuration, m.articlesInserted, m.articlesQuarantined,
+		m.refreshAttempts, m.claimErrors, m.fetchDuration, m.articlesInserted, m.articlesQuarantined,
 		m.signIns,
 		m.maintenanceRuns, m.maintenanceDuration, m.maintenanceLastSuccess, m.maintenanceDeleted,
 		m.searchUpgradeDone, m.searchUpgradeBackfilled,
@@ -220,6 +238,14 @@ func (m *Metrics) ObserveRefresh(outcome string) {
 		return
 	}
 	m.refreshAttempts.WithLabelValues(outcome).Inc()
+}
+
+// ObserveClaimError records a database error while claiming a feed source.
+func (m *Metrics) ObserveClaimError() {
+	if m == nil {
+		return
+	}
+	m.claimErrors.Inc()
 }
 
 // ObserveFetchDuration records the duration of one feed download.
@@ -301,28 +327,13 @@ func (m *Metrics) RegisterPool(stat func() *pgxpool.Stat) {
 	m.registry.MustRegister(&poolCollector{stat: stat})
 }
 
-// OperationalStats are database-derived values about the refresh backlog and the
-// moderation queues.
-type OperationalStats struct {
-	// SourcesDue counts subscribed sources whose refresh interval has elapsed.
-	SourcesDue int64
-	// SourcesOverdue counts due sources whose refresh is late by more than the
-	// tolerance passed to the query (the scheduler is not keeping up).
-	SourcesOverdue int64
-	// OldestOverdue is how long the longest-waiting due source has been due.
-	OldestOverdue time.Duration
-	// ActiveLeases counts sources being refreshed right now (unexpired leases).
-	ActiveLeases int64
-	// PendingFeedRequests counts feed requests waiting for an administrator.
-	PendingFeedRequests int64
-	// PendingQuarantine counts quarantined articles waiting for a decision.
-	PendingQuarantine int64
-}
-
-// RegisterOperationalStats reports the values returned by query. query runs at most
-// once per ttl, during a scrape, so frequent scrapes do not load the database; a
-// failed query keeps the previous values and counts an error.
-func (m *Metrics) RegisterOperationalStats(query func(context.Context) (OperationalStats, error), ttl time.Duration) {
+// RegisterOperationalStats reports the values returned by query (normally
+// store.OperationalStats called with OverdueTolerance). query runs at most once per
+// ttl, during a scrape, so frequent scrapes do not load the database. A failed query
+// counts an error and sets pulse_operational_stats_up to 0; the previous values stay
+// exported until they are operationalStatsStaleAfter TTLs old and are dropped after
+// that.
+func (m *Metrics) RegisterOperationalStats(query func(context.Context) (store.OperationalStats, error), ttl time.Duration) {
 	if m == nil {
 		return
 	}
@@ -340,11 +351,12 @@ var (
 	poolWaitTimeDesc      = prometheus.NewDesc("pulse_db_pool_empty_acquire_wait_seconds_total", "Total time acquisitions waited for a connection.", nil, nil)
 	poolCanceledDesc      = prometheus.NewDesc("pulse_db_pool_canceled_acquires_total", "Acquisitions canceled by their context while waiting.", nil, nil)
 	sourcesDueDesc        = prometheus.NewDesc("pulse_feed_sources_due", "Subscribed feed sources whose refresh interval has elapsed.", nil, nil)
-	sourcesOverdueDesc    = prometheus.NewDesc("pulse_feed_sources_overdue", "Due feed sources whose refresh is more than 5 minutes late.", nil, nil)
+	sourcesOverdueDesc    = prometheus.NewDesc("pulse_feed_sources_overdue", fmt.Sprintf("Due feed sources whose refresh is more than %v late.", OverdueTolerance), nil, nil)
 	oldestOverdueDesc     = prometheus.NewDesc("pulse_feed_oldest_overdue_seconds", "How long the longest-waiting due feed source has been due (0 = none).", nil, nil)
 	activeLeasesDesc      = prometheus.NewDesc("pulse_feed_active_leases", "Feed sources being refreshed right now.", nil, nil)
 	pendingRequestsDesc   = prometheus.NewDesc("pulse_feed_requests_pending", "Feed requests waiting for an administrator.", nil, nil)
 	pendingQuarantineDesc = prometheus.NewDesc("pulse_quarantine_pending", "Quarantined articles waiting for an administrator decision.", nil, nil)
+	operationalUpDesc     = prometheus.NewDesc("pulse_operational_stats_up", "1 if the latest query for the refresh backlog and moderation queue gauges succeeded, else 0.", nil, nil)
 )
 
 type poolCollector struct {
@@ -371,33 +383,40 @@ func (c *poolCollector) Collect(metrics chan<- prometheus.Metric) {
 }
 
 type operationalCollector struct {
-	query  func(context.Context) (OperationalStats, error)
+	query  func(context.Context) (store.OperationalStats, error)
 	ttl    time.Duration
+	now    func() time.Time
 	errors prometheus.Counter
 
 	mu        sync.Mutex
-	queriedAt time.Time
-	stats     OperationalStats
-	valid     bool
+	queriedAt time.Time // time of the latest successful query
+	stats     store.OperationalStats
+	valid     bool // stats holds the result of a successful query
+	up        bool // the latest query succeeded
 }
 
-func newOperationalCollector(query func(context.Context) (OperationalStats, error), ttl time.Duration) *operationalCollector {
-	return &operationalCollector{query: query, ttl: ttl, errors: prometheus.NewCounter(prometheus.CounterOpts{
+func newOperationalCollector(query func(context.Context) (store.OperationalStats, error), ttl time.Duration) *operationalCollector {
+	return &operationalCollector{query: query, ttl: ttl, now: time.Now, errors: prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pulse_operational_stats_errors_total",
 		Help: "Failed database queries for the refresh backlog and moderation queue gauges.",
 	})}
 }
 
 func (c *operationalCollector) Describe(descriptions chan<- *prometheus.Desc) {
-	for _, description := range []*prometheus.Desc{sourcesDueDesc, sourcesOverdueDesc, oldestOverdueDesc, activeLeasesDesc, pendingRequestsDesc, pendingQuarantineDesc} {
+	for _, description := range []*prometheus.Desc{sourcesDueDesc, sourcesOverdueDesc, oldestOverdueDesc, activeLeasesDesc, pendingRequestsDesc, pendingQuarantineDesc, operationalUpDesc} {
 		descriptions <- description
 	}
 	c.errors.Describe(descriptions)
 }
 
 func (c *operationalCollector) Collect(metrics chan<- prometheus.Metric) {
-	stats, ok := c.current()
+	stats, up, ok := c.current()
 	metrics <- c.errors
+	upValue := 0.0
+	if up {
+		upValue = 1
+	}
+	metrics <- prometheus.MustNewConstMetric(operationalUpDesc, prometheus.GaugeValue, upValue)
 	if !ok {
 		return
 	}
@@ -409,21 +428,26 @@ func (c *operationalCollector) Collect(metrics chan<- prometheus.Metric) {
 	metrics <- prometheus.MustNewConstMetric(pendingQuarantineDesc, prometheus.GaugeValue, float64(stats.PendingQuarantine))
 }
 
-// current returns cached stats, querying them when the cache has expired. The lock
-// is held during the query so concurrent scrapes share one query.
-func (c *operationalCollector) current() (OperationalStats, bool) {
+// current returns the stats to export, querying them when the cache has expired, and
+// whether the latest query succeeded. ok is false when there are no values recent
+// enough to export: before the first success, or when the last success is
+// operationalStatsStaleAfter TTLs old. The lock is held during the query so
+// concurrent scrapes share one query.
+func (c *operationalCollector) current() (stats store.OperationalStats, up, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.valid && c.ttl > 0 && time.Since(c.queriedAt) < c.ttl {
-		return c.stats, true
+	if c.valid && c.ttl > 0 && c.now().Sub(c.queriedAt) < c.ttl {
+		return c.stats, c.up, true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), operationalStatsTimeout)
 	defer cancel()
 	stats, err := c.query(ctx)
 	if err != nil {
 		c.errors.Inc()
-		return c.stats, c.valid
+		c.up = false
+		fresh := c.valid && c.now().Sub(c.queriedAt) < operationalStatsStaleAfter*c.ttl
+		return c.stats, false, fresh
 	}
-	c.stats, c.valid, c.queriedAt = stats, true, time.Now()
-	return stats, true
+	c.stats, c.valid, c.up, c.queriedAt = stats, true, true, c.now()
+	return stats, true, true
 }

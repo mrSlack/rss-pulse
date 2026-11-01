@@ -282,7 +282,8 @@ const (
 	outcomeSkipped     refreshOutcome = iota // not claimed (another worker or not due) or cancelled
 	outcomeRefreshed                         // new content committed
 	outcomeNotModified                       // HTTP 304 committed
-	outcomeFailed                            // fetch, claim or commit failed
+	outcomeFailed                            // fetch or commit of a claimed source failed
+	outcomeClaimFailed                       // database error while claiming; nothing was fetched
 )
 
 type refreshCounts struct {
@@ -295,7 +296,7 @@ func (c *refreshCounts) add(outcome refreshOutcome) {
 		c.refreshed.Add(1)
 	case outcomeNotModified:
 		c.notModified.Add(1)
-	case outcomeFailed:
+	case outcomeFailed, outcomeClaimFailed:
 		c.failed.Add(1)
 	default:
 		c.skipped.Add(1)
@@ -347,8 +348,9 @@ func (s *Syncer) logSummary(ctx context.Context, userID int64, targets int, coun
 }
 
 // refreshSource refreshes one source and records the outcome of a claimed source in
-// the metrics; sources that were not claimed or whose refresh was canceled are not
-// counted.
+// the metrics as a refresh attempt. A database error while claiming is counted
+// separately as a claim error; sources that were not claimed or whose refresh was
+// canceled are not counted.
 func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, userID int64) refreshOutcome {
 	outcome := s.refreshClaimedSource(ctx, target, userID)
 	switch outcome {
@@ -358,6 +360,8 @@ func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, use
 		s.metrics.ObserveRefresh(metrics.RefreshNotModified)
 	case outcomeFailed:
 		s.metrics.ObserveRefresh(metrics.RefreshError)
+	case outcomeClaimFailed:
+		s.metrics.ObserveClaimError()
 	}
 	return outcome
 }
@@ -383,7 +387,7 @@ func (s *Syncer) refreshClaimedSource(ctx context.Context, target store.FeedTarg
 			return outcomeSkipped
 		}
 		s.logger.Error("rss refresh: claim source failed", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
-		return outcomeFailed
+		return outcomeClaimFailed
 	}
 	if !claimed {
 		return outcomeSkipped

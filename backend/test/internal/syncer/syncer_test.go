@@ -27,6 +27,7 @@ type fakeRefreshRepository struct {
 	claimHook      func(context.Context, int64)
 	claimLeases    bool
 	unclaimed      map[int64]bool
+	claimErrors    map[int64]bool
 	abandoned      []abandonCall
 	released       []store.SourceLease
 	committed      []store.SourceLease
@@ -71,6 +72,9 @@ func (f *fakeRefreshRepository) ClaimSource(ctx context.Context, sourceID int64,
 	f.claimCount.Add(1)
 	if f.claimHook != nil {
 		f.claimHook(ctx, sourceID)
+	}
+	if f.claimErrors[sourceID] {
+		return store.SourceLease{}, false, errors.New("database unavailable")
 	}
 	if !f.claimLeases || f.unclaimed[sourceID] {
 		return store.SourceLease{}, false, nil

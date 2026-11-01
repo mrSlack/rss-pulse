@@ -83,9 +83,8 @@ func main() {
 		appMetrics = metrics.New()
 		appMetrics.RegisterPool(pool.Stat)
 		appMetrics.RegisterManualRefreshQueue(refreshControl.QueueLength)
-		appMetrics.RegisterOperationalStats(func(ctx context.Context) (metrics.OperationalStats, error) {
-			stats, err := repository.OperationalStats(ctx, metrics.OverdueTolerance)
-			return metrics.OperationalStats(stats), err
+		appMetrics.RegisterOperationalStats(func(ctx context.Context) (store.OperationalStats, error) {
+			return repository.OperationalStats(ctx, metrics.OverdueTolerance)
 		}, metrics.DefaultOperationalStatsTTL)
 	}
 	logger.Info("retention configured (0 = disabled)", slog.Int("article_days", retention.ArticleRetentionDays), slog.Int("quarantine_days", retention.QuarantineRetentionDays),
