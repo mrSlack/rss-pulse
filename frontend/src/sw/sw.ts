@@ -4,12 +4,15 @@
 // ./policy (nothing the app imports), so the bundle has no imports.
 import {
   API_CACHE,
-  API_NETWORK_TIMEOUT_MS,
   SHELL_CACHE_PREFIX,
+  STALE_HEADER,
   clearsApiCache,
   entriesToEvict,
+  fallbackTimeout,
   isCacheableApiResponse,
   isObsoleteCache,
+  lateAnswerMessage,
+  markedStale,
   networkFirstWithTimeout,
   requestStrategy,
 } from './policy';
@@ -18,12 +21,12 @@ type PrecacheManifest = { version: string; urls: string[] };
 
 // Minimal service worker typings; the project compiles against the DOM library.
 type ExtendableEvent = Event & { waitUntil(promise: Promise<unknown>): void };
-type FetchEvent = ExtendableEvent & { request: Request; respondWith(response: Promise<Response>): void };
+type FetchEvent = ExtendableEvent & { request: Request; clientId: string; respondWith(response: Promise<Response>): void };
 type ExtendableMessageEvent = ExtendableEvent & { data: unknown };
 type ServiceWorkerScope = {
   location: Location;
   skipWaiting(): Promise<void>;
-  clients: { claim(): Promise<void> };
+  clients: { claim(): Promise<void>; get(id: string): Promise<{ postMessage(message: unknown): void } | undefined> };
   addEventListener(type: 'install' | 'activate', listener: (event: ExtendableEvent) => void): void;
   addEventListener(type: 'fetch', listener: (event: FetchEvent) => void): void;
   addEventListener(type: 'message', listener: (event: ExtendableMessageEvent) => void): void;
@@ -37,6 +40,11 @@ const shellCache = `${SHELL_CACHE_PREFIX}${manifest.version}`;
 // Incremented whenever the API cache is cleared. A response fetched before a
 // clear must not be stored after it (it may belong to the previous user).
 let apiGeneration = 0;
+
+// When a network answer last arrived after the request had been answered from
+// the cache (the server is reachable but slow); see fallbackTimeout. Reset when
+// a network request fails, so a hanging connection falls back again.
+let lateAnswerAt: number | null = null;
 
 function clearApiCache(): Promise<boolean> {
   apiGeneration += 1;
@@ -82,6 +90,15 @@ function networkFirstApi(event: FetchEvent): Promise<Response> {
   const { request } = event;
   const generation = apiGeneration;
   const network = fetch(request);
+  // A stored copy is always marked, so the page never takes it for fresh data.
+  const answer = networkFirstWithTimeout(
+    network,
+    async () => {
+      const stored = await caches.match(request, { cacheName: API_CACHE, ignoreVary: true });
+      return stored && markedStale(stored);
+    },
+    { timeoutMs: fallbackTimeout(lateAnswerAt, Date.now()), aborted: () => request.signal.aborted },
+  );
   // Handled whether or not the page still waits for it: a response that
   // arrives after the stored copy was shown refreshes the cache. The
   // generation check in storeApiResponse drops it if the cache was cleared
@@ -90,12 +107,17 @@ function networkFirstApi(event: FetchEvent): Promise<Response> {
   event.waitUntil(network.then(async (response) => {
     if (clearsApiCache(request.method, new URL(request.url).pathname, response.status)) await clearApiCache();
     else if (isCacheableApiResponse(response)) await storeApiResponse(request, response.clone(), generation);
+    const answered = await answer.catch(() => undefined);
+    if (answered?.headers.get(STALE_HEADER) !== 'stale') return;
+    // The page shows the stored copy: tell it to load the fresh data, or that
+    // the session ended (it never saw this 401 itself).
+    lateAnswerAt = Date.now();
+    const message = lateAnswerMessage(response.status);
+    if (message && event.clientId) (await worker.clients.get(event.clientId))?.postMessage(message);
+  }, () => {
+    lateAnswerAt = null;
   }).catch(() => undefined));
-  return networkFirstWithTimeout(
-    network,
-    () => caches.match(request, { cacheName: API_CACHE, ignoreVary: true }),
-    { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: () => request.signal.aborted },
-  );
+  return answer;
 }
 
 async function cacheFirst(request: Request): Promise<Response> {

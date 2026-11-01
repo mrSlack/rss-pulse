@@ -1,4 +1,5 @@
 import i18n from './i18n';
+import { noteApiResponse } from './staleData';
 
 export const folderColors = ['amber', 'blue', 'green', 'rose', 'violet', 'teal'] as const;
 export type FolderColor = string;
@@ -156,6 +157,11 @@ export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler;
 }
 
+/** Runs the expired-session handler for a 401 the page did not receive itself (see staleData.ts). */
+export function reportSessionExpired() {
+  unauthorizedHandler?.();
+}
+
 function parseApiError(value: unknown): { code?: string; error?: string } {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
   const body = value as Record<string, unknown>;
@@ -231,6 +237,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       throw new ApiError(message, response.status, body.code);
     }
 
+    noteApiResponse(init.method || 'GET', path.split('?')[0], response);
     if (response.status === 204) return undefined as T;
     try {
       return (await response.json()) as T;

@@ -122,6 +122,35 @@ describe('offline data privacy', () => {
     expect(remembered()).toBeNull();
   });
 
+  it('forgets the remember choice when the session check reports no session', async () => {
+    chooseRemember(true);
+    remember(reader);
+    vi.stubGlobal('fetch', vi.fn(() => json({ code: 'auth.sign_in_required', error: 'Please sign in.' }, 401)));
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Welcome back' });
+    // The next person to sign in on this browser starts from the default.
+    await waitFor(() => expect(rememberChoice()).toBeNull());
+    expect((screen.getByRole('checkbox', { name: 'Remember me on this device for offline use' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('forgets the remember choice when a request reports the session expired', async () => {
+    chooseRemember(true);
+    const stored = stubCaches(['pulse-api-v1']);
+    vi.stubGlobal('fetch', vi.fn((input: string) => {
+      const path = new URL(input, 'http://localhost').pathname;
+      if (path === '/api/auth/me') return json(reader);
+      return json({ code: 'auth.sign_in_required', error: 'Please sign in.' }, 401);
+    }));
+    render(<App />);
+
+    expect(await screen.findByText('Your session has expired. Please sign in again.')).toBeTruthy();
+    await waitFor(() => expect(stored.size).toBe(0));
+    expect(remembered()).toBeNull();
+    expect(rememberChoice()).toBeNull();
+    expect((screen.getByRole('checkbox', { name: 'Remember me on this device for offline use' }) as HTMLInputElement).checked).toBe(false);
+  });
+
   it('drops stored data and the remember choice on sign-out', async () => {
     const user = userEvent.setup();
     chooseRemember(true);
