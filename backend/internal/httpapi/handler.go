@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -24,6 +25,7 @@ type Handler struct {
 	trustedProxies []netip.Prefix
 	now            func() time.Time
 	loginLimiter   *loginLimiter
+	logger         *slog.Logger
 }
 
 // Option customizes a Handler created by New.
@@ -41,16 +43,25 @@ func WithClock(now func() time.Time) Option {
 	return func(h *Handler) { h.now = now }
 }
 
+// WithLogger sets the logger for access logs and handler events. Without this
+// option slog.Default() is used.
+func WithLogger(logger *slog.Logger) Option {
+	return func(h *Handler) { h.logger = logger }
+}
+
 func New(repository *store.Store, control *syncer.Control, secureCookie bool, options ...Option) http.Handler {
-	handler := &Handler{store: repository, control: control, secureCookie: secureCookie, now: time.Now}
+	handler := &Handler{store: repository, control: control, secureCookie: secureCookie, now: time.Now, logger: slog.Default()}
 	handler.trustedProxies, _ = ParseTrustedProxyCIDRs(DefaultTrustedProxyCIDRs)
 	for _, option := range options {
 		option(handler)
 	}
 	handler.loginLimiter = newLoginLimiter(handler.now)
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID, middleware.Recoverer, handler.sameOrigin)
-	router.Get("/api/health", handler.health)
+	// accessLog wraps Recoverer so a recovered panic is logged with status 500.
+	router.Use(requestID, handler.accessLog, middleware.Recoverer, handler.sameOrigin)
+	router.Get("/api/health/live", handler.healthLive)
+	router.Get("/api/health/ready", handler.healthReady)
+	router.Get("/api/health", handler.healthReady) // compatibility alias of /api/health/ready
 	router.Post("/api/auth/login", handler.login)
 	router.Post("/api/auth/logout", handler.logout)
 	router.With(handler.authenticate).Get("/api/auth/me", handler.me)
@@ -83,14 +94,6 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool, op
 	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/blocked-articles/{id}/allow", handler.allowBlockedFeedArticle)
 	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/blocked-articles/{id}/reject", handler.rejectBlockedFeedArticle)
 	return router
-}
-
-func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
-	if err := h.store.Ping(r.Context()); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "system.database_unavailable", "The database is temporarily unavailable.")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

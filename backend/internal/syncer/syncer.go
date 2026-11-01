@@ -3,11 +3,13 @@ package syncer
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pulse-reader/app/internal/feeds"
@@ -150,6 +152,7 @@ type Syncer struct {
 	fetch        FetchFunc
 	initialDelay time.Duration
 	interval     time.Duration
+	logger       *slog.Logger
 }
 
 // Option customizes a Syncer created by New.
@@ -162,6 +165,12 @@ func WithSchedule(initialDelay, interval time.Duration) Option {
 		s.initialDelay = initialDelay
 		s.interval = interval
 	}
+}
+
+// WithLogger sets the logger for refresh errors and cycle summaries. Without
+// this option slog.Default() is used.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Syncer) { s.logger = logger }
 }
 
 // WithFetcher replaces the feed fetcher (for tests).
@@ -179,6 +188,7 @@ func New(repository RefreshRepository, control *Control, concurrency int, option
 		fetch:        feeds.Fetch,
 		initialDelay: DefaultInitialDelay,
 		interval:     DefaultInterval,
+		logger:       slog.Default(),
 	}
 	for _, option := range options {
 		option(s)
@@ -266,7 +276,35 @@ func (s *Syncer) runUserRequests(ctx context.Context) {
 	}
 }
 
+// refreshOutcome is the result of one source within a refresh run.
+type refreshOutcome int
+
+const (
+	outcomeSkipped     refreshOutcome = iota // not claimed (another worker or not due) or cancelled
+	outcomeRefreshed                         // new content committed
+	outcomeNotModified                       // HTTP 304 committed
+	outcomeFailed                            // fetch, claim or commit failed
+)
+
+type refreshCounts struct {
+	refreshed, notModified, failed, skipped atomic.Int64
+}
+
+func (c *refreshCounts) add(outcome refreshOutcome) {
+	switch outcome {
+	case outcomeRefreshed:
+		c.refreshed.Add(1)
+	case outcomeNotModified:
+		c.notModified.Add(1)
+	case outcomeFailed:
+		c.failed.Add(1)
+	default:
+		c.skipped.Add(1)
+	}
+}
+
 func (s *Syncer) refresh(ctx context.Context, userID int64) {
+	started := time.Now()
 	var targets []store.FeedTarget
 	var err error
 	if userID != 0 {
@@ -276,25 +314,49 @@ func (s *Syncer) refresh(ctx context.Context, userID int64) {
 	}
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("rss refresh: list due feeds: %v", err)
+			s.logger.Error("rss refresh: list feeds failed", slog.String("error", err.Error()), slog.Int64("user_id", userID))
 		}
 		return
 	}
+	var counts refreshCounts
 	processTargets(ctx, targets, s.concurrency, func(ctx context.Context, target store.FeedTarget) {
-		s.refreshSource(ctx, target, userID)
+		counts.add(s.refreshSource(ctx, target, userID))
 	})
+	s.logSummary(ctx, userID, len(targets), &counts, time.Since(started))
 }
 
-func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, userID int64) {
+// logSummary writes one record per scheduled cycle or manual refresh. Cycles
+// without due sources run every minute and are logged at debug level only.
+func (s *Syncer) logSummary(ctx context.Context, userID int64, targets int, counts *refreshCounts, duration time.Duration) {
+	level := slog.LevelInfo
+	if targets == 0 {
+		level = slog.LevelDebug
+	}
+	attributes := []slog.Attr{slog.String("trigger", "schedule")}
+	if userID != 0 {
+		attributes = []slog.Attr{slog.String("trigger", "user"), slog.Int64("user_id", userID)}
+	}
+	attributes = append(attributes,
+		slog.Int("targets", targets),
+		slog.Int64("refreshed", counts.refreshed.Load()),
+		slog.Int64("not_modified", counts.notModified.Load()),
+		slog.Int64("failed", counts.failed.Load()),
+		slog.Int64("skipped", counts.skipped.Load()),
+		slog.Float64("duration_ms", math.Round(float64(duration.Microseconds()))/1000),
+	)
+	s.logger.LogAttrs(context.WithoutCancel(ctx), level, "rss refresh cycle finished", attributes...)
+}
+
+func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, userID int64) refreshOutcome {
 	// Scheduled cycles and user requests share one budget of concurrent sources.
 	select {
 	case s.slots <- struct{}{}:
 	case <-ctx.Done():
-		return
+		return outcomeSkipped
 	}
 	defer func() { <-s.slots }()
 	if ctx.Err() != nil {
-		return
+		return outcomeSkipped
 	}
 	var requester *int64
 	if userID != 0 {
@@ -302,30 +364,36 @@ func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, use
 	}
 	lease, claimed, err := s.store.ClaimSource(ctx, target.ID, requester)
 	if err != nil {
-		if ctx.Err() == nil {
-			log.Printf("rss refresh: claim source %d: %v", target.ID, err)
+		if ctx.Err() != nil {
+			return outcomeSkipped
 		}
-		return
+		s.logger.Error("rss refresh: claim source failed", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
+		return outcomeFailed
 	}
 	if !claimed {
-		return
+		return outcomeSkipped
 	}
 	feedContext, cancel := context.WithTimeout(ctx, fetchTimeout)
 	result, fetchErr := s.fetch(feedContext, lease.URL, lease.Validators)
 	cancel()
 	if ctx.Err() != nil {
 		s.abandon(ctx, lease)
-		return
+		return outcomeSkipped
 	}
 	if fetchErr != nil {
 		message := strings.TrimSpace(fetchErr.Error())
+		// Fetch failures are expected for broken feeds and shown per feed in the
+		// UI, so they are logged at debug level; the cycle summary counts them.
+		s.logger.Debug("rss refresh: fetch failed", slog.Int64("source_id", target.ID), slog.String("error", message))
 		if err := s.store.ReleaseSourceLease(ctx, lease, message); err != nil {
-			log.Printf("rss refresh: release failed source %d: %v", target.ID, err)
+			s.logger.Error("rss refresh: release failed source", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
 		}
-		return
+		return outcomeFailed
 	}
 	lease.Validators = result.Validators
+	outcome := outcomeRefreshed
 	if result.NotModified {
+		outcome = outcomeNotModified
 		err = s.store.CommitSourceNotModified(ctx, lease)
 	} else {
 		err = s.store.CommitSourceRefresh(ctx, lease, result.Document)
@@ -333,10 +401,12 @@ func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, use
 	if err != nil {
 		if ctx.Err() != nil {
 			s.abandon(ctx, lease)
-			return
+			return outcomeSkipped
 		}
-		log.Printf("rss refresh: commit source %d: %v", target.ID, err)
+		s.logger.Error("rss refresh: commit source failed", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
+		return outcomeFailed
 	}
+	return outcome
 }
 
 // abandon gives up a lease after cancellation without recording an attempt.
@@ -345,7 +415,7 @@ func (s *Syncer) abandon(ctx context.Context, lease store.SourceLease) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), leaseCleanupTimeout)
 	defer cancel()
 	if err := s.store.AbandonSourceLease(cleanup, lease); err != nil && !errors.Is(err, store.ErrLeaseLost) {
-		log.Printf("rss refresh: abandon lease of source %d: %v", lease.ID, err)
+		s.logger.Warn("rss refresh: abandon lease failed", slog.Int64("source_id", lease.ID), slog.String("error", err.Error()))
 	}
 }
 

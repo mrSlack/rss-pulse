@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,7 +219,9 @@ func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, skipped := range result.Skipped {
-		log.Printf("feed request %d approved for source %d: skipped user %d (%s)", *requestID, result.SourceID, skipped.UserID, skipped.Reason)
+		h.logger.InfoContext(r.Context(), "feed request approved: requester skipped",
+			slog.Int64("feed_request_id", *requestID), slog.Int64("source_id", result.SourceID),
+			slog.Int64("skipped_user_id", skipped.UserID), slog.String("reason", skipped.Reason))
 	}
 	if h.control != nil {
 		h.control.RequestCycle()

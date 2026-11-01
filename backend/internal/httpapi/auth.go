@@ -59,6 +59,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "auth.session_check_failed", "The session could not be verified.")
 			return
 		}
+		setLoggedUser(r, user.ID)
 		ctx := context.WithValue(r.Context(), sessionUserKey{}, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
