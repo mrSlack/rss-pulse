@@ -33,7 +33,7 @@ func TestQuarantinePersistsPayloadAndDecisions(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE feed_sources SET lease_token='test',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1`, source); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
+		if _, err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -163,7 +163,7 @@ func TestQuarantinePreservesPublicationTimeOnUndatedRefresh(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE feed_sources SET lease_token='test',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1`, source); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
+		if _, err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -219,7 +219,7 @@ func TestHistoricalQuarantineRemainsUnavailableAfterDatedRefresh(t *testing.T) {
 	}
 	s := store.New(pool)
 	item := feeds.Item{GUID: "legacy", Title: "adult content", Summary: "Recovered complete content", PublishedAt: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), HasPublishedAt: true}
-	if err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
+	if _, err := s.CommitSourceRefresh(ctx, store.SourceLease{ID: source, Token: "test"}, feeds.Document{Title: "News", Items: []feeds.Item{item}}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.ListBlockedFeedArticles(ctx, 100)

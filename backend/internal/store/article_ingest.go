@@ -43,15 +43,17 @@ func (a ingestArticle) equal(b ingestArticle) bool {
 // articles with an item's GUID and those satisfying an item's merge rule with their stored
 // values; no other article is changed by the refresh, so none can match later), applies
 // the rules above in memory, and sends only the resulting writes, in order, as one batch.
-// Writes that would not change a row are skipped.
-func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []feeds.Item) error {
+// Writes that would not change a row are skipped. It returns the number of inserted
+// articles.
+func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []feeds.Item) (int, error) {
 	if len(items) == 0 {
-		return nil
+		return 0, nil
 	}
 	known, err := loadIngestCandidates(ctx, tx, sourceID, items)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	inserted := 0
 	byGUID := make(map[string]*ingestArticle, len(known)+len(items))
 	for _, article := range known {
 		byGUID[article.guid] = article
@@ -73,6 +75,7 @@ func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []f
 			byGUID[article.guid] = &article
 			batch.Queue(`INSERT INTO articles (feed_source_id, guid, title, url, summary, published_at, search_key)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)`, sourceID, article.guid, article.title, article.url, article.summary, article.published, article.searchKey)
+			inserted++
 			continue
 		}
 		if !item.HasPublishedAt {
@@ -97,16 +100,19 @@ func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []f
 		}
 	}
 	if batch.Len() == 0 {
-		return nil
+		return 0, nil
 	}
 	results := tx.SendBatch(ctx, batch)
 	for range batch.Len() {
 		if _, err := results.Exec(); err != nil {
 			results.Close()
-			return err
+			return 0, err
 		}
 	}
-	return results.Close()
+	if err := results.Close(); err != nil {
+		return 0, err
+	}
+	return inserted, nil
 }
 
 // loadIngestCandidates locks and returns, ordered by id, the source's articles that share

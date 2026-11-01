@@ -99,7 +99,7 @@ func TestQuarantineAdministratorModeration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `UPDATE feed_sources SET lease_token='legacy-refresh',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE normalized_url='https://example.com/rss' RETURNING id`).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.New(pool).CommitSourceRefresh(ctx, store.SourceLease{ID: sourceID, Token: "legacy-refresh"}, feeds.Document{Title: "Admin feed", Items: []feeds.Item{{GUID: "legacy", Title: "Legacy title", Summary: "Complete dated payload", PublishedAt: published, HasPublishedAt: true}}}); err != nil {
+	if _, err := store.New(pool).CommitSourceRefresh(ctx, store.SourceLease{ID: sourceID, Token: "legacy-refresh"}, feeds.Document{Title: "Admin feed", Items: []feeds.Item{{GUID: "legacy", Title: "Legacy title", Summary: "Complete dated payload", PublishedAt: published, HasPublishedAt: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	if rows := list("1"); len(rows) != 1 || rows[0].ID != legacyID || rows[0].CanModerate {

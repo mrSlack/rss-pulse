@@ -37,6 +37,9 @@ type ArticleSearchUpgrade struct {
 	Pause time.Duration
 	// Logger receives progress records; nil discards them.
 	Logger *slog.Logger
+	// Progress, when set, is called after each backfill batch with the number of
+	// articles that batch filled.
+	Progress func(filled int64)
 }
 
 // Run performs the remaining steps of the upgrade and returns nil once all of them have
@@ -124,6 +127,9 @@ func (u ArticleSearchUpgrade) backfill(ctx context.Context, conn *pgxpool.Conn, 
 		}
 		lastID = *batchEnd
 		total += filled
+		if u.Progress != nil {
+			u.Progress(filled)
+		}
 		if time.Since(lastLogged) >= 30*time.Second {
 			logger.Info("article search key backfill progress", slog.Int64("filled", total), slog.Int64("last_article_id", lastID))
 			lastLogged = time.Now()
