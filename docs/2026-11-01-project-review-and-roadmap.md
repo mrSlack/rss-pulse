@@ -200,20 +200,31 @@ from the project owner.
 | 6.4 | Remove dead store functions; central store-error mapping in handlers. | OPS-8, OPS-9 | No behavioural change; tests updated. | 0.5 |
 | 6.5 | Documentation fixes and an OpenAPI description. | DOC-1, DOC-3, DOC-4 | Docs consistent with the repository; spec validated by a test. | 0.75 |
 
-### Suggested order and milestones
+### Execution stages (agreed 2026-11-01)
 
-1. **Milestone A — "Safe baseline"** (≈1 week): Phase 0, Phase 1, tasks 2.1–2.2.
-   Closes every High finding except PERF-1 (OPS-2/CI is deferred).
-2. **Milestone B — "Correct and predictable"** (≈1 week): rest of Phase 2,
-   Phase 3, task 4.2 (retention).
-3. **Milestone C — "Scales and is pleasant to use"** (≈1.5–2 weeks): rest of
-   Phase 4, Phase 5, Phase 6.
+The phases above group work by topic. Work is executed in the following
+stages instead; each stage is one branch, test-first, verified with the manual
+commands from `AGENTS.md`.
 
-Phases 0 and 6 are independent of the rest. Task 2.2 (keyset pagination)
-should land before 5.2 (frontend refactor) so the refactor does not have to
-carry the old paging logic. Task 4.1 (baseline) must precede 4.3–4.4.
+| Stage | Name | Tasks | Depends on | Est. |
+| --- | --- | --- | --- | --- |
+| 1 | Quick fixes | 0.1–0.3, 2.1 (REL-1), 1.2 (SEC-2), 1.3 (SEC-4) | — | 1–1.5 |
+| 2 | Sign-in protection | 1.1 (SEC-1), 1.5 (SEC-5), 1.6 (SEC-6), 0.5 | 1 | 1.5–2 |
+| 3 | Reading correctness | 2.2 + 2.4 together (REL-2, REL-4), 2.3 (REL-3) | 1 | 2–2.5 |
+| 4 | Data growth | 4.1 (baseline), 4.2 (retention, session cleanup) | decision Q1 | 1.5 |
+| 5 | Refresh engine | 3.1, 3.2, 3.4, 3.5, then design note + 3.3 | decision Q3 | 3–3.5 |
+| 6 | Accounts and requests | 1.4 (SEC-3), 2.6 (REL-9), 2.5 (REL-10) | decision Q2 | 2 |
+| 7 | Performance | 4.3, 4.4, 4.5 | 4 | 3 |
+| 8 | Frontend | 5.1, 5.2, then 5.3–5.5 (5.6 per decision Q4) | 3 | 5–6 |
+| 9 | Operations and cleanup | 0.4, 6.1–6.5 | 1; may run in parallel | 2–2.5 |
+
+Total ≈ 4 weeks. Stages 1–3 close every High finding except PERF-1, which is
+closed by stage 4.
 
 ## 4. Open questions for the product owner
+
+Proposed defaults are applied unless the owner decides otherwise before the
+dependent stage starts. Q5 is decided: remove the binary going forward only.
 
 1. Retention period for unsaved articles and for decided quarantine records
    (proposal: 180 and 90 days).
