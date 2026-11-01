@@ -46,6 +46,20 @@ test('reader and administrator sign in and complete their main workflows', async
   const forbiddenAdminResponse = await page.request.get('/api/admin/settings');
   expect(forbiddenAdminResponse.status()).toBe(403);
 
+  // Phrase and short-word searches go through the real search query (search key with
+  // its SQL fallback, trigram index built in the background after start).
+  for (const query of ['energy climate', 'a b']) {
+    const searchResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/articles' && url.searchParams.get('q') === query;
+    });
+    const searchInput = page.getByRole('textbox', { name: 'Search articles' });
+    await searchInput.fill(query);
+    await searchInput.press('Enter');
+    expect((await searchResponse).status()).toBe(200);
+  }
+  await page.getByRole('textbox', { name: 'Search articles' }).fill('');
+
   const unique = Date.now();
   await page.getByRole('button', { name: 'Create folder' }).click();
   const folderDialog = page.getByRole('dialog', { name: 'New folder' });

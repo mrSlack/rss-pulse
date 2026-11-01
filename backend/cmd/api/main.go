@@ -102,6 +102,12 @@ func main() {
 		logger.Info("Pulse API listening", slog.String("address", server.Addr))
 		serverErrors <- server.ListenAndServe()
 	}()
+	// Long schema steps (backfill, concurrent index builds) run while the API serves, so
+	// they do not delay the start; search is correct, only slower, until they finish.
+	searchUpgrade := store.ArticleSearchUpgrade{Logger: logger, Pause: 10 * time.Millisecond}
+	searchUpgradeDone := runBackgroundUpgrade(ctx, logger, "article search", backgroundUpgradeRetryDelay, func(ctx context.Context) error {
+		return searchUpgrade.Run(ctx, pool)
+	})
 
 	select {
 	case <-ctx.Done():
@@ -112,6 +118,7 @@ func main() {
 		}
 		waitForWorker(shutdownContext, "feed refresh", syncerDone)
 		waitForWorker(shutdownContext, "maintenance", maintenanceDone)
+		waitForWorker(shutdownContext, "article search upgrade", searchUpgradeDone)
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			fatal("http server failed", err)

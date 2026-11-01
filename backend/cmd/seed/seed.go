@@ -159,6 +159,12 @@ func (g *generator) run(ctx context.Context, pool *pgxpool.Pool, adminID int64) 
 			return "", fmt.Errorf("reset %s sequence: %w", table, err)
 		}
 	}
+	// The API runs this step in the background after start; a seeded database gets the
+	// search index before it is measured. Building it after COPY is also faster than
+	// maintaining it during COPY.
+	if err := (store.ArticleSearchUpgrade{}).Run(ctx, pool); err != nil {
+		return "", fmt.Errorf("article search upgrade: %w", err)
+	}
 	if _, err := pool.Exec(ctx, `ANALYZE`); err != nil {
 		return "", err
 	}
@@ -236,7 +242,7 @@ func (g *generator) seedArticles(ctx context.Context, pool *pgxpool.Pool) (int64
 	history := time.Duration(g.config.HistoryDays) * 24 * time.Hour
 	step := history / time.Duration(g.config.ArticlesPerSource)
 	position := 0
-	count, err := pool.CopyFrom(ctx, pgx.Identifier{"articles"}, []string{"id", "feed_source_id", "guid", "title", "url", "summary", "published_at", "created_at", "search_text"},
+	count, err := pool.CopyFrom(ctx, pgx.Identifier{"articles"}, []string{"id", "feed_source_id", "guid", "title", "url", "summary", "published_at", "created_at", "search_key"},
 		pgx.CopyFromFunc(func() ([]any, error) {
 			if position >= total {
 				return nil, nil
@@ -256,7 +262,7 @@ func (g *generator) seedArticles(ctx context.Context, pool *pgxpool.Pool) (int64
 			id := g.articleID(sourceID, index)
 			return []any{id, sourceID, fmt.Sprintf("seed-%d-%d", sourceID, index), title,
 				fmt.Sprintf("https://feed-%04d.%s/articles/%d", sourceID, seedDomain, id), summary, published, created,
-				store.ArticleSearchText(title, summary)}, nil
+				store.ArticleSearchKey(title, summary)}, nil
 		}))
 	if err != nil {
 		return 0, fmt.Errorf("copy articles: %w", err)
