@@ -215,11 +215,19 @@ commands from `AGENTS.md`.
 | 5 | Refresh engine — **done** (`stage-5/refresh-engine`) | 3.1, 3.2, 3.4, 3.5, then design note + 3.3 | decision Q3 | 3–3.5 |
 | 6 | Accounts and requests — **done** (`stage-6/accounts-and-requests`) | 1.4 (SEC-3), 2.6 (REL-9), 2.5 (REL-10) | decision Q2 | 2 |
 | 7 | Performance — **done** (`stage-7/performance`) | 4.3, 4.4, 4.5 | 4 | 3 |
-| 8 | Frontend | 5.1, 5.2, then 5.3–5.5 (5.6 per decision Q4) | 3 | 5–6 |
-| 9 | Operations and cleanup | 0.4, 6.1–6.5 | 1; may run in parallel | 2–2.5 |
+| 8 | Frontend — **done** (`stage-8/frontend`) | 5.1, 5.2, then 5.3–5.5 (5.6 per decision Q4) | 3 | 5–6 |
+| 9 | Operations and cleanup — **done** (`stage-9/operations`) | 0.4, 6.1–6.5 | 1; may run in parallel | 2–2.5 |
 
 Total ≈ 4 weeks. Stages 1–3 close every High finding except PERF-1, which is
 closed by stage 4.
+
+**Status 2026-11-01:** all stages are implemented and merged into
+`improvements`. Not done by decision: OPS-2 (CI, deferred by the owner),
+task 5.6 (remote-image setting, Q4), Prometheus metrics (optional part of
+6.2). Known trade-offs: substring search over phrases made only of very
+common words can be slower than before (see the stage 7 section of
+`2026-11-01-performance-baseline.md`); ownerless feed sources are not
+deleted by retention (`docs/PROJECT.md`, deferred work).
 
 ## 4. Open questions for the product owner
 

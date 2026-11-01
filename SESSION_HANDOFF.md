@@ -1,3 +1,13 @@
+# Session handoff — 2026-11-01 (roadmap stages 2–9)
+
+- **State:** all roadmap stages from `docs/2026-11-01-project-review-and-roadmap.md` are implemented. Each stage has its own branch (`stage-2/sign-in-protection` … `stage-9/operations`); all are merged with integration fixes into `improvements` (stacked on `stage-1/quick-fixes` and `docs/project-review-plan`). Nothing is pushed or merged into `master`.
+- **Verified on `improvements` (final tree):** `gofmt -l` empty, `go vet`, `go mod tidy -diff` clean, `REQUIRE_INTEGRATION=1 go test -count=1 ./...` all packages ok; `npm run lint` 0 problems, 66/66 unit tests, typecheck and build ok, `npm audit --omit=dev` 0; Playwright 18/18 on `compose.e2e.yml`; all compose files validate; shellcheck clean; production images build; nginx headers/caching/gzip checked with curl; fresh-DB start applies 001–017; upgrade from a `master`-migrated database (010) with data to 017 succeeds with data intact.
+- **Integration fixes made by the coordinator:** seed test signature after cursor paging; scheduler ignores disabled accounts; dead `ErrFeedRequestPending` removed; production update waits up to 900 s (`DEPLOY_WAIT_TIMEOUT`) and API health start period 900 s for long migration 016; admin users baseline screenshot updated; Nginx forwards/logs `request_id` without query strings; OpenAPI entries for mark-read and OPML routes.
+- **Not done / known:** CI deferred by owner; staticcheck and govulncheck not run (staticcheck `@latest` blocked by permissions, pinned govulncheck crashes on Go 1.27); race detector not run (no cgo in alpine image); slow phrase searches of very common words; running dev containers were not rebuilt. `frontend/dist` and `frontend/test-results` may be root-owned from containers.
+- **Next:** review and merge `improvements` into `master` (suggest reviewing per stage branch), rebuild containers, back up production before the first upgrade (migration 016 rewrites all articles).
+
+---
+
 # Session handoff — 2026-11-01 (stage 1: quick fixes)
 
 - **Done (branch `stage-1/quick-fixes`, stacked on `docs/project-review-plan`):** untracked `backend/api` binary and ignored it (history not rewritten, per decision); dev API no longer runs `go mod tidy` at start and the dev image copies `go.sum`; `AGENTS.md` Go test command now sets `TEST_DATABASE_URL` and `REQUIRE_INTEGRATION=1` (skips become failures); REL-1 robust feed date parsing; SEC-2 dummy-hash Argon2id work for unknown sign-in e-mails; SEC-4 `netip`-based special-purpose range blocklist with NAT64/6to4 unwrapping.
