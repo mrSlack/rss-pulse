@@ -3,6 +3,17 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          // Third-party code (React, i18next) changes far less often than the
+          // app, so it gets its own long-cached chunk that survives app deploys.
+          groups: [{ name: 'vendor', test: /[\\/]node_modules[\\/]/ }],
+        },
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,

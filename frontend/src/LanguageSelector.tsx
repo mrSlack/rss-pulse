@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import i18n, { supportedLanguages, type Language } from './i18n';
+import i18n, { setLanguage, supportedLanguages, type Language } from './i18n';
 
 const languageNames: Record<Language, string> = {
   en: 'English',
@@ -36,7 +36,7 @@ export function LanguageSelector({ className = '' }: { className?: string }) {
   }, []);
 
   function selectLanguage(language: Language) {
-    void i18n.changeLanguage(language);
+    void setLanguage(language);
     if (menuRef.current) menuRef.current.open = false;
     menuRef.current?.querySelector('summary')?.focus();
   }
