@@ -45,6 +45,8 @@ export type Article = {
 export type ArticlePage = {
   items: Article[];
   hasMore: boolean;
+  /** Opaque keyset cursor for the next page; sent back as `before`. */
+  nextCursor: string | null;
 };
 
 export type UserRole = 'Administrator' | 'Reader';
