@@ -408,18 +408,85 @@ func TestAdminIntervalSettingsPersistAndPasswordChangeKeepsOnlyCurrentSession(t 
 	}
 }
 
-func TestManualRefreshReturnsConflictWhenRefreshSlotIsBusy(t *testing.T) {
+func TestManualRefreshQueuesEveryUserAndReportsPerUserStatus(t *testing.T) {
 	pool, _, _ := isolatedAPIDatabase(t)
 	control := syncer.NewControl()
-	if !control.Request(true) {
-		t.Fatal("failed to occupy refresh controller for the test")
+	if !control.RequestCycle() {
+		t.Fatal("failed to queue a scheduled cycle for the test")
 	}
+	// No syncer runs here, so accepted requests stay queued.
 	handler := httpapi.New(store.New(pool), control, false)
-	cookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
-	response := authenticatedRequest(t, handler, http.MethodPost, "/api/refresh", "", cookie)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("manual refresh while controller is occupied = %d %s, want 409", response.Code, response.Body.String())
+	adminCookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+	if running := refreshRunning(t, handler, adminCookie); running {
+		t.Fatal("a pending scheduled cycle must not be reported as the user's refresh")
 	}
+	for _, cookie := range []*http.Cookie{adminCookie, readerCookie, adminCookie} {
+		response := authenticatedRequest(t, handler, http.MethodPost, "/api/refresh", "", cookie)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("manual refresh = %d %s, want 202", response.Code, response.Body.String())
+		}
+		if running := refreshRunning(t, handler, cookie); !running {
+			t.Fatal("refresh status must be running for a user with a queued request")
+		}
+	}
+}
+
+func TestChangingFeedURLToApprovedSourceQueuesRefreshWithoutFetching(t *testing.T) {
+	ctx := context.Background()
+	pool, _, readerID := isolatedAPIDatabase(t)
+	control := syncer.NewControl()
+	handler := httpapi.New(store.New(pool), control, false)
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+	var sourceID, approvedID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url='https://example.com/rss'`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	// The .invalid host never resolves: a synchronous fetch would fail the request.
+	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url) VALUES ('https://approved.invalid/rss','Approved','https://approved.invalid/rss') RETURNING id`).Scan(&approvedID); err != nil {
+		t.Fatal(err)
+	}
+	feed, err := store.New(pool).SubscribeSource(ctx, readerID, sourceID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshRunning(t, handler, readerCookie) {
+		t.Fatal("refresh reported running before the URL change")
+	}
+	changed := authenticatedRequest(t, handler, http.MethodPatch, "/api/feeds/"+intString(feed.ID), `{"title":"Replacement","url":"https://approved.invalid/rss","folderId":null}`, readerCookie)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("change to approved URL = %d %s, want 200", changed.Code, changed.Body.String())
+	}
+	var updated store.Feed
+	if err := json.Unmarshal(changed.Body.Bytes(), &updated); err != nil || updated.URL != "https://approved.invalid/rss" || updated.Title != "Replacement" {
+		t.Fatalf("updated feed = %s (%v)", changed.Body.String(), err)
+	}
+	var subscribedSource int64
+	var lastChecked *time.Time
+	if err := pool.QueryRow(ctx, `SELECT uf.feed_source_id, fs.last_checked_at FROM user_feeds uf JOIN feed_sources fs ON fs.id=uf.feed_source_id WHERE uf.id=$1`, feed.ID).Scan(&subscribedSource, &lastChecked); err != nil {
+		t.Fatal(err)
+	}
+	if subscribedSource != approvedID || lastChecked != nil {
+		t.Fatalf("subscription source=%d last_checked_at=%v, want %d and no fetch attempt", subscribedSource, lastChecked, approvedID)
+	}
+	if !control.IsUserRefreshing(readerID) || !refreshRunning(t, handler, readerCookie) {
+		t.Fatal("URL change must queue a refresh for the user")
+	}
+}
+
+func refreshRunning(t *testing.T, handler http.Handler, cookie *http.Cookie) bool {
+	t.Helper()
+	response := authenticatedRequest(t, handler, http.MethodGet, "/api/refresh", "", cookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/refresh = %d %s", response.Code, response.Body.String())
+	}
+	var status struct {
+		Running bool `json:"running"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	return status.Running
 }
 
 func TestAddingFeedAtUserLimitReturnsConflictBeforeCreatingSource(t *testing.T) {

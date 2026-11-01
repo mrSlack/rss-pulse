@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/pulse-reader/app/internal/feeds"
 	"github.com/pulse-reader/app/internal/store"
 )
 
@@ -288,37 +287,6 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "feed.update_failed", "The feed could not be updated.")
 		return
 	}
-	if urlChanged {
-		lease, claimed, err := h.store.ClaimSource(r.Context(), sourceID, nil)
-		if err != nil {
-			if sourceCreated {
-				_ = h.store.DiscardEmptySource(r.Context(), sourceID)
-			}
-			writeError(w, http.StatusInternalServerError, "feed.refresh_claim_failed", "The feed could not be claimed for refresh.")
-			return
-		}
-		if claimed {
-			feedContext, cancel := timeBoundContext(r)
-			document, fetchErr := feeds.Fetch(feedContext, lease.URL)
-			cancel()
-			if fetchErr != nil {
-				_ = h.store.ReleaseSourceLease(r.Context(), lease, fetchErr.Error())
-				if sourceCreated {
-					_ = h.store.DiscardEmptySource(r.Context(), sourceID)
-				}
-				writeError(w, http.StatusUnprocessableEntity, "feed.fetch_failed", "The feed could not be fetched. Check the URL and try again.")
-				return
-			}
-			if err := h.store.CommitSourceRefresh(r.Context(), lease, document); err != nil {
-				_ = h.store.ReleaseSourceLease(r.Context(), lease, err.Error())
-				if sourceCreated {
-					_ = h.store.DiscardEmptySource(r.Context(), sourceID)
-				}
-				writeError(w, http.StatusInternalServerError, "feed.articles_save_failed", "Feed articles could not be saved.")
-				return
-			}
-		}
-	}
 	feed, err := h.store.UpdateFeedForUser(r.Context(), user.ID, *feedID, sourceID, request.Title, request.FolderID)
 	if errors.Is(err, store.ErrNotFound) {
 		if sourceCreated {
@@ -338,6 +306,11 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "feed.update_failed", "The feed could not be updated.")
 		return
+	}
+	if urlChanged && h.control != nil {
+		// The new source is fetched in the background; GET /api/refresh reports
+		// the user's refresh as running until it has been processed.
+		h.control.RequestUser(user.ID)
 	}
 	writeJSON(w, http.StatusOK, feed)
 }

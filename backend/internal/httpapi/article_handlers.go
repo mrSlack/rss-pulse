@@ -128,13 +128,12 @@ func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) refreshFeeds(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r)
-	if !h.control.RequestUser(user.ID) {
-		writeError(w, http.StatusConflict, "feed.refresh_busy", "A feed refresh is already running or queued.")
-		return
-	}
+	// A user who is already queued or refreshing is covered by that request.
+	h.control.RequestUser(user.ID)
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Feed refresh started."})
 }
 
-func (h *Handler) refreshStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"running": h.control.IsRunning()})
+func (h *Handler) refreshStatus(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r)
+	writeJSON(w, http.StatusOK, map[string]bool{"running": h.control.IsUserRefreshing(user.ID)})
 }

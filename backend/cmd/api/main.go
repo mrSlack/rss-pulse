@@ -58,7 +58,7 @@ func main() {
 	refreshControl := syncer.NewControl()
 	refreshConcurrency := syncer.ConcurrencyFromEnv()
 	log.Printf("rss refresh concurrency: %d", refreshConcurrency)
-	go syncer.New(repository, refreshControl, refreshConcurrency).Run(ctx)
+	syncerDone := syncer.New(repository, refreshControl, refreshConcurrency).Start(ctx)
 
 	cookieSecure := false
 	if raw := os.Getenv("SESSION_COOKIE_SECURE"); raw != "" {
@@ -90,11 +90,22 @@ func main() {
 		if err := server.Shutdown(shutdownContext); err != nil {
 			log.Printf("server shutdown: %v", err)
 		}
-		<-maintenanceDone
+		waitForWorker(shutdownContext, "feed refresh", syncerDone)
+		waitForWorker(shutdownContext, "maintenance", maintenanceDone)
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server failed: %v", err)
 		}
+	}
+}
+
+// waitForWorker waits until a background worker has stopped or the shutdown
+// deadline has passed.
+func waitForWorker(ctx context.Context, name string, done <-chan struct{}) {
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Printf("shutdown: %s did not stop before the deadline", name)
 	}
 }
 

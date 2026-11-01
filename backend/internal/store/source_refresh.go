@@ -15,12 +15,38 @@ type SourceLease struct {
 	ID    int64
 	URL   string
 	Token string
+	// Validators are the stored HTTP cache validators when the lease is claimed.
+	// The refresher replaces them with the response's validators before a
+	// commit, which stores them on the source.
+	Validators feeds.Validators
 }
 
+// refreshSettingsSQL selects the shared-source TTL and the global scheduler
+// interval in minutes. See docs/2026-11-01-scheduler-design.md.
+const refreshSettingsSQL = `settings AS (
+	SELECT (SELECT value FROM system_settings WHERE key='shared_feed_ttl_minutes') AS ttl_minutes,
+		(SELECT value FROM system_settings WHERE key='refresh_interval_minutes') AS global_minutes
+)`
+
+// sourceDueSQL is true when no refresh attempt (successful or failed) happened
+// within the interval p.effective. A success sets last_checked_at and
+// last_success_at together and a failure sets only last_checked_at, so this
+// covers both the success interval and the failure backoff.
+const sourceDueSQL = `(GREATEST(fs.last_checked_at, fs.last_success_at) IS NULL
+	OR GREATEST(fs.last_checked_at, fs.last_success_at) + p.effective <= NOW())`
+
+// DueSources lists subscribed sources due for a scheduled refresh: the
+// effective interval is the shortest subscriber interval (per-user override or
+// global default), but never shorter than the shared-source TTL.
 func (s *Store) DueSources(ctx context.Context) ([]FeedTarget, error) {
-	rows, err := s.pool.Query(ctx, `SELECT fs.id, fs.url FROM feed_sources fs
-		WHERE (fs.last_success_at IS NULL OR fs.last_success_at <= NOW() - ((SELECT value FROM system_settings WHERE key='shared_feed_ttl_minutes') * INTERVAL '1 minute'))
-		AND EXISTS (SELECT 1 FROM user_feeds uf WHERE uf.feed_source_id = fs.id)
+	rows, err := s.pool.Query(ctx, `WITH `+refreshSettingsSQL+`, policy AS (
+			SELECT uf.feed_source_id AS source_id,
+				GREATEST(MIN(st.ttl_minutes), MIN(COALESCE(u.refresh_interval_minutes, st.global_minutes))) * INTERVAL '1 minute' AS effective
+			FROM user_feeds uf JOIN users u ON u.id=uf.user_id CROSS JOIN settings st
+			GROUP BY uf.feed_source_id
+		)
+		SELECT fs.id, fs.url FROM feed_sources fs JOIN policy p ON p.source_id=fs.id
+		WHERE `+sourceDueSQL+`
 		ORDER BY fs.last_success_at NULLS FIRST, fs.id`,
 	)
 	if err != nil {
@@ -72,12 +98,27 @@ func (s *Store) ClaimSource(ctx context.Context, sourceID int64, userID *int64) 
 		return SourceLease{}, false, err
 	}
 	var lease SourceLease
-	err = s.pool.QueryRow(ctx, `UPDATE feed_sources fs SET lease_token=$2, lease_expires_at=NOW()+INTERVAL '45 seconds'
+	// A scheduled claim (userID nil) needs a subscriber and uses the same
+	// effective interval as DueSources. A manual claim needs the requester's
+	// subscription and uses only the TTL, so "refresh now" can run before the
+	// scheduler interval; both measure from the last attempt.
+	err = s.pool.QueryRow(ctx, `WITH `+refreshSettingsSQL+`, policy AS (
+			SELECT CASE WHEN $3::bigint IS NULL
+					THEN GREATEST(st.ttl_minutes, MIN(COALESCE(u.refresh_interval_minutes, st.global_minutes)))
+					ELSE st.ttl_minutes END * INTERVAL '1 minute' AS effective,
+				BOOL_OR(uf.user_id = $3::bigint) AS requester_subscribed
+			FROM user_feeds uf JOIN users u ON u.id=uf.user_id CROSS JOIN settings st
+			WHERE uf.feed_source_id=$1
+			GROUP BY st.ttl_minutes, st.global_minutes
+		)
+		UPDATE feed_sources fs SET lease_token=$2, lease_expires_at=NOW()+INTERVAL '45 seconds'
+		FROM policy p
 		WHERE fs.id=$1
-		AND (fs.last_success_at IS NULL OR fs.last_success_at <= NOW() - ((SELECT value FROM system_settings WHERE key='shared_feed_ttl_minutes') * INTERVAL '1 minute'))
+		AND `+sourceDueSQL+`
 		AND (fs.lease_expires_at IS NULL OR fs.lease_expires_at <= NOW())
-		AND ($3::bigint IS NULL OR EXISTS (SELECT 1 FROM user_feeds uf WHERE uf.feed_source_id=fs.id AND uf.user_id=$3))
-		RETURNING fs.id,fs.url,fs.lease_token`, sourceID, token, userID).Scan(&lease.ID, &lease.URL, &lease.Token)
+		AND ($3::bigint IS NULL OR p.requester_subscribed)
+		RETURNING fs.id,fs.url,fs.lease_token,COALESCE(fs.etag,''),COALESCE(fs.last_modified,'')`, sourceID, token, userID).
+		Scan(&lease.ID, &lease.URL, &lease.Token, &lease.Validators.ETag, &lease.Validators.LastModified)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SourceLease{}, false, nil
 	}
@@ -110,7 +151,9 @@ func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, docu
 	if err := upsertSourceItems(ctx, tx, lease.ID, allowedItems); err != nil {
 		return err
 	}
-	command, err := tx.Exec(ctx, `UPDATE feed_sources SET title=$3,site_url=$4,last_checked_at=NOW(),last_success_at=NOW(),last_error=NULL,lease_token=NULL,lease_expires_at=NULL WHERE id=$1 AND lease_token=$2 AND lease_expires_at>NOW()`, lease.ID, lease.Token, document.Title, document.SiteURL)
+	command, err := tx.Exec(ctx, `UPDATE feed_sources SET title=$3,site_url=$4,last_checked_at=NOW(),last_success_at=NOW(),last_error=NULL,
+		etag=NULLIF($5,''),last_modified=NULLIF($6,''),lease_token=NULL,lease_expires_at=NULL
+		WHERE id=$1 AND lease_token=$2 AND lease_expires_at>NOW()`, lease.ID, lease.Token, document.Title, document.SiteURL, lease.Validators.ETag, lease.Validators.LastModified)
 	if err != nil {
 		return err
 	}
@@ -118,6 +161,34 @@ func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, docu
 		return ErrLeaseLost
 	}
 	return tx.Commit(ctx)
+}
+
+// CommitSourceNotModified records a successful 304 response: the source counts
+// as refreshed, its error is cleared, and its articles are left untouched.
+func (s *Store) CommitSourceNotModified(ctx context.Context, lease SourceLease) error {
+	command, err := s.pool.Exec(ctx, `UPDATE feed_sources SET last_checked_at=NOW(),last_success_at=NOW(),last_error=NULL,
+		etag=NULLIF($3,''),last_modified=NULLIF($4,''),lease_token=NULL,lease_expires_at=NULL
+		WHERE id=$1 AND lease_token=$2 AND lease_expires_at>NOW()`, lease.ID, lease.Token, lease.Validators.ETag, lease.Validators.LastModified)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+// AbandonSourceLease releases a lease without recording an attempt, for
+// refreshes interrupted by shutdown. The source keeps its schedule.
+func (s *Store) AbandonSourceLease(ctx context.Context, lease SourceLease) error {
+	command, err := s.pool.Exec(ctx, `UPDATE feed_sources SET lease_token=NULL,lease_expires_at=NULL WHERE id=$1 AND lease_token=$2`, lease.ID, lease.Token)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return ErrLeaseLost
+	}
+	return nil
 }
 
 func (s *Store) ReleaseSourceLease(ctx context.Context, lease SourceLease, message string) error {
