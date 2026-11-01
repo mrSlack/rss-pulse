@@ -117,7 +117,7 @@ test('admin workspace visits every section without API, script, or layout errors
       sharedFeedTTLMinutes = body.sharedFeedTTLMinutes;
       return json({ refreshIntervalMinutes, sharedFeedTTLMinutes });
     }
-    if (path === '/api/admin/feed-requests' && method === 'GET') return json({ requests: feedRequests, total: feedRequests.length });
+    if (path === '/api/admin/feed-requests' && method === 'GET') return json({ requests: feedRequests, total: feedRequests.length, nextCursor: null });
     const approve = path.match(/^\/api\/admin\/feed-requests\/(\d+)\/approve$/);
     if (approve && method === 'POST') {
       feedRequests = feedRequests.filter((item) => item.id !== Number(approve[1]));
@@ -269,7 +269,7 @@ test('feed request queue shows the total and loads further pages', async ({ page
     id: index + 1, url: `https://page.example/${index + 1}.xml`, requestedBy: 'reader@example.com', requesters: ['reader@example.com'],
     folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z',
   }));
-  const requestedOffsets: number[] = [];
+  const requestedCursors: string[] = [];
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -280,10 +280,14 @@ test('feed request queue shows the total and loads further pages', async ({ page
     if (path === '/api/refresh') return json({ running: false });
     if (path === '/api/admin/settings') return json({ refreshIntervalMinutes: 15, sharedFeedTTLMinutes: 15, users: [] });
     if (path === '/api/admin/feed-requests') {
-      // A page size of two stands in for the server default of 100.
-      const offset = Number(url.searchParams.get('offset') ?? '0');
-      requestedOffsets.push(offset);
-      return json({ requests: allRequests.slice(offset, offset + 2), total: allRequests.length });
+      // A page size of two stands in for the server default of 100; the cursor
+      // is the ID of the last request of the previous page.
+      const after = url.searchParams.get('after');
+      if (after !== null) requestedCursors.push(after);
+      const start = after === null ? 0 : allRequests.findIndex((item) => item.id > Number(after.replace('after-', '')));
+      const requests = allRequests.slice(start, start + 2);
+      const hasMore = start + 2 < allRequests.length;
+      return json({ requests, total: allRequests.length, nextCursor: hasMore ? `after-${requests[requests.length - 1].id}` : null });
     }
     return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
   });
@@ -301,6 +305,6 @@ test('feed request queue shows the total and loads further pages', async ({ page
   await section.getByRole('button', { name: 'Load more' }).click();
   await expect(section.getByText('https://page.example/3.xml')).toBeVisible();
   await expect(section.getByRole('button', { name: 'Load more' })).toHaveCount(0);
-  expect(requestedOffsets).toContain(2);
+  expect(requestedCursors).toEqual(['after-2']);
   await expectNoHorizontalOverflow(page);
 });

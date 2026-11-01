@@ -332,6 +332,7 @@
   "apiErrors.admin.blocked_articles_load_failed": "Не удалось загрузить журнал блокировок.",
   "apiErrors.feed.requests_load_failed": "Не удалось загрузить заявки на ленты.",
   "apiErrors.feed.requests_limit_invalid": "Лимит заявок на ленты должен быть от 1 до 200.",
+  "apiErrors.feed.requests_cursor_invalid": "Недопустимый курсор страницы заявок на ленты.",
   "apiErrors.feed.request_id_invalid": "Некорректный ID заявки на ленту.",
   "apiErrors.feed.request_not_found": "Заявка на ленту не найдена.",
   "apiErrors.feed.request_approve_failed": "Не удалось одобрить заявку на ленту.",

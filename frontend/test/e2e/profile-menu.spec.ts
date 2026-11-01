@@ -99,7 +99,7 @@ test('a reader feed request can be rejected or approved by an administrator', as
       return;
     }
     if (path.endsWith('/admin/feed-requests') && method === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ requests: pendingRequests, total: pendingRequests.length }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ requests: pendingRequests, total: pendingRequests.length, nextCursor: null }) });
       return;
     }
     const approval = path.match(/\/api\/admin\/feed-requests\/(\d+)\/approve$/);

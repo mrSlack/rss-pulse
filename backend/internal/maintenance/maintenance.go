@@ -1,5 +1,5 @@
 // Package maintenance runs periodic data-retention cleanup: expired articles,
-// decided quarantine records, and expired sessions.
+// decided quarantine records, sources without subscribers, and expired sessions.
 package maintenance
 
 import (
@@ -15,18 +15,23 @@ import (
 const (
 	DefaultArticleRetentionDays    = 180
 	DefaultQuarantineRetentionDays = 90
-	ArticleDeleteBatchSize         = 5000
-	DefaultInitialDelay            = time.Minute
-	DefaultInterval                = 6 * time.Hour
+	// DefaultUnsubscribedSourceRetentionDays is the grace period before a shared
+	// source that nobody subscribes to is deleted with its articles.
+	DefaultUnsubscribedSourceRetentionDays = 30
+	ArticleDeleteBatchSize                 = 5000
+	DefaultInitialDelay                    = time.Minute
+	DefaultInterval                        = 6 * time.Hour
 )
 
 // Config holds retention periods in days; 0 disables the corresponding cleanup.
 type Config struct {
-	ArticleRetentionDays    int
-	QuarantineRetentionDays int
+	ArticleRetentionDays            int
+	QuarantineRetentionDays         int
+	UnsubscribedSourceRetentionDays int
 }
 
-// ConfigFromEnv reads ARTICLE_RETENTION_DAYS and QUARANTINE_RETENTION_DAYS. Unset values
+// ConfigFromEnv reads ARTICLE_RETENTION_DAYS, QUARANTINE_RETENTION_DAYS and
+// UNSUBSCRIBED_SOURCE_RETENTION_DAYS. Unset values
 // use the defaults; invalid values return an error so startup can fail fast.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	articleDays, err := retentionDays(getenv, "ARTICLE_RETENTION_DAYS", DefaultArticleRetentionDays, 30, 3650)
@@ -37,7 +42,11 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{ArticleRetentionDays: articleDays, QuarantineRetentionDays: quarantineDays}, nil
+	sourceDays, err := retentionDays(getenv, "UNSUBSCRIBED_SOURCE_RETENTION_DAYS", DefaultUnsubscribedSourceRetentionDays, 1, 3650)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{ArticleRetentionDays: articleDays, QuarantineRetentionDays: quarantineDays, UnsubscribedSourceRetentionDays: sourceDays}, nil
 }
 
 func retentionDays(getenv func(string) string, key string, fallback, minimum, maximum int) (int, error) {
@@ -55,6 +64,7 @@ func retentionDays(getenv func(string) string, key string, fallback, minimum, ma
 type Repository interface {
 	DeleteExpiredArticles(ctx context.Context, retentionDays, batchSize int) (int64, error)
 	DeleteExpiredQuarantine(ctx context.Context, retentionDays int) (int64, error)
+	DeleteUnsubscribedSources(ctx context.Context, graceDays, batchSize int) (sources, articles int64, err error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 }
 
@@ -74,6 +84,14 @@ func RunOnce(ctx context.Context, repository Repository, config Config) error {
 			failures = append(failures, fmt.Errorf("quarantine retention: %w", err))
 		}
 		slog.Info("maintenance: deleted expired quarantine records", slog.Int64("count", count), slog.Int("retention_days", config.QuarantineRetentionDays))
+	}
+	if config.UnsubscribedSourceRetentionDays > 0 {
+		sources, articles, err := repository.DeleteUnsubscribedSources(ctx, config.UnsubscribedSourceRetentionDays, ArticleDeleteBatchSize)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("unsubscribed source cleanup: %w", err))
+		}
+		slog.Info("maintenance: deleted unsubscribed sources", slog.Int64("count", sources), slog.Int64("articles", articles),
+			slog.Int("retention_days", config.UnsubscribedSourceRetentionDays))
 	}
 	count, err := repository.DeleteExpiredSessions(ctx)
 	if err != nil {
