@@ -18,6 +18,7 @@ Run commands from the repository root. First copy `.env.example` to `.env` and c
 - Validate Compose configuration: `docker compose -f compose.database.yml config`, and likewise for the frontend and backend files.
 - Run Go unit and PostgreSQL integration tests: `docker compose -f compose.backend.yml run --rm -e REQUIRE_INTEGRATION=1 api sh -c 'TEST_DATABASE_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@db:5432/$POSTGRES_DB?sslmode=disable" go test -count=1 ./...'` (requires the database project to be running; each test creates and drops its own temporary schema). Without `TEST_DATABASE_URL`, integration tests are skipped; `REQUIRE_INTEGRATION=1` turns such a skip into a failure so a run cannot silently omit them.
 - Run frontend unit tests: `docker compose -f compose.frontend.yml exec frontend npm run test -- --run`
+- Lint the frontend: `docker compose -f compose.frontend.yml exec frontend npm run lint` (must report zero errors)
 - Run frontend Playwright visual and browser tests: `docker compose -f compose.frontend.yml exec frontend npm run test:e2e`
 - Update Playwright screenshot baselines after intentional visual changes: `docker compose -f compose.frontend.yml exec frontend npm run test:e2e:update`
 - Build the frontend: `docker compose -f compose.frontend.yml exec frontend npm run build`

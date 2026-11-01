@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -18,13 +19,36 @@ import (
 )
 
 type Handler struct {
-	store        *store.Store
-	control      *syncer.Control
-	secureCookie bool
+	store          *store.Store
+	control        *syncer.Control
+	secureCookie   bool
+	trustedProxies []netip.Prefix
+	now            func() time.Time
+	loginLimiter   *loginLimiter
 }
 
-func New(repository *store.Store, control *syncer.Control, secureCookie bool) http.Handler {
-	handler := &Handler{store: repository, control: control, secureCookie: secureCookie}
+// Option customizes a Handler created by New.
+type Option func(*Handler)
+
+// WithTrustedProxies sets the proxy networks whose X-Real-IP header is used as
+// the client address for sign-in rate limiting. Without this option
+// DefaultTrustedProxyCIDRs applies.
+func WithTrustedProxies(prefixes []netip.Prefix) Option {
+	return func(h *Handler) { h.trustedProxies = prefixes }
+}
+
+// WithClock replaces the clock used for sign-in rate limiting (for tests).
+func WithClock(now func() time.Time) Option {
+	return func(h *Handler) { h.now = now }
+}
+
+func New(repository *store.Store, control *syncer.Control, secureCookie bool, options ...Option) http.Handler {
+	handler := &Handler{store: repository, control: control, secureCookie: secureCookie, now: time.Now}
+	handler.trustedProxies, _ = ParseTrustedProxyCIDRs(DefaultTrustedProxyCIDRs)
+	for _, option := range options {
+		option(handler)
+	}
+	handler.loginLimiter = newLoginLimiter(handler.now)
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer, handler.sameOrigin)
 	router.Get("/api/health", handler.health)

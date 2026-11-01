@@ -93,6 +93,13 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "auth.invalid_login_request", "Enter a valid email address and password.")
 		return
 	}
+	// Check the limits before any Argon2id work so throttled requests are cheap.
+	attempt, wait, allowed := h.loginLimiter.begin(clientIP(r, h.trustedProxies), request.Email)
+	if !allowed {
+		w.Header().Set("Retry-After", retryAfterSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, "auth.rate_limited", "Too many sign-in attempts. Please wait and try again later.")
+		return
+	}
 	user, passwordHash, err := h.store.UserCredentialByEmail(r.Context(), request.Email)
 	if errors.Is(err, store.ErrNotFound) {
 		// Spend the same Argon2id work as for an existing account so response
@@ -102,6 +109,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		h.loginLimiter.cancel(attempt)
 		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
 		return
 	}
@@ -109,6 +117,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "auth.invalid_credentials", "The email address or password is incorrect.")
 		return
 	}
+	h.loginLimiter.succeed(attempt)
 	token, err := auth.NewSessionToken()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "auth.session_create_failed", "A session could not be created.")

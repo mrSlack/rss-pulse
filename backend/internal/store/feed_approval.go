@@ -24,7 +24,14 @@ type FeedRequestResult struct {
 	Approved  bool
 }
 
-var ErrFeedRequestPending = errors.New("a request for this feed is already pending")
+var (
+	ErrFeedRequestPending      = errors.New("a request for this feed is already pending")
+	ErrFeedRequestLimitReached = errors.New("the user has reached the pending feed request limit")
+)
+
+// MaxPendingFeedRequestsPerUser caps unapproved requests (new feeds and URL
+// replacements) per requester so the administrator queue cannot be flooded.
+const MaxPendingFeedRequestsPerUser = 10
 
 // RequestFeedApproval stores only the submitted URL and request metadata. It does not create a source.
 func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, title string, folderID, replaceFeedID *int64) (FeedRequestResult, error) {
@@ -71,11 +78,34 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return FeedRequestResult{}, err
 	}
-	var requestID int64
+	var requestID, existingRequester int64
+	err = tx.QueryRow(ctx, `SELECT id,requested_by FROM feed_requests WHERE normalized_url=$1`, normalizedURL).Scan(&requestID, &existingRequester)
+	if err == nil {
+		if existingRequester != userID {
+			return FeedRequestResult{}, ErrFeedRequestPending
+		}
+		return FeedRequestResult{RequestID: requestID}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return FeedRequestResult{}, err
+	}
+	// Lock the requester so concurrent requests cannot both pass the count.
+	var lockedUser int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedUser); errors.Is(err, pgx.ErrNoRows) {
+		return FeedRequestResult{}, ErrNotFound
+	} else if err != nil {
+		return FeedRequestResult{}, err
+	}
+	var pendingCount int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM feed_requests WHERE requested_by=$1`, userID).Scan(&pendingCount); err != nil {
+		return FeedRequestResult{}, err
+	}
+	if pendingCount >= MaxPendingFeedRequestsPerUser {
+		return FeedRequestResult{}, ErrFeedRequestLimitReached
+	}
 	err = tx.QueryRow(ctx, `INSERT INTO feed_requests (normalized_url,url,requested_by,folder_id,title,replace_feed_id)
 		VALUES ($1,$1,$2,$3,$4,$5) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, userID, folderID, title, replaceFeedID).Scan(&requestID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		var existingRequester int64
 		if err := tx.QueryRow(ctx, `SELECT id,requested_by FROM feed_requests WHERE normalized_url=$1`, normalizedURL).Scan(&requestID, &existingRequester); err != nil {
 			return FeedRequestResult{}, err
 		}
@@ -91,11 +121,12 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 	return FeedRequestResult{RequestID: requestID}, nil
 }
 
-func (s *Store) ListPendingFeedRequests(ctx context.Context) ([]FeedRequest, error) {
+// ListPendingFeedRequests returns up to limit pending requests, oldest first.
+func (s *Store) ListPendingFeedRequests(ctx context.Context, limit int) ([]FeedRequest, error) {
 	rows, err := s.pool.Query(ctx, `SELECT fr.id,fr.url,u.email,fr.folder_id,f.name,fr.title,fr.created_at::text
 		FROM feed_requests fr JOIN users u ON u.id=fr.requested_by
 		LEFT JOIN folders f ON f.id=fr.folder_id AND f.owner_user_id=fr.requested_by
-		ORDER BY fr.created_at,fr.id`)
+		ORDER BY fr.created_at,fr.id LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,10 @@
+# Keep stray local binaries, logs and test output out of image build contexts.
+api
+pulse-reader
+*.log
+*.test
+*.out
+coverage.html
+Dockerfile
+Dockerfile.production
+.dockerignore

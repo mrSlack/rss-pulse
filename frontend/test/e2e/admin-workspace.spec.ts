@@ -54,7 +54,7 @@ test('admin workspace visits every section without API, script, or layout errors
     if (requestEvent.url().includes('/api/')) failedRequests.push(`${requestEvent.method()} ${requestEvent.url()}`);
   });
 
-  let currentUser: TestUser = {
+  const currentUser: TestUser = {
     id: 1,
     email: 'admin@example.com',
     role: 'Administrator',
