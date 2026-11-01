@@ -135,7 +135,7 @@ func TestSourceLeasesFenceConcurrentAndStaleRefreshesAndHonorTTL(t *testing.T) {
 	}
 }
 
-func TestSourceRefreshMergesDuplicateArticlesWithinThirtyMinutes(t *testing.T) {
+func TestSourceRefreshMergesOnlyURLDuplicatesWithinThirtyMinutes(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedPostgres(t)
 	if err := store.Migrate(ctx, pool); err != nil {
@@ -191,10 +191,14 @@ func TestSourceRefreshMergesDuplicateArticlesWithinThirtyMinutes(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM articles WHERE feed_source_id=$1`, sourceID).Scan(&articleCount); err != nil {
 		t.Fatal(err)
 	}
-	if articleCount != 5 {
-		t.Fatalf("article count = %d, want 5 (three matches updated and one outside-window item inserted)", articleCount)
+	if articleCount != 7 {
+		t.Fatalf("article count = %d, want 7 (URL match updated; title-only, summary-only, and outside-window items inserted)", articleCount)
 	}
-	wantArticles := []feeds.Item{document.Items[0], document.Items[1], document.Items[2]}
+	wantArticles := []feeds.Item{
+		document.Items[0],
+		{GUID: oldArticles[1].guid, Title: oldArticles[1].title, URL: oldArticles[1].url, Summary: oldArticles[1].summary, PublishedAt: oldPublishedAt},
+		{GUID: oldArticles[2].guid, Title: oldArticles[2].title, URL: oldArticles[2].url, Summary: oldArticles[2].summary, PublishedAt: oldPublishedAt},
+	}
 	for i, want := range wantArticles {
 		var gotGUID, gotTitle, gotURL, gotSummary string
 		var gotPublishedAt time.Time
