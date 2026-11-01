@@ -4,11 +4,13 @@
 // ./policy (nothing the app imports), so the bundle has no imports.
 import {
   API_CACHE,
+  API_NETWORK_TIMEOUT_MS,
   SHELL_CACHE_PREFIX,
   clearsApiCache,
   entriesToEvict,
   isCacheableApiResponse,
   isObsoleteCache,
+  networkFirstWithTimeout,
   requestStrategy,
 } from './policy';
 
@@ -76,24 +78,24 @@ async function storeApiResponse(request: Request, response: Response, generation
   await Promise.all(evicted.map((key) => cache.delete(key)));
 }
 
-async function networkFirstApi(event: FetchEvent): Promise<Response> {
+function networkFirstApi(event: FetchEvent): Promise<Response> {
   const { request } = event;
   const generation = apiGeneration;
-  let response: Response;
-  try {
-    response = await fetch(request);
-  } catch (reason) {
-    if (request.signal.aborted) throw reason;
-    const cached = await caches.match(request, { cacheName: API_CACHE, ignoreVary: true });
-    if (cached) return cached;
-    throw reason;
-  }
-  if (clearsApiCache(request.method, new URL(request.url).pathname, response.status)) {
-    event.waitUntil(clearApiCache());
-  } else if (isCacheableApiResponse(response)) {
-    event.waitUntil(storeApiResponse(request, response.clone(), generation).catch(() => undefined));
-  }
-  return response;
+  const network = fetch(request);
+  // Handled whether or not the page still waits for it: a response that
+  // arrives after the stored copy was shown refreshes the cache. The
+  // generation check in storeApiResponse drops it if the cache was cleared
+  // in the meantime (sign-out, another account).
+  event.waitUntil(network.then((response) => {
+    if (clearsApiCache(request.method, new URL(request.url).pathname, response.status)) return clearApiCache();
+    if (isCacheableApiResponse(response)) return storeApiResponse(request, response.clone(), generation);
+    return undefined;
+  }).catch(() => undefined));
+  return networkFirstWithTimeout(
+    network,
+    () => caches.match(request, { cacheName: API_CACHE, ignoreVary: true }),
+    { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: () => request.signal.aborted },
+  );
 }
 
 async function cacheFirst(request: Request): Promise<Response> {
