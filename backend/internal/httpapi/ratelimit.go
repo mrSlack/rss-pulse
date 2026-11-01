@@ -20,10 +20,6 @@ import (
 // also deletes them, so rows do not linger once sign-ins stop.
 const limiterSweepInterval = time.Minute
 
-// loginThrottle holds the sign-in limits. The state lives in PostgreSQL
-// (login_attempts), so it survives restarts and is shared by every API instance.
-var loginThrottle = store.DefaultLoginThrottle
-
 // DefaultTrustedProxyCIDRs covers loopback, RFC 1918 and IPv6 unique local
 // addresses, which includes the Docker networks between Nginx and the API.
 const DefaultTrustedProxyCIDRs = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
@@ -99,7 +95,10 @@ func parseAddr(value string) (netip.Addr, bool) {
 // as a failure so concurrent guesses cannot all pass the check before any of
 // them is recorded; success clears the account and cancel withdraws the
 // provisional entry for outcomes that are not credential failures. The store
-// performs the check and the recording atomically across API instances.
+// performs the check and the recording atomically across API instances; the
+// state lives in PostgreSQL (login_attempts), so it survives restarts. The
+// limits are store.DefaultLoginThrottle, the same value the maintenance job uses
+// to delete expired attempts, so checking and cleanup cannot drift apart.
 type loginLimiter struct {
 	store  *store.Store
 	now    func() time.Time
@@ -123,7 +122,7 @@ func newLoginLimiter(repository *store.Store, now func() time.Time, logger *slog
 func (l *loginLimiter) begin(ctx context.Context, ip, account string) (store.LoginAttempt, time.Duration, error) {
 	now := l.now()
 	l.sweep(ctx, now)
-	return l.store.BeginLoginAttempt(ctx, loginThrottle, ip, account, now)
+	return l.store.BeginLoginAttempt(ctx, store.DefaultLoginThrottle, ip, account, now)
 }
 
 // succeed clears the account's failures after a correct password.
@@ -154,7 +153,7 @@ func (l *loginLimiter) sweep(ctx context.Context, now time.Time) {
 	}
 	l.lastSweep = now
 	l.mu.Unlock()
-	if _, err := l.store.DeleteExpiredLoginAttempts(ctx, loginThrottle, now); err != nil {
+	if _, err := l.store.DeleteExpiredLoginAttempts(ctx, store.DefaultLoginThrottle, now); err != nil {
 		l.logger.Warn("sign-in rate limit: deleting expired attempts failed", slog.String("error", err.Error()))
 	}
 }
