@@ -35,7 +35,7 @@ beforeEach(() => {
       { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null },
     ],
   });
-  apiMock.getFeedRequests.mockResolvedValue([]);
+  apiMock.getFeedRequests.mockResolvedValue({ requests: [], total: 0 });
   apiMock.approveFeedRequest.mockResolvedValue(undefined);
   apiMock.rejectFeedRequest.mockResolvedValue(undefined);
   apiMock.getStopWords.mockResolvedValue([]);
@@ -84,7 +84,7 @@ describe('AdminPanel', () => {
 
   it('allows administrators to approve pending feed URLs', async () => {
     const user = userEvent.setup();
-    apiMock.getFeedRequests.mockResolvedValueOnce([{
+    apiMock.getFeedRequests.mockResolvedValueOnce({ total: 1, requests: [{
       id: 12,
       url: 'https://example.test/rss',
       requestedBy: 'reader@example.com',
@@ -92,7 +92,7 @@ describe('AdminPanel', () => {
       folderName: null,
       title: '',
       createdAt: '2026-10-26T09:00:00Z',
-    }]);
+    }] });
     render(<AdminPanel />);
     await user.click(await screen.findByRole('button', { name: 'Feed requests' }));
     expect(await screen.findByText('https://example.test/rss')).toBeTruthy();
@@ -268,9 +268,35 @@ describe('AdminPanel', () => {
     await waitFor(() => expect(onSignedOut).toHaveBeenCalledTimes(1));
   });
 
+  it('shows the total number of pending requests and loads further pages', async () => {
+    const user = userEvent.setup();
+    const pendingRequest = (id: number) => ({
+      id, url: `https://pending.example/${id}.xml`, requestedBy: 'reader@example.com', requesters: ['reader@example.com'],
+      folderId: null, folderName: null, title: '', createdAt: '2026-10-26T09:00:00Z',
+    });
+    apiMock.getFeedRequests
+      .mockResolvedValueOnce({ total: 3, requests: [pendingRequest(1), pendingRequest(2)] })
+      .mockResolvedValueOnce({ total: 3, requests: [pendingRequest(2), pendingRequest(3)] });
+    render(<AdminPanel />);
+    const navButton = await screen.findByRole('button', { name: 'Feed requests' });
+    await waitFor(() => expect(navButton.textContent).toContain('3'));
+    await user.click(navButton);
+    expect(await screen.findByText('Showing 2 of 3 pending requests.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(apiMock.getFeedRequests).toHaveBeenLastCalledWith(undefined, 2));
+    expect(await screen.findByText('https://pending.example/3.xml')).toBeTruthy();
+    // A request already shown is not duplicated when pages overlap.
+    expect(screen.getAllByText('https://pending.example/2.xml')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
+    expect(screen.queryByText(/^Showing /)).toBeNull();
+
+    await user.click(within(screen.getByText('https://pending.example/1.xml').closest('tr')!).getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(navButton.textContent).toContain('2'));
+  });
+
   it('lists every requester of a shared feed request', async () => {
     const user = userEvent.setup();
-    apiMock.getFeedRequests.mockResolvedValueOnce([{
+    apiMock.getFeedRequests.mockResolvedValueOnce({ total: 1, requests: [{
       id: 14,
       url: 'https://shared.example/rss',
       requestedBy: 'reader@example.com',
@@ -279,7 +305,7 @@ describe('AdminPanel', () => {
       folderName: null,
       title: '',
       createdAt: '2026-10-26T09:00:00Z',
-    }]);
+    }] });
     render(<AdminPanel />);
     await user.click(await screen.findByRole('button', { name: 'Feed requests' }));
     const row = (await screen.findByText('https://shared.example/rss')).closest('tr')!;

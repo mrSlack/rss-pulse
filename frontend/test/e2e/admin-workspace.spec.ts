@@ -117,7 +117,7 @@ test('admin workspace visits every section without API, script, or layout errors
       sharedFeedTTLMinutes = body.sharedFeedTTLMinutes;
       return json({ refreshIntervalMinutes, sharedFeedTTLMinutes });
     }
-    if (path === '/api/admin/feed-requests' && method === 'GET') return json(feedRequests);
+    if (path === '/api/admin/feed-requests' && method === 'GET') return json({ requests: feedRequests, total: feedRequests.length });
     const approve = path.match(/^\/api\/admin\/feed-requests\/(\d+)\/approve$/);
     if (approve && method === 'POST') {
       feedRequests = feedRequests.filter((item) => item.id !== Number(approve[1]));
@@ -261,4 +261,46 @@ test('admin workspace visits every section without API, script, or layout errors
   expect(failedRequests, 'The browser UI should have no failed API network requests').toEqual([]);
   expect(pageErrors, 'The page should raise no uncaught JavaScript errors').toEqual([]);
   expect(consoleErrors, 'The browser console should contain no errors').toEqual([]);
+});
+
+test('feed request queue shows the total and loads further pages', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const allRequests = Array.from({ length: 3 }, (_, index) => ({
+    id: index + 1, url: `https://page.example/${index + 1}.xml`, requestedBy: 'reader@example.com', requesters: ['reader@example.com'],
+    folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z',
+  }));
+  const requestedOffsets: number[] = [];
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/api/auth/me') return json({ id: 1, email: 'admin@example.com', role: 'Administrator', refreshIntervalMinutes: null });
+    if (path === '/api/feeds' || path === '/api/folders' || path === '/api/admin/stop-words' || path === '/api/admin/blocked-articles') return json([]);
+    if (path === '/api/articles') return json({ items: [], hasMore: false });
+    if (path === '/api/refresh') return json({ running: false });
+    if (path === '/api/admin/settings') return json({ refreshIntervalMinutes: 15, sharedFeedTTLMinutes: 15, users: [] });
+    if (path === '/api/admin/feed-requests') {
+      // A page size of two stands in for the server default of 100.
+      const offset = Number(url.searchParams.get('offset') ?? '0');
+      requestedOffsets.push(offset);
+      return json({ requests: allRequests.slice(offset, offset + 2), total: allRequests.length });
+    }
+    return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+  });
+
+  await page.goto('/');
+  await page.locator('.profile-menu-sidebar > summary').click();
+  await page.getByRole('button', { name: 'Administration' }).click();
+  await page.getByRole('button', { name: 'Feed requests' }).click();
+  await page.setViewportSize({ width: 360, height: 780 });
+  const section = page.locator('section[aria-labelledby="feed-requests-title"]');
+  await expect(section.locator('.admin-user-count')).toHaveText('3');
+  await expect(section.getByText('Showing 2 of 3 pending requests.')).toBeVisible();
+  await expect(section.getByText('https://page.example/3.xml')).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+  await section.getByRole('button', { name: 'Load more' }).click();
+  await expect(section.getByText('https://page.example/3.xml')).toBeVisible();
+  await expect(section.getByRole('button', { name: 'Load more' })).toHaveCount(0);
+  expect(requestedOffsets).toContain(2);
+  await expectNoHorizontalOverflow(page);
 });
