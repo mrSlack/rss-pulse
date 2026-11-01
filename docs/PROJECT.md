@@ -16,9 +16,19 @@ The project uses React and TypeScript for the browser application, a Go API usin
 
 The local Compose groups share the external Docker network `rss-reader-net`. Frontend and backend source directories are mounted into their containers, and PostgreSQL data is stored in a host-mounted directory. In local development, the frontend container runs Vite's build watch mode and automatically refreshes `frontend/dist/` after source changes; Nginx serves the latest build and the browser page can be refreshed to view it. Nginx also proxies `/api/` to the Go API. The browser calls the API through relative same-origin paths.
 
-Project-scoped agent skills are stored in `.agents/skills/` and included in the repository. `skills-lock.json` records upstream sources for externally maintained skills. A new developer opening the cloned project root in Codex gets vendored skills without a global installation. Run `bash scripts/sync-skills.sh install` to restore lock-tracked skills if needed, or `bash scripts/sync-skills.sh update` to refresh them. The script restores the project-specific handoff rules after either operation. Current Superpowers workflow skills are vendored from `obra/superpowers-skills`; `diagnosing-superpowers` remains as a project skill because upstream no longer publishes it. The legacy `using-superpowers` name is retained alongside the current `using-skills` entry.
+Project-scoped agent skills live in `.agents/skills/`, which `.gitignore` excludes: the skills are not stored in the repository, and a fresh clone has none. `skills-lock.json` records the externally maintained skills and their upstream sources. Run `bash scripts/sync-skills.sh install` to restore the lock-tracked skills, or `bash scripts/sync-skills.sh update` to refresh them; the script reapplies the project-specific handoff rules after either operation. Skills that are not in the lock file, such as the Superpowers workflow skills from `obra/superpowers-skills` and `diagnosing-superpowers`, exist only in local copies and must be installed into `.agents/skills/` by hand.
 
 The frontend is a static React build. The backend owns authentication, authorization, input validation, RSS/Atom fetching and parsing, refresh coordination, and database access. PostgreSQL migrations are applied by the API at startup.
+
+## Logging and health checks
+
+The API logs through Go's `log/slog`; `cmd/api` builds the logger from `LOG_FORMAT` (`text` by default, `json` in `compose.production.yml`) and `LOG_LEVEL` (`debug`, `info` by default, `warn`, `error`), rejects invalid values at startup, and installs it as the default logger, so the syncer, the maintenance job, and `net/http` server errors write through the same handler.
+
+The router's middleware chain is `requestID`, `accessLog`, chi's `Recoverer`, and `sameOrigin`. `requestID` reuses an incoming `X-Request-ID` only when it matches `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` and otherwise generates 16 random bytes in hex; it stores the ID where chi's `middleware.GetReqID` finds it and returns it in the `X-Request-ID` response header. `accessLog` writes one `http request` record per request with `method`, `path` (`r.URL.Path`; the query string is never logged because it can contain search terms), `status`, `bytes`, `duration_ms`, `request_id`, and `user_id`. The user is only known inside `authenticate`, which runs later in route-specific middleware, so `accessLog` places a mutable per-request holder in the context and `authenticate` records the user ID in it. `Recoverer` runs inside `accessLog`, so a recovered panic is logged with status 500. Requests under `/api/health` are logged at debug level.
+
+The syncer logs one `rss refresh cycle finished` record per scheduled cycle (`trigger=schedule`) or manual refresh (`trigger=user`, `user_id`) with `targets`, `refreshed`, `not_modified`, `failed`, `skipped` (not claimed or cancelled), and `duration_ms`; cycles without targets are logged at debug level. Individual fetch failures are logged at debug level because they are expected and shown per feed in the UI; claim, commit, and lease errors are logged as errors. The maintenance job logs its deletion counts.
+
+`GET /api/health/live` answers `200 {"status":"ok"}` without touching the database (liveness). `GET /api/health/ready` pings PostgreSQL with a 2-second timeout and answers `503 system.database_unavailable` when that fails (readiness). `GET /api/health` is kept as an alias of the readiness check for existing monitors. The health checks of `compose.backend.yml`, `compose.production.yml`, and `compose.e2e.yml` call `/api/health/ready`. Prometheus metrics are not implemented (see deferred work).
 
 ## Reader experience and interaction
 
@@ -141,16 +151,18 @@ To add a language, copy `frontend/src/locales/en.json`, translate its values, re
 
 ## API surface
 
-The API is served under `/api/`. It includes a public health endpoint; authentication and profile operations; folder, feed, article, and refresh operations; and administrator-only account and settings operations. The principal route groups are:
+The API is served under `/api/`. The complete reference, with request and response schemas and the error codes of every response (`x-error-codes`), is the OpenAPI 3.1 description [`backend/openapi/openapi.json`](../backend/openapi/openapi.json). `backend/test/internal/httpapi/openapi_test.go` walks the chi router returned by `httpapi.New` and fails when a registered route is missing from the description or a documented route is not registered, and when an error code returned by a handler is not listed or a listed code is not returned. The description is JSON so the test needs no YAML dependency, and it lives under `backend/` because the Go test commands mount only that directory into the container.
+
+The API includes public health endpoints; authentication and profile operations; folder, feed, article, and refresh operations; and administrator-only account and settings operations. The principal route groups are:
 
 - `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`, `/api/auth/password`, and `/api/auth/profile` for sessions and profile management.
 - `/api/folders` and `/api/feeds` for the signed-in user's library, including `PATCH /api/feeds/{id}` for personal subscription edits and `DELETE /api/folders/{id}` for folder removal. The delete body uses `{"action":"delete_sources"}` to remove the user's subscriptions and their article state, or `{"action":"move_sources","targetFolderId":<id>}` to move subscriptions into another folder owned by the same user. The folder deletion and subscription changes occur in one transaction; shared source and article records are retained.
 - `/api/articles` and `/api/articles/{id}` for filtered article listing and per-user read/saved updates. `GET /api/articles` returns `{"items": [...], "hasMore": bool, "nextCursor": string|null}`. Pass `nextCursor` back as `before=<cursor>` to load the next page; the cursor is opaque and malformed values return `400 article.cursor_invalid`. The older `offset` parameter is still accepted for compatibility but cannot be combined with `before` (`400 article.pagination_conflict`).
 - `/api/refresh` for the signed-in user's manual refresh (`POST`, always `202`) and its status (`GET`, `{"running": bool}` for that user).
 - `/api/admin/users`, `/api/admin/users/{id}` (role, refresh interval, `disabled`), `POST /api/admin/users/{id}/sign-out`, `/api/admin/settings`, and `/api/admin/feed-requests` (optional `limit`, 1–200, default 100; including approve and reject actions) for administrator operations. `/api/admin/stop-words` supports listing and adding terms; `/api/admin/stop-words/{id}` removes a term. `GET /api/admin/blocked-articles` lists quarantine records with pending items first; `POST /api/admin/blocked-articles/{id}/allow` and `/reject` apply moderation decisions. All quarantine endpoints require the Administrator role.
-- `/api/health` for service health.
+- `/api/health/live` (liveness), `/api/health/ready` (readiness with a database ping), and `/api/health` (alias of readiness); see [Logging and health checks](#logging-and-health-checks).
 
-API errors use an object with a stable `code` and an English `error` message. Existing HTTP status codes communicate request outcome; localized text is resolved in the frontend.
+API errors use an object with a stable `code` and an English `error` message. Existing HTTP status codes communicate request outcome; localized text is resolved in the frontend. Handlers translate store sentinel errors with `writeStoreError`, which takes an ordered list of sentinel/response pairs and a fallback response, so each response is defined once and shared responses (for example `feed.already_added`) are reused.
 
 ## Data retention and maintenance
 
@@ -187,17 +199,40 @@ Measurements on a seeded dataset (500,000 articles, 50 users) and the procedure 
 - `backend/internal/maintenance/` — periodic retention cleanup of articles, quarantine records, and sessions.
 - `backend/cmd/seed/` — development tool that fills an empty database with a large synthetic dataset for performance measurements.
 - `backend/cmd/perfbench/` — development tool that times searches and 200-item refresh commits on a seeded database.
-- `backend/test/` — backend test files organized by component.
+- `backend/test/internal/<package>/` — external Go test packages (`package <name>_test`) for the exported API of `backend/internal/<package>`; most backend tests, including the PostgreSQL integration tests, live here. Tests of unexported code stay beside their package as `*_internal_test.go` (or `*_test.go` in the same package), for example in `internal/httpapi`, `internal/store`, `internal/feeds`, `internal/auth`, `cmd/api`, and `cmd/seed`.
+- `backend/openapi/openapi.json` — OpenAPI 3.1 description of the HTTP API, checked against the router by a test.
 - `data/` — bind-mounted PostgreSQL data for local development.
 - `compose.frontend.yml`, `compose.backend.yml`, and `compose.database.yml` — separate local Compose groups.
 - `compose.production.yml` — production images and deployment definition.
-- `scripts/update-production.sh` — production update helper.
+- `scripts/update-production.sh` — production update helper; it takes a backup with `backup-production.sh` first.
+- `scripts/backup-production.sh` and `scripts/restore-production.sh` — production backup with rotation and restore; see the README editions for scheduling, the restore procedure, and the recorded restore rehearsal.
+- `scripts/sync-skills.sh` — restores or updates the lock-tracked agent skills.
 
 ## Database migration file design
 
 The initial schema and historical upgrades are retained in the consolidated file `backend/internal/store/migrations/001_pulse.sql`. Its named phases preserve the bootstrap boundary and recognize the former migration names (`001_initial.sql` through `005_feed_customization.sql`) so existing databases do not repeat work.
 
-New schema changes are added as separately numbered SQL files. The folder color change is `backend/internal/store/migrations/006_folder_customization.sql`. After the historical phases, startup discovers and applies these files in filename order, each transactionally under the migration advisory lock, and records the filename in `schema_migrations`; later startups skip files already recorded there. To support databases that ran an earlier development build, the runner also recognizes the former marker `001_pulse.sql:folder_customization` as equivalent to `006_folder_customization.sql`.
+New schema changes are added as separately numbered SQL files in `backend/internal/store/migrations/`:
+
+| File | Change |
+| --- | --- |
+| `001_pulse.sql` | Consolidated initial schema and historical phases: folders, legacy feeds and articles, accounts and sessions, system settings, shared feed sources with per-user subscriptions and article states, profiles, feed customization. |
+| `006_folder_customization.sql` | Folder color. |
+| `007_feed_approval.sql` | Feed requests awaiting administrator approval. |
+| `008_feed_word_filter.sql` | Source owner (`added_by_user_id`), stop-word dictionary with seeded terms, blocked-article log. |
+| `009_feed_article_quarantine.sql` | Quarantine content and moderation state (`pending`, `rejected`, `allowed`) for blocked articles. |
+| `010_quarantine_eligibility.sql` | `moderation_eligible` flag fixed when a quarantine record is created. |
+| `011` | Number not used. |
+| `012_article_retention.sql` | Index on `user_article_states (article_id)` for retention deletes. |
+| `013_conditional_fetch.sql` | `ETag`/`Last-Modified` validators per source. |
+| `014_account_disable.sql` | Account disabling (`disabled_at`, `disabled_by_user_id`). |
+| `015_feed_request_requesters.sql` | Several requesters per pending feed request. |
+| `016_article_search.sql` | `pg_trgm`, `articles.search_text` and its trigram index. |
+| `017_unread_counters.sql` | Indexes for index-only unread counts. |
+
+After the historical phases, startup discovers and applies these files in filename order, each transactionally under the migration advisory lock, and records the filename in `schema_migrations`; later startups skip files already recorded there. To support databases that ran an earlier development build, the runner also recognizes the former marker `001_pulse.sql:folder_customization` as equivalent to `006_folder_customization.sql`.
+
+Migrations only move forward; there are no down scripts. `update-production.sh` backs up the database before every update, and the README editions describe the rollback: build the previous commit's images, then restore that backup with `restore-production.sh`, so the old API never starts against the newer schema. The advisory lock keeps concurrent API starts from applying migrations twice.
 
 Migrations run before the API listens. `016_article_search.sql` rewrites every article once to fill `search_text` and builds the trigram index; on the seeded 500,000-article dataset this took several minutes (see the performance baseline), so plan the first start after that upgrade accordingly. Databases with retention enabled usually hold far fewer articles.
 
@@ -208,11 +243,12 @@ Migrations run before the API listens. `016_article_search.sql` rewrites every a
 - Arbitrary HTML rendering of feed content.
 - Translating RSS/user-created content or synchronizing language preferences between devices.
 - Distributed refresh scheduling across independent backend deployments.
+- Prometheus metrics (refresh durations and errors, HTTP latency) on an internal port; structured logs and the refresh cycle summaries cover operations for now.
 - Automatic deletion of feed sources without subscribers. A source can be re-subscribed between the cleanup's check and its deletion (the subscribe flow resolves the source and creates the subscription in separate steps), and deleting a source also drops its quarantine history, so this needs a dedicated design.
 
 ## Operational instructions
 
-Use the language-specific README guides for requirements, local startup, Docker Compose build commands, production deployment, updates, backups, logs, and shutdown:
+Use the language-specific README guides for requirements, local startup, Docker Compose build commands, production deployment, updates, scheduled backups (cron and systemd timer examples), restore and upgrade rollback, the recorded restore rehearsal, logs, and shutdown:
 
 - [English operator guide](../README.md)
 - [German operator guide](../README.de.md)
