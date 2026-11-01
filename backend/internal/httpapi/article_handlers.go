@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,12 +114,9 @@ func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	article, err := h.store.UpdateArticleForUser(r.Context(), user.ID, id, update.IsRead, update.IsSaved)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "article.not_found", "The article was not found.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "article.update_failed", "The article could not be updated.")
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, apiError{http.StatusNotFound, "article.not_found", "The article was not found."}}},
+			apiError{http.StatusInternalServerError, "article.update_failed", "The article could not be updated."})
 		return
 	}
 	writeJSON(w, http.StatusOK, article)

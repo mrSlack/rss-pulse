@@ -175,12 +175,9 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	updated, err := h.store.UpdateUserProfile(r.Context(), user.ID, request.FirstName, request.LastName, request.Nickname)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "profile.save_failed", "The profile could not be saved.")
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, errUserNotFound}},
+			apiError{http.StatusInternalServerError, "profile.save_failed", "The profile could not be saved."})
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
