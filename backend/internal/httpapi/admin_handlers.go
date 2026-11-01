@@ -154,7 +154,16 @@ func (h *Handler) updateAdminSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listFeedRequests(w http.ResponseWriter, r *http.Request) {
-	requests, err := h.store.ListPendingFeedRequests(r.Context())
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "feed.requests_limit_invalid", "The feed request limit must be between 1 and 200.")
+			return
+		}
+		limit = parsed
+	}
+	requests, err := h.store.ListPendingFeedRequests(r.Context(), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "feed.requests_load_failed", "Feed requests could not be loaded.")
 		return

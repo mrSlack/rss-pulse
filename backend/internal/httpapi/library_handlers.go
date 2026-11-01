@@ -178,6 +178,10 @@ func (h *Handler) createFeed(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "feed.request_pending", "A request for this feed is already pending.")
 			return
 		}
+		if errors.Is(err, store.ErrFeedRequestLimitReached) {
+			writeFeedRequestLimitReached(w)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "feed.save_failed", "The feed could not be saved.")
 		return
 	}
@@ -241,6 +245,10 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, store.ErrFeedRequestPending) {
 		writeError(w, http.StatusConflict, "feed.request_pending", "A request for this feed is already pending.")
+		return
+	}
+	if errors.Is(err, store.ErrFeedRequestLimitReached) {
+		writeFeedRequestLimitReached(w)
 		return
 	}
 	if errors.Is(err, store.ErrFolderUnavailable) {
@@ -332,4 +340,8 @@ func (h *Handler) updateFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, feed)
+}
+
+func writeFeedRequestLimitReached(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "feed.request_limit_reached", "You already have 10 feed requests waiting for approval. Wait until an administrator reviews them.")
 }
