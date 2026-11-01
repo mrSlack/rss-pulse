@@ -181,9 +181,10 @@ API errors use an object with a stable `code` and an English `error` message. Ex
 - **Articles** (`ARTICLE_RETENTION_DAYS`, default 180, valid 30–3,650, `0` disables): an article is deleted when both `published_at` and `created_at` are older than the period and no user has it saved. Deletion runs in batches of 5,000 ids per statement (`FOR UPDATE SKIP LOCKED`) to keep locks short; `user_article_states` rows cascade. Migration `012_article_retention.sql` indexes `user_article_states (article_id)` for the cascade and the saved check.
 - **Churn prevention:** a refresh commit drops dated items (`HasPublishedAt`) older than the article period whose GUID is not already stored for that source, before stop-word filtering and upserts. Otherwise a feed that still lists old items would re-insert deleted articles as unread. Already stored articles with that GUID are still updated; undated items are unaffected.
 - **Quarantine** (`QUARANTINE_RETENTION_DAYS`, default 90, valid 7–3,650, `0` disables): allowed or rejected records whose `decided_at` and `last_blocked_at` are both older than the period, and non-moderatable legacy records (`moderation_eligible = false` or no summary) whose `last_blocked_at` is older than the period, are deleted. Requiring an old `last_blocked_at` keeps a decision while the item is still listed by its feed, so a decided item cannot return as pending. Moderatable pending records are never deleted.
+- **Sources without subscribers** (`UNSUBSCRIBED_SOURCE_RETENTION_DAYS`, default 30, valid 1–3,650, `0` disables): each run first maintains `feed_sources.unsubscribed_since` (migration `019_unsubscribed_sources.sql`): it is set to the current time for a source that has no subscription and cleared for a source that has one again. The grace period therefore starts when a run first sees the source without subscribers, up to one job interval (6 hours) after the last subscriber left; sources that were already unsubscribed before the upgrade start their grace period at the first run. A source is deleted when `unsubscribed_since` is older than the period and nothing still needs it: no subscription (subscriptions of disabled accounts count, so re-enabling an account restores its library), no pending feed request for the same normalized URL, no pending quarantine record an administrator can still moderate, and no unexpired refresh lease. Its articles are deleted in batches of 5,000, each batch in its own transaction that locks the source row (`FOR UPDATE SKIP LOCKED`) and checks these conditions again; the source row is deleted with the last batch, and read/saved states and decided quarantine records cascade. Saved articles do not keep a source: without a subscription they are not visible to their former reader. Adding the URL again (directly, by URL change, OPML import, or approval of a request) clears `unsubscribed_since` in the transaction that confirms the source is approved, before the subscription is created in its own transaction; a deletion batch that holds the row lock makes that confirmation wait, and a later batch sees the cleared value and stops, so the source survives with its remaining articles, which the next refresh tops up. Once a source has been deleted its URL is no longer approved: adding it again creates a new approval request. The scheduler never fetches a source without subscribers (see "Feed refresh and concurrency").
 - **Sessions:** expired sessions are deleted by the job. Session lookup on authenticated requests is read-only; its `expires_at > NOW()` predicate rejects expired sessions.
 
-Invalid retention values stop the API at startup. Feed sources without subscribers are not deleted automatically (see deferred work).
+Invalid retention values stop the API at startup.
 
 ## Performance notes
 
@@ -240,6 +241,7 @@ New schema changes are added as separately numbered SQL files in `backend/intern
 | `015_feed_request_requesters.sql` | Several requesters per pending feed request. |
 | `016_article_search.sql` | `pg_trgm`, `articles.search_text` and its trigram index. |
 | `017_unread_counters.sql` | Indexes for index-only unread counts. |
+| `019_unsubscribed_sources.sql` | `feed_sources.unsubscribed_since`, the start of a source's grace period without subscribers. |
 
 After the historical phases, startup discovers and applies these files in filename order, each transactionally under the migration advisory lock, and records the filename in `schema_migrations`; later startups skip files already recorded there. To support databases that ran an earlier development build, the runner also recognizes the former marker `001_pulse.sql:folder_customization` as equivalent to `006_folder_customization.sql`.
 
@@ -255,7 +257,6 @@ Migrations run before the API listens. `016_article_search.sql` rewrites every a
 - Translating RSS/user-created content or synchronizing language preferences between devices.
 - Distributed refresh scheduling across independent backend deployments.
 - Prometheus metrics (refresh durations and errors, HTTP latency) on an internal port; structured logs and the refresh cycle summaries cover operations for now.
-- Automatic deletion of feed sources without subscribers. A source can be re-subscribed between the cleanup's check and its deletion (the subscribe flow resolves the source and creates the subscription in separate steps), and deleting a source also drops its quarantine history, so this needs a dedicated design.
 
 ## Operational instructions
 

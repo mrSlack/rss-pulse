@@ -34,6 +34,7 @@ services:
       SESSION_COOKIE_SECURE: "false"
       ARTICLE_RETENTION_DAYS: "180"
       QUARANTINE_RETENTION_DAYS: "90"
+      UNSUBSCRIBED_SOURCE_RETENTION_DAYS: "30"
     volumes:
       - ./backend:/workspace/backend
     depends_on:

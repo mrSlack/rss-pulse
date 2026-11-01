@@ -71,7 +71,8 @@ func main() {
 	}
 	repository := store.New(pool)
 	repository.SetArticleRetentionDays(retention.ArticleRetentionDays)
-	logger.Info("retention configured (0 = disabled)", slog.Int("article_days", retention.ArticleRetentionDays), slog.Int("quarantine_days", retention.QuarantineRetentionDays))
+	logger.Info("retention configured (0 = disabled)", slog.Int("article_days", retention.ArticleRetentionDays), slog.Int("quarantine_days", retention.QuarantineRetentionDays),
+		slog.Int("unsubscribed_source_days", retention.UnsubscribedSourceRetentionDays))
 	maintenanceDone := maintenance.Job{Repository: repository, Config: retention, InitialDelay: maintenance.DefaultInitialDelay, Interval: maintenance.DefaultInterval}.Start(ctx)
 	refreshControl := syncer.NewControl()
 	refreshConcurrency := syncer.ConcurrencyFromEnv()

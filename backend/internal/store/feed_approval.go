@@ -94,7 +94,19 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 		}
 	}
 	var sourceID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&sourceID)
+	var unsubscribed bool
+	err = tx.QueryRow(ctx, `SELECT id, unsubscribed_since IS NOT NULL FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&sourceID, &unsubscribed)
+	if err == nil && unsubscribed {
+		// End the source's grace period before the caller subscribes in its own
+		// transaction, so the maintenance job cannot delete the source in between. If
+		// the job has just deleted it, the URL needs approval again.
+		err = tx.QueryRow(ctx, `UPDATE feed_sources SET unsubscribed_since=NULL WHERE id=$1 RETURNING id`, sourceID).Scan(&sourceID)
+		if err == nil {
+			if err := tx.Commit(ctx); err != nil {
+				return FeedRequestResult{}, err
+			}
+		}
+	}
 	if err == nil {
 		return FeedRequestResult{SourceID: sourceID, Approved: true}, nil
 	}
@@ -242,7 +254,7 @@ func (s *Store) ApproveFeedRequest(ctx context.Context, requestID int64) (FeedAp
 	parsed, _ := url.Parse(normalizedURL)
 	result := FeedApprovalResult{}
 	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url,added_by_user_id) VALUES ($1,$2,$1,$3)
-		ON CONFLICT (normalized_url) DO UPDATE SET normalized_url=EXCLUDED.normalized_url RETURNING id`, normalizedURL, parsed.Hostname(), requesters[0].userID).Scan(&result.SourceID)
+		ON CONFLICT (normalized_url) DO UPDATE SET unsubscribed_since=NULL RETURNING id`, normalizedURL, parsed.Hostname(), requesters[0].userID).Scan(&result.SourceID)
 	if err != nil {
 		return FeedApprovalResult{}, err
 	}

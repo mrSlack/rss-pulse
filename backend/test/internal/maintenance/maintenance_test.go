@@ -24,16 +24,20 @@ func TestConfigFromEnvDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.ArticleRetentionDays != 180 || config.QuarantineRetentionDays != 90 {
-		t.Fatalf("defaults = %+v, want 180/90", config)
+	if config.ArticleRetentionDays != 180 || config.QuarantineRetentionDays != 90 || config.UnsubscribedSourceRetentionDays != 30 {
+		t.Fatalf("defaults = %+v, want 180/90/30", config)
 	}
-	config, err = maintenance.ConfigFromEnv(env(map[string]string{"ARTICLE_RETENTION_DAYS": "0", "QUARANTINE_RETENTION_DAYS": " 0 "}))
-	if err != nil || config.ArticleRetentionDays != 0 || config.QuarantineRetentionDays != 0 {
+	config, err = maintenance.ConfigFromEnv(env(map[string]string{"ARTICLE_RETENTION_DAYS": "0", "QUARANTINE_RETENTION_DAYS": " 0 ", "UNSUBSCRIBED_SOURCE_RETENTION_DAYS": "0"}))
+	if err != nil || config.ArticleRetentionDays != 0 || config.QuarantineRetentionDays != 0 || config.UnsubscribedSourceRetentionDays != 0 {
 		t.Fatalf("disabled config = %+v, %v", config, err)
 	}
-	config, err = maintenance.ConfigFromEnv(env(map[string]string{"ARTICLE_RETENTION_DAYS": "30", "QUARANTINE_RETENTION_DAYS": "3650"}))
-	if err != nil || config.ArticleRetentionDays != 30 || config.QuarantineRetentionDays != 3650 {
+	config, err = maintenance.ConfigFromEnv(env(map[string]string{"ARTICLE_RETENTION_DAYS": "30", "QUARANTINE_RETENTION_DAYS": "3650", "UNSUBSCRIBED_SOURCE_RETENTION_DAYS": "1"}))
+	if err != nil || config.ArticleRetentionDays != 30 || config.QuarantineRetentionDays != 3650 || config.UnsubscribedSourceRetentionDays != 1 {
 		t.Fatalf("boundary config = %+v, %v", config, err)
+	}
+	config, err = maintenance.ConfigFromEnv(env(map[string]string{"UNSUBSCRIBED_SOURCE_RETENTION_DAYS": "3650"}))
+	if err != nil || config.UnsubscribedSourceRetentionDays != 3650 {
+		t.Fatalf("upper boundary config = %+v, %v", config, err)
 	}
 	invalid := []map[string]string{
 		{"ARTICLE_RETENTION_DAYS": "29"},
@@ -43,6 +47,9 @@ func TestConfigFromEnvDefaultsAndValidation(t *testing.T) {
 		{"QUARANTINE_RETENTION_DAYS": "6"},
 		{"QUARANTINE_RETENTION_DAYS": "3651"},
 		{"QUARANTINE_RETENTION_DAYS": "ninety"},
+		{"UNSUBSCRIBED_SOURCE_RETENTION_DAYS": "-1"},
+		{"UNSUBSCRIBED_SOURCE_RETENTION_DAYS": "3651"},
+		{"UNSUBSCRIBED_SOURCE_RETENTION_DAYS": "30d"},
 	}
 	for _, values := range invalid {
 		if _, err := maintenance.ConfigFromEnv(env(values)); err == nil {
@@ -55,6 +62,7 @@ type fakeRepository struct {
 	mu       sync.Mutex
 	calls    []string
 	articles []int
+	sources  []int
 	failing  bool
 }
 
@@ -80,6 +88,14 @@ func (r *fakeRepository) DeleteExpiredQuarantine(_ context.Context, days int) (i
 	return 2, nil
 }
 
+func (r *fakeRepository) DeleteUnsubscribedSources(_ context.Context, days, batchSize int) (int64, int64, error) {
+	r.record("sources")
+	r.mu.Lock()
+	r.sources = append(r.sources, days, batchSize)
+	r.mu.Unlock()
+	return 1, 4, nil
+}
+
 func (r *fakeRepository) DeleteExpiredSessions(context.Context) (int64, error) {
 	r.record("sessions")
 	return 1, nil
@@ -93,15 +109,18 @@ func (r *fakeRepository) callCount() int {
 
 func TestRunOnceRunsEveryCleanupEvenAfterAFailure(t *testing.T) {
 	repository := &fakeRepository{failing: true}
-	err := maintenance.RunOnce(context.Background(), repository, maintenance.Config{ArticleRetentionDays: 180, QuarantineRetentionDays: 90})
+	err := maintenance.RunOnce(context.Background(), repository, maintenance.Config{ArticleRetentionDays: 180, QuarantineRetentionDays: 90, UnsubscribedSourceRetentionDays: 30})
 	if err == nil {
 		t.Fatal("RunOnce() error = nil, want the article cleanup failure")
 	}
-	if strings.Join(repository.calls, ",") != "articles,quarantine,sessions" {
+	if strings.Join(repository.calls, ",") != "articles,quarantine,sources,sessions" {
 		t.Fatalf("calls = %v", repository.calls)
 	}
 	if repository.articles[0] != 180 || repository.articles[1] != maintenance.ArticleDeleteBatchSize {
 		t.Fatalf("article cleanup arguments = %v", repository.articles)
+	}
+	if repository.sources[0] != 30 || repository.sources[1] != maintenance.ArticleDeleteBatchSize {
+		t.Fatalf("source cleanup arguments = %v", repository.sources)
 	}
 }
 
@@ -150,7 +169,7 @@ func TestJobStopsDuringInitialDelay(t *testing.T) {
 	}
 }
 
-func TestRunOnceRemovesExpiredSessionsFromDatabase(t *testing.T) {
+func TestRunOnceRemovesExpiredSessionsAndSourcesFromDatabase(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedPostgres(t)
 	if err := store.Migrate(ctx, pool); err != nil {
@@ -170,10 +189,20 @@ func TestRunOnceRemovesExpiredSessionsFromDatabase(t *testing.T) {
 	if err := repository.CreateSession(ctx, adminID, auth.HashSessionToken("active"), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := maintenance.RunOnce(ctx, repository, maintenance.Config{ArticleRetentionDays: 180, QuarantineRetentionDays: 90}); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO feed_sources (normalized_url,title,url,unsubscribed_since)
+		VALUES ('https://orphan.example/rss','Orphan','https://orphan.example/rss',NOW()-INTERVAL '31 days')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.RunOnce(ctx, repository, maintenance.Config{ArticleRetentionDays: 180, QuarantineRetentionDays: 90, UnsubscribedSourceRetentionDays: 30}); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
 	var remaining int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_sources WHERE normalized_url='https://orphan.example/rss'`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatal("source unsubscribed beyond the grace period survived the maintenance job")
+	}
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE token_hash=$1`, auth.HashSessionToken("expired")).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
