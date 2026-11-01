@@ -1,7 +1,7 @@
-import { request, type FullConfig } from '@playwright/test';
+import { request } from '@playwright/test';
 import { e2eAccounts } from './test-fixtures';
 
-export default async function globalSetup(_config: FullConfig) {
+export default async function globalSetup() {
   const apiURL = process.env.PLAYWRIGHT_API_URL;
   if (!apiURL) throw new Error('PLAYWRIGHT_API_URL is required when PLAYWRIGHT_SEED_TEST_USERS=true');
 

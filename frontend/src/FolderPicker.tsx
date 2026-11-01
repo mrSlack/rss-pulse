@@ -22,11 +22,13 @@ export function FolderPicker({ id, labelId, folders, value, noneLabel, onChange 
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
   const selected = options[selectedIndex];
 
+  const optionCount = options.length;
+
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    const naturalHeight = Math.min(options.length * 40 + 8, 240);
+    const naturalHeight = Math.min(optionCount * 40 + 8, 240);
     const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - 8);
     const spaceAbove = Math.max(0, rect.top - 8);
     const openAbove = spaceBelow < naturalHeight && spaceAbove > spaceBelow;
@@ -34,7 +36,7 @@ export function FolderPicker({ id, labelId, folders, value, noneLabel, onChange 
     const width = Math.min(rect.width, window.innerWidth - 16);
     const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
     setPosition({ left, top: openAbove ? rect.top - maxHeight - 6 : rect.bottom + 6, width, maxHeight });
-  }, [options.length]);
+  }, [optionCount]);
 
   useLayoutEffect(() => {
     if (!open) return;
