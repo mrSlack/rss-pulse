@@ -107,11 +107,21 @@ func TestSeedFillsEmptyDatabaseAndCanBeRepeated(t *testing.T) {
 		t.Fatalf("articles containing the search term = %d, want a small share", withTerm)
 	}
 	var withSearchText, mismatched int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE search_text LIKE '%market%'), COUNT(*) FILTER (WHERE search_text = '') FROM articles`).Scan(&withSearchText, &mismatched); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE search_key LIKE '%market%'), COUNT(*) FILTER (WHERE search_key IS NULL OR search_key = '') FROM articles`).Scan(&withSearchText, &mismatched); err != nil {
 		t.Fatal(err)
 	}
 	if withSearchText != withTerm || mismatched != 0 {
-		t.Fatalf("search_text: %d matches (want %d), %d empty", withSearchText, withTerm, mismatched)
+		t.Fatalf("search_key: %d matches (want %d), %d empty", withSearchText, withTerm, mismatched)
+	}
+	// The seeded database is complete for measurements: the API would build the search
+	// index in the background after start, the seed tool builds it before returning.
+	var searchIndexValid bool
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(bool_and(i.indisvalid), FALSE) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+		WHERE c.relname = 'articles_search_key_trgm_idx' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'articles'::regclass)`).Scan(&searchIndexValid); err != nil {
+		t.Fatal(err)
+	}
+	if !searchIndexValid {
+		t.Fatal("seed did not build a valid article search index")
 	}
 	var nextID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url) VALUES ('https://next.seed.invalid/rss','Next','https://next.seed.invalid/rss') RETURNING id`).Scan(&nextID); err != nil {
