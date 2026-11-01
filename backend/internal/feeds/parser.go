@@ -44,6 +44,8 @@ type rssChannel struct {
 }
 
 type rssItem struct {
+	// About is the RSS 1.0 (RDF) item identifier, used as GUID fallback before the link.
+	About          string `xml:"http://www.w3.org/1999/02/22-rdf-syntax-ns# about,attr"`
 	GUID           string `xml:"guid"`
 	Title          string `xml:"title"`
 	Link           string `xml:"link"`
@@ -61,11 +63,68 @@ type atomLink struct {
 type atomEntry struct {
 	ID        string     `xml:"id"`
 	Title     string     `xml:"title"`
-	Summary   string     `xml:"summary"`
-	Content   string     `xml:"content"`
+	Summary   atomText   `xml:"summary"`
+	Content   atomText   `xml:"content"`
 	Published string     `xml:"published"`
 	Updated   string     `xml:"updated"`
 	Links     []atomLink `xml:"link"`
+}
+
+// atomText is an Atom text construct. type="text" and type="html" carry escaped
+// character data that is decoded once; type="xhtml" carries inline XHTML markup,
+// which is kept as markup.
+type atomText struct {
+	Type  string `xml:"type,attr"`
+	Text  string `xml:",chardata"`
+	Inner string `xml:",innerxml"`
+}
+
+func (t atomText) String() string {
+	if strings.EqualFold(strings.TrimSpace(t.Type), "xhtml") {
+		return unwrapXHTMLDiv(strings.TrimSpace(t.Inner))
+	}
+	return t.Text
+}
+
+// unwrapXHTMLDiv removes the single wrapping <div> that RFC 4287 requires around
+// XHTML content, but only when it is a plain unprefixed div whose attributes are
+// namespace declarations and that encloses the entire value.
+func unwrapXHTMLDiv(inner string) string {
+	decoder := xml.NewDecoder(strings.NewReader(inner))
+	token, err := decoder.Token()
+	if err != nil {
+		return inner
+	}
+	start, ok := token.(xml.StartElement)
+	if !ok || start.Name.Local != "div" || !strings.HasPrefix(inner, "<div") {
+		return inner
+	}
+	for _, attribute := range start.Attr {
+		if attribute.Name.Space != "xmlns" && !(attribute.Name.Space == "" && attribute.Name.Local == "xmlns") {
+			return inner
+		}
+	}
+	contentStart := decoder.InputOffset()
+	for depth := 1; depth > 0; {
+		token, err := decoder.Token()
+		if err != nil {
+			return inner
+		}
+		switch token.(type) {
+		case xml.StartElement:
+			depth++
+		case xml.EndElement:
+			depth--
+		}
+	}
+	if decoder.InputOffset() != int64(len(inner)) || !strings.HasSuffix(inner, "</div>") {
+		return inner
+	}
+	contentEnd := int64(len(inner) - len("</div>"))
+	if contentEnd < contentStart {
+		return ""
+	}
+	return strings.TrimSpace(inner[contentStart:contentEnd])
 }
 
 func Parse(data []byte, base *url.URL) (Document, error) {
@@ -114,7 +173,7 @@ func Parse(data []byte, base *url.URL) (Document, error) {
 			return Document{}, errors.New("the RSS feed is missing a channel title")
 		}
 		for _, rawItem := range raw.RDFItems {
-			document.Items = appendItem(document.Items, rawItem.GUID, rawItem.Title, rawItem.Link, firstNonEmpty(rawItem.ContentEncoded, rawItem.Description), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
+			document.Items = appendItem(document.Items, firstNonEmpty(rawItem.GUID, rawItem.About), rawItem.Title, rawItem.Link, firstNonEmpty(rawItem.ContentEncoded, rawItem.Description), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
 		}
 	case "feed":
 		if strings.TrimSpace(raw.Title) == "" {
@@ -128,7 +187,7 @@ func Parse(data []byte, base *url.URL) (Document, error) {
 					break
 				}
 			}
-			document.Items = appendItem(document.Items, rawItem.ID, rawItem.Title, link, firstNonEmpty(rawItem.Summary, rawItem.Content), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
+			document.Items = appendItem(document.Items, rawItem.ID, rawItem.Title, link, firstNonEmpty(rawItem.Summary.String(), rawItem.Content.String()), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
 		}
 	default:
 		return Document{}, errors.New("the source does not contain an RSS or Atom feed")

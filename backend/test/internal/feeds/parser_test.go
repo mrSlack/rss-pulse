@@ -136,3 +136,59 @@ func TestParseRejectsUnrecognizedPublicationDate(t *testing.T) {
 		t.Fatal("HasPublishedAt = true for an unparseable date")
 	}
 }
+
+func TestParseAtomKeepsXHTMLContentMarkup(t *testing.T) {
+	base, _ := url.Parse("https://example.com/feed.xml")
+	data := []byte(`<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom source</title>
+<entry><id>urn:xhtml-content</id><title>XHTML content</title>
+<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Hello <b>world</b> &amp; friends</p><img src="/a.png"/></div></content></entry>
+<entry><id>urn:xhtml-summary</id><title>XHTML summary</title>
+<summary type="xhtml">
+  <div xmlns="http://www.w3.org/1999/xhtml"><p>Short <em>summary</em></p></div>
+</summary></entry>
+<entry><id>urn:html</id><title>Escaped HTML</title>
+<content type="html">&lt;p&gt;Escaped &amp;amp; decoded once&lt;/p&gt;</content></entry>
+<entry><id>urn:text</id><title>Plain text</title><summary>Just text</summary></entry>
+</feed>`)
+	document, err := feeds.Parse(data, base)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	want := map[string]string{
+		"urn:xhtml-content": `<p>Hello <b>world</b> &amp; friends</p><img src="/a.png"/>`,
+		"urn:xhtml-summary": `<p>Short <em>summary</em></p>`,
+		"urn:html":          `<p>Escaped &amp; decoded once</p>`,
+		"urn:text":          `Just text`,
+	}
+	if len(document.Items) != len(want) {
+		t.Fatalf("got %d items, want %d", len(document.Items), len(want))
+	}
+	for _, item := range document.Items {
+		if item.Summary != want[item.GUID] {
+			t.Errorf("%s summary = %q, want %q", item.GUID, item.Summary, want[item.GUID])
+		}
+	}
+}
+
+func TestParseRDFUsesAboutAttributeAsGUID(t *testing.T) {
+	base, _ := url.Parse("https://example.com/feed.rdf")
+	data := []byte(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">
+<channel rdf:about="https://example.com/"><title>RDF source</title><link>https://example.com/</link></channel>
+<item rdf:about="https://example.com/items/1#stable"><title>First</title><link>https://example.com/items/1</link></item>
+<item><title>Second</title><link>https://example.com/items/2</link></item>
+</rdf:RDF>`)
+	document, err := feeds.Parse(data, base)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(document.Items) != 2 {
+		t.Fatalf("got %d items, want 2", len(document.Items))
+	}
+	if document.Items[0].GUID != "https://example.com/items/1#stable" {
+		t.Errorf("first GUID = %q, want rdf:about", document.Items[0].GUID)
+	}
+	if document.Items[1].GUID != "https://example.com/items/2" {
+		t.Errorf("second GUID = %q, want link fallback", document.Items[1].GUID)
+	}
+}
