@@ -125,6 +125,10 @@ Before storing a fetched article, Pulse checks its title and summary against the
 
 Sessions use a random HttpOnly cookie with `SameSite=Strict` and expire after 14 days. Passwords are stored as Argon2id hashes. Use HTTPS and `SESSION_COOKIE_SECURE=true` outside local loopback development.
 
+### Data retention
+
+A background maintenance job runs about one minute after API start and then every 6 hours. It deletes articles whose publication and first-seen times are both older than `ARTICLE_RETENTION_DAYS` (default 180, allowed 30–3,650) unless at least one user has saved them; read/saved states of deleted articles are removed with them. A refresh does not re-insert dated items older than that period unless they are already stored. Decided (allowed/rejected) quarantine records and non-moderatable legacy records are deleted once neither their decision nor their last appearance in a refresh is newer than `QUARANTINE_RETENTION_DAYS` (default 90, allowed 7–3,650); pending records are kept. Expired sessions are removed by the same job. Set either variable to `0` to disable that cleanup; an invalid value stops the API at startup.
+
 ## Backups, logs, and shutdown
 
 Create a database dump before moving or upgrading data:

@@ -123,6 +123,10 @@ Zulässig sind nur öffentliche HTTP/HTTPS-RSS- und Atom-URLs. Loopback-, privat
 
 Sitzungen verwenden ein zufälliges HttpOnly-Cookie mit `SameSite=Strict` und laufen nach 14 Tagen ab. Passwörter werden als Argon2id-Hashes gespeichert. Außerhalb der lokalen Loopback-Entwicklung sind HTTPS und `SESSION_COOKIE_SECURE=true` erforderlich.
 
+### Datenaufbewahrung
+
+Ein Wartungsjob läuft etwa eine Minute nach dem API-Start und danach alle 6 Stunden. Er löscht Artikel, deren Veröffentlichungs- und Erfassungszeitpunkt beide älter als `ARTICLE_RETENTION_DAYS` sind (Standard 180, zulässig 30–3.650), sofern sie niemand gespeichert hat; Lese- und Merkstatus dieser Artikel werden mitgelöscht. Eine Aktualisierung fügt datierte Einträge, die älter als dieser Zeitraum sind, nicht erneut ein, sofern sie nicht bereits gespeichert sind. Entschiedene (zugelassene/abgelehnte) Quarantäne-Einträge und nicht moderierbare Alt-Einträge werden gelöscht, sobald weder die Entscheidung noch ihr letztes Auftreten in einer Aktualisierung jünger als `QUARANTINE_RETENTION_DAYS` ist (Standard 90, zulässig 7–3.650); ausstehende Einträge bleiben erhalten. Abgelaufene Sitzungen entfernt derselbe Job. Der Wert `0` deaktiviert die jeweilige Bereinigung; ein ungültiger Wert verhindert den Start der API.
+
 ## Sicherung, Logs und Stoppen
 
 Erstellen Sie vor einem Umzug oder Upgrade einen Datenbankdump:
