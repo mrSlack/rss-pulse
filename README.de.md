@@ -261,11 +261,17 @@ LIMIT 10;
 
 Autovacuum ist standardmäßig aktiv und genügt im normalen Betrieb: gelöschte und geänderte Zeilen hinterlassen freien Platz in der Tabellendatei, den neue Artikel wiederverwenden. Das Hintergrund-Upgrade der Suche schreibt jeden Artikel einmal neu; dadurch wächst `articles` um bis zu etwa die Größe seiner Daten (im Test von 1,2 GB auf 1,7 GB bei 500.000 Artikeln). Anschließend führt es selbst `VACUUM (ANALYZE) articles` aus (dort etwa 10 Sekunden, ohne Lese- oder Schreibzugriffe zu blockieren): Der Platz wird wiederverwendbar, die Datei behält aber ihre Größe. Ein manuelles `VACUUM (ANALYZE, VERBOSE) articles;` ist im laufenden Betrieb immer unbedenklich. Den Speicherplatz nur zurückgewinnen, wenn er knapp ist: `VACUUM (FULL, ANALYZE) articles;` schreibt die Tabelle neu, blockiert bis zum Ende jeden Lese- und Schreibzugriff auf sie (im Test 2 Minuten 13 Sekunden bei 500.000 Artikeln) und braucht freien Platz für eine vollständige Kopie. Deshalb zuerst sichern, `web` und `api` stoppen (`docker compose --env-file .env.production -f compose.production.yml stop web api`), den Befehl ausführen und die Dienste wieder starten (`... up -d --wait`). `pg_repack` kann das im laufenden Betrieb, ist aber nicht im offiziellen PostgreSQL-Image enthalten. Details stehen im Abschnitt „Database maintenance“ in `docs/PROJECT.md`.
 
-Die Produktionsdatenbank sammelt Abfragestatistiken mit `pg_stat_statements`, protokolliert Anweisungen, die mindestens `DB_LOG_MIN_DURATION_MS` Millisekunden laufen (`.env.production`, Standard 500; `-1` deaktiviert, `0` protokolliert alles; Parameterwerte werden nie protokolliert), und misst I/O-Zeiten (`track_io_timing`). Das sind PostgreSQL-Startargumente in `compose.production.yml`: Das erste Update, das sie einführt, und jede Änderung von `DB_LOG_MIN_DURATION_MS` erstellen den `db`-Container neu, was den Datenbankzugriff für einige Sekunden unterbricht; `scripts/update-production.sh` erledigt das über `up -d`. Die Anweisungen mit der größten Gesamtlaufzeit (für einzeln langsame nach `mean_exec_time` sortieren):
+Die Produktionsdatenbank sammelt Abfragestatistiken mit `pg_stat_statements`, protokolliert Anweisungen, die mindestens `DB_LOG_MIN_DURATION_MS` Millisekunden laufen (`.env.production`, Standard 500; `-1` deaktiviert, `0` protokolliert alles; Parameterwerte werden nie protokolliert), und misst I/O-Zeiten (`track_io_timing`). Das sind PostgreSQL-Startargumente in `compose.production.yml`: Das erste Update, das sie einführt, und jede Änderung von `DB_LOG_MIN_DURATION_MS` erstellen den `db`-Container neu, was den Datenbankzugriff für einige Sekunden unterbricht; `scripts/update-production.sh` erledigt das über `up -d`.
+
+Einmalig nach dem ersten Update, das diese Einstellungen einführt, die Erweiterung mit der Sicht `pg_stat_statements` anlegen (Statistiken werden ab dem Neustart gesammelt, vor diesem Schritt geht also nichts verloren; eine Wiederholung schadet nicht):
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements"'
+```
+
+Danach in `psql` die Anweisungen mit der größten Gesamtlaufzeit anzeigen (für einzeln langsame nach `mean_exec_time` sortieren):
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-
 SELECT calls,
        round(total_exec_time::numeric, 1) AS total_ms,
        round(mean_exec_time::numeric, 2)  AS mean_ms,
