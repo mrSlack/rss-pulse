@@ -1,3 +1,13 @@
+# Session handoff — 2026-11-01 (round 3: metrics, DB ops, offline robustness)
+
+- **State:** merged into `master` via `ops/integration`: `ops/metrics`, `ops/maintenance-and-db`, `pwa/offline-robustness`, and code-review fixes `review-fix/metrics`, `review-fix/pwa`. Not deployed yet.
+- **Changes:** Prometheus metrics on a separate listener (`METRICS_ADDR`, disabled by default, never proxied by Nginx; `backend/internal/metrics`, metric table and alert examples in `docs/PROJECT.md`); maintenance also deletes expired `login_attempts`; search upgrade ends with `VACUUM (ANALYZE) articles`; production DB preloads `pg_stat_statements`, logs statements slower than `DB_LOG_MIN_DURATION_MS` (500) without bind values, `track_io_timing` — operator runs `CREATE EXTENSION pg_stat_statements` (documented); DB maintenance/bloat guidance in docs and READMEs. Frontend: service worker falls back to cache after 4 s, marks cached answers `X-Pulse-Cache: stale`, shows a notice and reloads on the late fresh answer, late 401 ends the session; API requests time out after 40 s (session check 15 s, OPML import none); "Remember me on this device" (`pulse.offlineRemember`, default on in installed app, off in a tab, cleared on sign-out and any 401).
+- **Verified on merged tree:** gofmt/vet/tidy clean, `REQUIRE_INTEGRATION=1 go test ./...` ok; lint, typecheck, 124/124 unit tests, build, `npm audit --omit=dev` 0; Playwright 27/27; compose configs and shellcheck clean.
+- **Known:** first deploy recreates the db container (new `command:`), a few seconds of DB errors in API logs; invalid `DB_LOG_MIN_DURATION_MS` stops PostgreSQL; metrics port is reachable by any container on the same Docker network; `markRouted` must stay the last router middleware; stale-data endpoint list is duplicated in `frontend/src/staleData.ts` and `src/sw/policy.ts`.
+- **Next:** push, deploy with `scripts/update-production.sh`; optionally set `METRICS_ADDR=:9090` and attach Prometheus.
+
+---
+
 # Session handoff — 2026-11-01 (round 2: search, sources, rate limit, PWA)
 
 - **State:** merged into `master` via `improve/integration`: `improve/search`, `improve/sources-and-requests`, `improve/persistent-rate-limit`, `improve/frontend-pwa`, plus a Vitest async-timeout setup (`frontend/test/setup.ts`) for load-related flakiness. Not deployed to production yet.
