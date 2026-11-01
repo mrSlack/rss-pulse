@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/pulse-reader/app/internal/metrics"
 	"github.com/pulse-reader/app/internal/store"
 	"github.com/pulse-reader/app/internal/syncer"
 )
@@ -26,6 +27,7 @@ type Handler struct {
 	now            func() time.Time
 	loginLimiter   *loginLimiter
 	logger         *slog.Logger
+	metrics        *metrics.Metrics
 }
 
 // Option customizes a Handler created by New.
@@ -49,6 +51,12 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(h *Handler) { h.logger = logger }
 }
 
+// WithMetrics records request counts and durations by route pattern and sign-in
+// outcomes. The metrics are not served by this handler; see metrics.Handler.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(h *Handler) { h.metrics = m }
+}
+
 func New(repository *store.Store, control *syncer.Control, secureCookie bool, options ...Option) http.Handler {
 	handler := &Handler{store: repository, control: control, secureCookie: secureCookie, now: time.Now, logger: slog.Default()}
 	handler.trustedProxies, _ = ParseTrustedProxyCIDRs(DefaultTrustedProxyCIDRs)
@@ -57,8 +65,10 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool, op
 	}
 	handler.loginLimiter = newLoginLimiter(repository, handler.now, handler.logger)
 	router := chi.NewRouter()
-	// accessLog wraps Recoverer so a recovered panic is logged with status 500.
-	router.Use(requestID, handler.accessLog, middleware.Recoverer, handler.sameOrigin)
+	// accessLog and instrument wrap Recoverer so a recovered panic is logged and
+	// counted with status 500. markRouted must stay last: it marks requests that
+	// no middleware rejected before routing.
+	router.Use(requestID, handler.accessLog, handler.instrument, middleware.Recoverer, handler.sameOrigin, markRouted)
 	router.Get("/api/health/live", handler.healthLive)
 	router.Get("/api/health/ready", handler.healthReady)
 	router.Get("/api/health", handler.healthReady) // compatibility alias of /api/health/ready

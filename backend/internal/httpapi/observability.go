@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/pulse-reader/app/internal/metrics"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -47,6 +50,29 @@ func newRequestID() string {
 // records the signed-in user in it.
 type requestLogFields struct {
 	userID int64
+	// routed is set by markRouted when no earlier middleware rejected the request.
+	routed bool
+}
+
+// requestFields returns the holder that accessLog placed in the context, adding a
+// new one when there is none.
+func requestFields(r *http.Request) (*requestLogFields, *http.Request) {
+	if fields, ok := r.Context().Value(requestLogFieldsKey{}).(*requestLogFields); ok {
+		return fields, r
+	}
+	fields := &requestLogFields{}
+	return fields, r.WithContext(context.WithValue(r.Context(), requestLogFieldsKey{}, fields))
+}
+
+// markRouted is the last middleware before chi routes the request, so instrument
+// can tell requests that reached the router (matched, 404 or 405) from requests an
+// earlier middleware rejected.
+func markRouted(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fields, r := requestFields(r)
+		fields.routed = true
+		next.ServeHTTP(w, r)
+	})
 }
 
 type requestLogFieldsKey struct{}
@@ -64,9 +90,9 @@ func setLoggedUser(r *http.Request, userID int64) {
 func (h *Handler) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		fields := &requestLogFields{}
+		fields, r := requestFields(r)
 		wrapped := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(wrapped, r.WithContext(context.WithValue(r.Context(), requestLogFieldsKey{}, fields)))
+		next.ServeHTTP(wrapped, r)
 
 		level := slog.LevelInfo
 		if r.URL.Path == "/api/health" || strings.HasPrefix(r.URL.Path, "/api/health/") {
@@ -92,6 +118,35 @@ func (h *Handler) accessLog(next http.Handler) http.Handler {
 			attributes = append(attributes, slog.Int64("user_id", fields.userID))
 		}
 		h.logger.LogAttrs(r.Context(), level, "http request", attributes...)
+	})
+}
+
+// instrument records each request in the metrics under its chi route pattern (for
+// example /api/feeds/{id}), never the raw path, so IDs do not become label values.
+// Requests that reached the router without matching a route are recorded as
+// metrics.UnmatchedRoute, requests rejected by a middleware before routing (see
+// markRouted) as metrics.RejectedRoute. It reuses the response writer wrapper of
+// accessLog, which runs before it.
+func (h *Handler) instrument(next http.Handler) http.Handler {
+	if h.metrics == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		wrapped, ok := w.(middleware.WrapResponseWriter)
+		if !ok {
+			wrapped = middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		}
+		fields, r := requestFields(r)
+		next.ServeHTTP(wrapped, r)
+		route := metrics.RejectedRoute
+		if fields.routed {
+			route = metrics.UnmatchedRoute
+			if routeContext := chi.RouteContext(r.Context()); routeContext != nil && routeContext.RoutePattern() != "" {
+				route = routeContext.RoutePattern()
+			}
+		}
+		h.metrics.ObserveHTTPRequest(route, r.Method, wrapped.Status(), time.Since(started))
 	})
 }
 

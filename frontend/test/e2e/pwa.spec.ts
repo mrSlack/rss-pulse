@@ -18,17 +18,27 @@ const articles = [1, 2].map((id) => ({
 /**
  * Mocks the API on the browser context, which (in Chromium) also sees the
  * requests the service worker makes. Returns the list of requested API paths.
+ * With `signedIn: false` the session check fails until the sign-in form is used.
  */
-async function mockApi(context: BrowserContext) {
+async function mockApi(context: BrowserContext, { signedIn = true } = {}) {
   const requested: string[] = [];
+  let session = signedIn;
   await context.route('**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     requested.push(`${request.method()} ${path}`);
     let body: unknown = [];
     let status = 200;
-    if (path === '/api/auth/me') body = reader;
-    else if (path === '/api/auth/logout') status = 204;
+    if (path === '/api/auth/me') {
+      if (session) body = reader;
+      else [status, body] = [401, { code: 'auth.sign_in_required', error: 'Please sign in.' }];
+    } else if (path === '/api/auth/login') {
+      session = true;
+      body = reader;
+    } else if (path === '/api/auth/logout') {
+      session = false;
+      status = 204;
+    }
     else if (path === '/api/feeds') body = feeds;
     else if (path === '/api/folders') body = [];
     else if (path === '/api/articles') body = { items: articles, hasMore: false, nextCursor: null, latestArticleId: 2 };
@@ -88,15 +98,35 @@ test('the app is installable: manifest, icons and a registered service worker', 
   expect(scriptURL).toBe('http://127.0.0.1:4173/sw.js');
 });
 
-test('a previously loaded article list stays readable offline', async ({ page, context }) => {
-  const requested = await mockApi(context);
+const rememberLabel = 'Remember me on this device for offline use';
+
+/** Signs in through the form, choosing whether this device is remembered. */
+async function signIn(page: Page, remember: boolean) {
+  await page.getByLabel('Email').fill('offline@example.com');
+  await page.getByLabel('Password').fill('test-only-password');
+  await page.getByRole('checkbox', { name: rememberLabel }).setChecked(remember);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByText('Stored headline 1')).toBeVisible();
+}
+
+/** Signs in, then reloads under the service worker's control so the article list is stored. */
+async function signInAndStoreArticles(page: Page, context: BrowserContext, remember: boolean) {
+  const requested = await mockApi(context, { signedIn: false });
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  // Off by default in a browser tab (on in the installed app).
+  await expect(page.getByRole('checkbox', { name: rememberLabel })).not.toBeChecked();
   await waitForServiceWorkerControl(page);
-  // Load the list again under the service worker's control so it is stored.
+  await signIn(page, remember);
   await page.reload();
   await expect(page.getByText('Stored headline 2')).toBeVisible();
   await expect.poll(() => apiCacheNames(page)).toEqual(['pulse-api-v1']);
   expect(requested).toContain('GET /api/articles');
+}
+
+test('a previously loaded article list stays readable offline when the device is remembered', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineUser'))).toContain('offline@example.com');
 
   await goOffline(context);
   await page.reload();
@@ -106,13 +136,92 @@ test('a previously loaded article list stays readable offline', async ({ page, c
   await expect(page.getByText('Summary of stored article 1.').last()).toBeVisible();
 });
 
-test('signing out removes the stored articles and the remembered account', async ({ page, context }) => {
-  await mockApi(context);
-  await page.goto('/');
-  await waitForServiceWorkerControl(page);
+test('stored articles are shown when the network hangs instead of failing', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+
+  // The article list request now never gets an answer; everything else works.
+  await context.route((url) => url.pathname === '/api/articles', () => undefined);
+  const started = Date.now();
   await page.reload();
-  await expect(page.getByText('Stored headline 1')).toBeVisible();
-  await expect.poll(() => apiCacheNames(page)).toEqual(['pulse-api-v1']);
+  await expect(page.getByText('Stored headline 1')).toBeVisible({ timeout: 15_000 });
+  // The worker waited for the network first (API_NETWORK_TIMEOUT_MS, 4 s).
+  expect(Date.now() - started).toBeGreaterThanOrEqual(3_500);
+  // Online, the stored copy is not passed off as fresh.
+  await expect(page.getByRole('status')).toHaveText('The server is not responding. Showing articles saved earlier.');
+});
+
+test('a slow server’s late answer replaces the stored copy', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+
+  // The next article list takes longer than the worker waits; the server has
+  // changed the list in the meantime. Later requests answer at once.
+  let delayed = false;
+  const fresh = { items: [{ ...articles[0], title: 'Fresh headline' }], hasMore: false, nextCursor: null, latestArticleId: 1 };
+  await context.route((url) => url.pathname === '/api/articles', async (route) => {
+    if (!delayed) {
+      delayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fresh) });
+  });
+  await page.reload();
+  await expect(page.getByText('Stored headline 1')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('status')).toHaveText('The server is not responding. Showing articles saved earlier.');
+
+  // When the late answer arrives, the page loads the fresh list.
+  await expect(page.getByText('Fresh headline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('Stored headline 1')).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveCount(0);
+});
+
+test('a late 401 behind a stored copy ends the session', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+
+  let delayed = false;
+  await context.route((url) => url.pathname === '/api/articles', async (route) => {
+    if (!delayed) {
+      delayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+    }
+    await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ code: 'auth.sign_in_required', error: 'Please sign in.' }) });
+  });
+  await page.reload();
+  await expect(page.getByText('Stored headline 1')).toBeVisible({ timeout: 15_000 });
+
+  await expect(page.getByText('Your session has expired. Please sign in again.')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  await expect.poll(() => apiCacheNames(page)).toEqual([]);
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineUser'))).toBeNull();
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineRemember'))).toBeNull();
+});
+
+test('without remembering the device nothing is kept for the next visit', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, false);
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineUser'))).toBeNull();
+
+  // The next start deletes what the previous visit stored, and nobody is signed in offline.
+  await goOffline(context);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  await expect.poll(() => apiCacheNames(page)).toEqual([]);
+  await expect(page.getByText('Stored headline 1')).toHaveCount(0);
+});
+
+test('turning the option off in the profile deletes the stored data at once', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+
+  await page.locator('.profile-menu-sidebar > summary').click();
+  await page.getByRole('button', { name: 'Edit profile' }).click();
+  const remember = page.getByRole('checkbox', { name: rememberLabel });
+  await expect(remember).toBeChecked();
+  await remember.uncheck();
+  await expect.poll(() => apiCacheNames(page)).toEqual([]);
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineUser'))).toBeNull();
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineRemember'))).toBe('false');
+});
+
+test('signing out removes the stored articles and the remembered account', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
 
   await page.locator('.profile-menu-sidebar > summary').click();
   await page.getByRole('button', { name: 'Sign out' }).click();

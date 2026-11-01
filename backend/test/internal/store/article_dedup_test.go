@@ -47,7 +47,7 @@ func (f dedupFixture) refresh(t *testing.T, items ...feeds.Item) {
 	if _, err := f.pool.Exec(ctx, `UPDATE feed_sources SET lease_token='dedup',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1`, f.sourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.CommitSourceRefresh(ctx, store.SourceLease{ID: f.sourceID, Token: "dedup"}, feeds.Document{Title: "Example", Items: items}); err != nil {
+	if _, err := f.store.CommitSourceRefresh(ctx, store.SourceLease{ID: f.sourceID, Token: "dedup"}, feeds.Document{Title: "Example", Items: items}); err != nil {
 		t.Fatalf("CommitSourceRefresh() error = %v", err)
 	}
 }

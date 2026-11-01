@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { errorMessage, type Feed, type Folder, type SessionUser } from './api';
 import { Icon } from './AppChrome';
@@ -12,8 +12,11 @@ import { useRefresh } from './hooks/useRefresh';
 import { LibrarySidebar } from './LibrarySidebar';
 import { ReaderDialogs, type ReaderDialog } from './ReaderDialogs';
 import { ReaderPane } from './ReaderPane';
+import { onServiceWorkerMessage, SW_MESSAGE_FRESH_DATA } from './staleData';
 import type { Theme } from './theme';
 import { Topbar, type TopbarHandle } from './Topbar';
+
+const FRESH_DATA_DEBOUNCE_MS = 200;
 
 // Only administrators open the admin workspace; load it on demand.
 const AdminPanel = lazy(() => import('./AdminPanel').then((module) => ({ default: module.AdminPanel })));
@@ -48,6 +51,21 @@ export function Reader({ user, theme, onToggleTheme, onUserUpdated, onSignOut, o
     reload();
   }, [refreshStructure, reload]);
   const { refreshing, runRefresh } = useRefresh({ onError: setError, onFinished: refreshFinished });
+
+  // The service worker showed stored copies because the server was slow and
+  // has now answered: load the fresh data. Several late answers (list, feeds,
+  // folders) arrive together and lead to one reload.
+  useEffect(() => {
+    let timer: number | undefined;
+    const stop = onServiceWorkerMessage(SW_MESSAGE_FRESH_DATA, () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => void refreshFinished(), FRESH_DATA_DEBOUNCE_MS);
+    });
+    return () => {
+      stop();
+      window.clearTimeout(timer);
+    };
+  }, [refreshFinished]);
 
   const unreadTotal = library.feeds.reduce((sum, item) => sum + item.unreadCount, 0);
   const activeFeed = view.feedId === null ? null : library.feeds.find((item) => item.id === view.feedId) || null;

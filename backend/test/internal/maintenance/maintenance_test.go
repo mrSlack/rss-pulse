@@ -63,6 +63,7 @@ type fakeRepository struct {
 	calls    []string
 	articles []int
 	sources  []int
+	throttle store.LoginThrottle
 	failing  bool
 }
 
@@ -101,6 +102,14 @@ func (r *fakeRepository) DeleteExpiredSessions(context.Context) (int64, error) {
 	return 1, nil
 }
 
+func (r *fakeRepository) DeleteExpiredLoginAttempts(_ context.Context, throttle store.LoginThrottle, _ time.Time) (int64, error) {
+	r.record("login_attempts")
+	r.mu.Lock()
+	r.throttle = throttle
+	r.mu.Unlock()
+	return 5, nil
+}
+
 func (r *fakeRepository) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,7 +122,7 @@ func TestRunOnceRunsEveryCleanupEvenAfterAFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunOnce() error = nil, want the article cleanup failure")
 	}
-	if strings.Join(repository.calls, ",") != "articles,quarantine,sources,sessions" {
+	if strings.Join(repository.calls, ",") != "articles,quarantine,sources,sessions,login_attempts" {
 		t.Fatalf("calls = %v", repository.calls)
 	}
 	if repository.articles[0] != 180 || repository.articles[1] != maintenance.ArticleDeleteBatchSize {
@@ -122,6 +131,9 @@ func TestRunOnceRunsEveryCleanupEvenAfterAFailure(t *testing.T) {
 	if repository.sources[0] != 30 || repository.sources[1] != maintenance.ArticleDeleteBatchSize {
 		t.Fatalf("source cleanup arguments = %v", repository.sources)
 	}
+	if repository.throttle != store.DefaultLoginThrottle {
+		t.Fatalf("login attempt cleanup throttle = %+v, want the sign-in limits %+v", repository.throttle, store.DefaultLoginThrottle)
+	}
 }
 
 func TestRunOnceSkipsDisabledRetention(t *testing.T) {
@@ -129,8 +141,8 @@ func TestRunOnceSkipsDisabledRetention(t *testing.T) {
 	if err := maintenance.RunOnce(context.Background(), repository, maintenance.Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(repository.calls, ",") != "sessions" {
-		t.Fatalf("calls = %v, want only session cleanup", repository.calls)
+	if strings.Join(repository.calls, ",") != "sessions,login_attempts" {
+		t.Fatalf("calls = %v, want only session and sign-in attempt cleanup", repository.calls)
 	}
 }
 
@@ -214,6 +226,50 @@ func TestRunOnceRemovesExpiredSessionsAndSourcesFromDatabase(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Fatalf("sessions = %d, want the active session only", remaining)
+	}
+}
+
+func TestRunOnceRemovesExpiredLoginAttemptsFromDatabase(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedPostgres(t)
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	adminID, err := store.EnsureInitialAdministrator(ctx, pool, "admin@example.com", "a-long-bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateSharedSources(ctx, pool, adminID); err != nil {
+		t.Fatal(err)
+	}
+	repository := store.New(pool)
+	throttle := store.DefaultLoginThrottle
+	now := time.Now()
+	hash := make([]byte, 32)
+	// One row of each kind just outside its window, one just inside it.
+	rows := []struct {
+		kind string
+		at   time.Time
+	}{
+		{"ip", now.Add(-throttle.IPAttemptWindow - time.Minute)},
+		{"ip", now.Add(-throttle.IPAttemptWindow + 20*time.Second)},
+		{"account", now.Add(-throttle.AccountFailureWindow - time.Minute)},
+		{"account", now.Add(-throttle.AccountFailureWindow + time.Minute)},
+	}
+	for _, row := range rows {
+		if _, err := pool.Exec(ctx, `INSERT INTO login_attempts (kind, key_hash, attempted_at) VALUES ($1, $2, $3)`, row.kind, hash, row.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := maintenance.RunOnce(ctx, repository, maintenance.Config{}); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	var ipRemaining, accountRemaining int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE kind = 'ip'), COUNT(*) FILTER (WHERE kind = 'account') FROM login_attempts`).Scan(&ipRemaining, &accountRemaining); err != nil {
+		t.Fatal(err)
+	}
+	if ipRemaining != 1 || accountRemaining != 1 {
+		t.Fatalf("remaining attempts ip=%d account=%d, want only the one inside each window", ipRemaining, accountRemaining)
 	}
 }
 

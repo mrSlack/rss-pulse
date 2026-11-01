@@ -27,6 +27,17 @@ const refreshSettingsSQL = `settings AS (
 		(SELECT value FROM system_settings WHERE key='refresh_interval_minutes') AS global_minutes
 )`
 
+// duePolicySQL selects, for every source with at least one enabled subscriber, the
+// effective scheduled interval p.effective: the shortest subscriber interval
+// (per-user override or global default), but never shorter than the shared-source
+// TTL. It needs refreshSettingsSQL.
+const duePolicySQL = `policy AS (
+	SELECT uf.feed_source_id AS source_id,
+		GREATEST(MIN(st.ttl_minutes), MIN(COALESCE(u.refresh_interval_minutes, st.global_minutes))) * INTERVAL '1 minute' AS effective
+	FROM user_feeds uf JOIN users u ON u.id=uf.user_id AND u.disabled_at IS NULL CROSS JOIN settings st
+	GROUP BY uf.feed_source_id
+)`
+
 // sourceDueSQL is true when no refresh attempt (successful or failed) happened
 // within the interval p.effective. A success sets last_checked_at and
 // last_success_at together and a failure sets only last_checked_at, so this
@@ -39,12 +50,7 @@ const sourceDueSQL = `(GREATEST(fs.last_checked_at, fs.last_success_at) IS NULL
 // effective interval is the shortest subscriber interval (per-user override or
 // global default), but never shorter than the shared-source TTL.
 func (s *Store) DueSources(ctx context.Context) ([]FeedTarget, error) {
-	rows, err := s.pool.Query(ctx, `WITH `+refreshSettingsSQL+`, policy AS (
-			SELECT uf.feed_source_id AS source_id,
-				GREATEST(MIN(st.ttl_minutes), MIN(COALESCE(u.refresh_interval_minutes, st.global_minutes))) * INTERVAL '1 minute' AS effective
-			FROM user_feeds uf JOIN users u ON u.id=uf.user_id AND u.disabled_at IS NULL CROSS JOIN settings st
-			GROUP BY uf.feed_source_id
-		)
+	rows, err := s.pool.Query(ctx, `WITH `+refreshSettingsSQL+`, `+duePolicySQL+`
 		SELECT fs.id, fs.url FROM feed_sources fs JOIN policy p ON p.source_id=fs.id
 		WHERE `+sourceDueSQL+`
 		ORDER BY fs.last_success_at NULLS FIRST, fs.id`,
@@ -117,39 +123,54 @@ func (s *Store) ClaimSource(ctx context.Context, sourceID int64, userID *int64) 
 	return lease, true, nil
 }
 
-func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, document feeds.Document) error {
+// RefreshCounts reports what a committed refresh stored.
+type RefreshCounts struct {
+	// Inserted is the number of new articles.
+	Inserted int
+	// Quarantined is the number of items newly held for moderation by the stop-word
+	// filter (items already in quarantine are not counted again).
+	Quarantined int
+}
+
+// CommitSourceRefresh stores a fetched document for a leased source and releases the
+// lease. The counts are only meaningful when err is nil.
+func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, document feeds.Document) (RefreshCounts, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return RefreshCounts{}, err
 	}
 	defer tx.Rollback(ctx)
 	var ownedID int64
 	if err := tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE id=$1 AND lease_token=$2 AND lease_expires_at>NOW() FOR UPDATE`, lease.ID, lease.Token).Scan(&ownedID); errors.Is(err, pgx.ErrNoRows) {
-		return ErrLeaseLost
+		return RefreshCounts{}, ErrLeaseLost
 	} else if err != nil {
-		return err
+		return RefreshCounts{}, err
 	}
 	items, err := dropItemsBeyondRetention(ctx, tx, lease.ID, document.Items, s.ArticleRetentionDays())
 	if err != nil {
-		return err
+		return RefreshCounts{}, err
 	}
-	allowedItems, err := filterAndLogBlockedItems(ctx, tx, lease.ID, document.Title, items)
+	allowedItems, quarantined, err := filterAndLogBlockedItems(ctx, tx, lease.ID, document.Title, items)
 	if err != nil {
-		return err
+		return RefreshCounts{}, err
 	}
-	if err := upsertSourceItems(ctx, tx, lease.ID, allowedItems); err != nil {
-		return err
+	inserted, err := upsertSourceItems(ctx, tx, lease.ID, allowedItems)
+	if err != nil {
+		return RefreshCounts{}, err
 	}
 	command, err := tx.Exec(ctx, `UPDATE feed_sources SET title=$3,site_url=$4,last_checked_at=NOW(),last_success_at=NOW(),last_error=NULL,
 		etag=NULLIF($5,''),last_modified=NULLIF($6,''),lease_token=NULL,lease_expires_at=NULL
 		WHERE id=$1 AND lease_token=$2 AND lease_expires_at>NOW()`, lease.ID, lease.Token, document.Title, document.SiteURL, lease.Validators.ETag, lease.Validators.LastModified)
 	if err != nil {
-		return err
+		return RefreshCounts{}, err
 	}
 	if command.RowsAffected() != 1 {
-		return ErrLeaseLost
+		return RefreshCounts{}, ErrLeaseLost
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return RefreshCounts{}, err
+	}
+	return RefreshCounts{Inserted: inserted, Quarantined: quarantined}, nil
 }
 
 // CommitSourceNotModified records a successful 304 response: the source counts

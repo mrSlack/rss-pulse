@@ -1,14 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   API_CACHE,
   API_CACHE_MAX_ENTRIES,
+  API_NETWORK_TIMEOUT_MS,
   SHELL_CACHE_PREFIX,
+  SLOW_SERVER_WINDOW_MS,
+  STALE_HEADER,
   clearsApiCache,
   entriesToEvict,
+  fallbackTimeout,
   isCacheableApiResponse,
   isObsoleteCache,
+  lateAnswerMessage,
+  markedStale,
+  networkFirstWithTimeout,
   requestStrategy,
 } from '../../src/sw/policy';
+import { STALE_HEADER as PAGE_STALE_HEADER, SW_MESSAGE_FRESH_DATA, SW_MESSAGE_SESSION_EXPIRED } from '../../src/staleData';
 import { API_CACHE_PREFIX } from '../../src/offlineData';
 
 const origin = 'https://pulse.example';
@@ -100,5 +108,147 @@ describe('API cache privacy', () => {
     expect(isObsoleteCache(`${SHELL_CACHE_PREFIX}new`, `${SHELL_CACHE_PREFIX}new`)).toBe(false);
     expect(isObsoleteCache(API_CACHE, `${SHELL_CACHE_PREFIX}new`)).toBe(false);
     expect(isObsoleteCache('someone-else', `${SHELL_CACHE_PREFIX}new`)).toBe(false);
+  });
+});
+
+describe('network-first API requests with a time limit', () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** A network request the test settles by hand. */
+  function pendingNetwork() {
+    let resolve!: (value: string) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  function observe(promise: Promise<string>) {
+    const state: { value?: string; error?: unknown; settled: boolean } = { settled: false };
+    promise.then((value) => { state.value = value; state.settled = true; }, (error: unknown) => { state.error = error; state.settled = true; });
+    return state;
+  }
+
+  const notAborted = () => false;
+
+  it('waits a few seconds before it gives up on the network', () => {
+    expect(API_NETWORK_TIMEOUT_MS).toBeGreaterThanOrEqual(3000);
+    expect(API_NETWORK_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+  });
+
+  it('returns the network response when it arrives in time, without reading the cache', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const cached = vi.fn(async () => 'stored');
+    const state = observe(networkFirstWithTimeout(network.promise, cached, { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+
+    await vi.advanceTimersByTimeAsync(API_NETWORK_TIMEOUT_MS - 1);
+    network.resolve('fresh');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(state).toEqual({ value: 'fresh', settled: true });
+    expect(cached).not.toHaveBeenCalled();
+  });
+
+  it('returns the stored response when the network hangs past the time limit', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const state = observe(networkFirstWithTimeout(network.promise, async () => 'stored', { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+
+    await vi.advanceTimersByTimeAsync(API_NETWORK_TIMEOUT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(state).toEqual({ value: 'stored', settled: true });
+    // A late network response does not change the answer already given.
+    network.resolve('fresh');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.value).toBe('stored');
+  });
+
+  it('keeps waiting for the network when nothing is stored', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const cached = vi.fn(async () => undefined);
+    const state = observe(networkFirstWithTimeout(network.promise, cached, { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+
+    await vi.advanceTimersByTimeAsync(10 * API_NETWORK_TIMEOUT_MS);
+    expect(state.settled).toBe(false);
+    expect(cached).toHaveBeenCalledTimes(1);
+    network.resolve('slow but fine');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state).toEqual({ value: 'slow but fine', settled: true });
+  });
+
+  it('falls back to the stored response when the network fails, and fails without one', async () => {
+    const failure = new TypeError('Failed to fetch');
+    await expect(networkFirstWithTimeout(Promise.reject(failure), async () => 'stored', { timeoutMs: 10, aborted: notAborted })).resolves.toBe('stored');
+    await expect(networkFirstWithTimeout(Promise.reject(failure), async () => undefined, { timeoutMs: 10, aborted: notAborted })).rejects.toBe(failure);
+    // A failing cache lookup counts as nothing stored.
+    await expect(networkFirstWithTimeout(Promise.reject(failure), () => Promise.reject(new Error('no storage')), { timeoutMs: 10, aborted: notAborted })).rejects.toBe(failure);
+  });
+
+  it('fails when the network fails after the time limit found nothing stored', async () => {
+    vi.useFakeTimers();
+    const network = pendingNetwork();
+    const failure = new TypeError('Failed to fetch');
+    const state = observe(networkFirstWithTimeout(network.promise, async () => undefined, { timeoutMs: API_NETWORK_TIMEOUT_MS, aborted: notAborted }));
+    await vi.advanceTimersByTimeAsync(API_NETWORK_TIMEOUT_MS);
+    network.reject(failure);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state).toEqual({ error: failure, settled: true });
+  });
+
+  it('does not answer an aborted request from the cache', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+    const cached = vi.fn(async () => 'stored');
+    await expect(networkFirstWithTimeout(Promise.reject(abort), cached, { timeoutMs: 10, aborted: () => true })).rejects.toBe(abort);
+    expect(cached).not.toHaveBeenCalled();
+  });
+});
+
+describe('stored copies are never presented as fresh', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('marks a stored copy so the page can tell it apart from a network response', async () => {
+    const stored = new Response(JSON.stringify({ items: [] }), { status: 200, statusText: 'OK', headers: { 'Content-Type': 'application/json' } });
+    const copy = markedStale(stored);
+    expect(copy.headers.get(STALE_HEADER)).toBe('stale');
+    expect(copy.headers.get('content-type')).toBe('application/json');
+    expect(copy.status).toBe(200);
+    expect(await copy.json()).toEqual({ items: [] });
+    // The page reads the same header name.
+    expect(PAGE_STALE_HEADER.toLowerCase()).toBe(STALE_HEADER.toLowerCase());
+  });
+
+  it('tells the page about a network answer that arrived after the stored copy was shown', () => {
+    expect(lateAnswerMessage(200)).toEqual({ type: SW_MESSAGE_FRESH_DATA });
+    // A late 401 must end the session like any other 401.
+    expect(lateAnswerMessage(401)).toEqual({ type: SW_MESSAGE_SESSION_EXPIRED });
+    // Other failures change nothing: the stored copy stays, marked as such.
+    expect(lateAnswerMessage(500)).toBeNull();
+    expect(lateAnswerMessage(503)).toBeNull();
+  });
+
+  it('stops answering from the cache on a time limit while the server is known to be slow but reachable', () => {
+    const now = 1_000_000;
+    expect(fallbackTimeout(null, now)).toBe(API_NETWORK_TIMEOUT_MS);
+    // A late answer just arrived: the server works, it is only slow, so wait for it.
+    expect(fallbackTimeout(now - 1, now)).toBeNull();
+    expect(fallbackTimeout(now - SLOW_SERVER_WINDOW_MS + 1, now)).toBeNull();
+    expect(fallbackTimeout(now - SLOW_SERVER_WINDOW_MS, now)).toBe(API_NETWORK_TIMEOUT_MS);
+  });
+
+  it('without a time limit waits for the network and uses the stored copy only when it fails', async () => {
+    vi.useFakeTimers();
+    let reject!: (reason: unknown) => void;
+    const network = new Promise<string>((_, rej) => { reject = rej; });
+    const cached = vi.fn(async () => 'stored');
+    let value: string | undefined;
+    void networkFirstWithTimeout(network, cached, { timeoutMs: null, aborted: () => false }).then((result) => { value = result; });
+
+    await vi.advanceTimersByTimeAsync(10 * API_NETWORK_TIMEOUT_MS);
+    expect(cached).not.toHaveBeenCalled();
+    expect(value).toBeUndefined();
+    reject(new TypeError('Failed to fetch'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(value).toBe('stored');
   });
 });

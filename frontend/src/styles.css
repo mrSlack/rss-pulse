@@ -562,6 +562,10 @@ a { color: inherit; text-decoration: none; }
 .signin-form input { width: 100%; height: 43px; padding: 0 12px; color: var(--text-strong); background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .signin-form input:focus { border-color: #84b294; outline: 0; box-shadow: 0 0 0 3px #e3f0e680; }
 .signin-form input::placeholder { color: var(--text-faint); }
+.signin-form .signin-remember { margin-top: 8px; }
+.signin-form .signin-remember input { width: 16px; height: 16px; min-height: 0; padding: 0; }
+.signin-form .signin-remember label { margin: 0; font-size: 12px; }
+.signin-form .signin-remember small { font-size: 11px; }
 .signin-submit { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 45px; padding: 0 14px; margin-top: 12px; color: #fff; background: #267c59; border: 0; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .16s, transform .16s; }
 .signin-submit:hover:not(:disabled) { background: #1d6a4b; transform: translateY(-1px); }
 .signin-submit span { font-size: 16px; }
@@ -815,6 +819,11 @@ a { color: inherit; text-decoration: none; }
 .profile-summary-card small { margin-top: 4px; color: var(--muted); font-size: 12px; }
 .profile-form-title { margin: 0 0 10px; color: var(--text-strong); font: 600 16px/1.3 var(--reading-serif); }
 .profile-password-form { padding-top: 18px; margin-top: 20px; border-top: 1px solid var(--line); }
+.profile-device { padding-top: 18px; margin-top: 20px; border-top: 1px solid var(--line); }
+.remember-device { display: grid; grid-template-columns: auto 1fr; gap: 3px 9px; align-items: start; }
+.remember-device input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 2px 0 0; accent-color: var(--green); cursor: pointer; }
+.remember-device label { margin: 0; color: var(--text-body); font-size: 13px; font-weight: 600; line-height: 1.4; cursor: pointer; }
+.remember-device small { grid-column: 2; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .profile-success { padding: 10px 11px; margin: 10px 0 0; color: var(--green-dark); background: var(--green-pale); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
 .modal-card { max-height: calc(100dvh - 32px); overflow-y: auto; }
 :root[data-theme="dark"] .profile-dropdown { box-shadow: 0 14px 36px #0006; }

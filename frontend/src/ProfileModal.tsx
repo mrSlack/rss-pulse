@@ -4,6 +4,7 @@ import { api, errorMessage, type SessionUser } from './api';
 import { initials } from './AppChrome';
 import { ErrorToast } from './ErrorToast';
 import { ModalFrame } from './ModalFrame';
+import { rememberUser, remembersDevice, setRemembersDevice } from './offlineData';
 
 type Props = {
   user: SessionUser;
@@ -25,6 +26,29 @@ export function ProfileModal({ user, onClose, onUserUpdated }: Props) {
   const [profileNotice, setProfileNotice] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [passwordNotice, setPasswordNotice] = useState('');
+  const [rememberDevice, setRememberDevice] = useState(remembersDevice);
+  const [deviceError, setDeviceError] = useState('');
+
+  /**
+   * Applies the offline choice at once: off deletes the stored account and
+   * articles. The checkbox follows the click at once and then shows the
+   * choice actually stored, which differs from the requested one when the
+   * browser refuses to store it.
+   */
+  async function changeRememberDevice(remember: boolean) {
+    setDeviceError('');
+    setRememberDevice(remember);
+    let failed = false;
+    try {
+      await setRemembersDevice(remember);
+      if (remember) await rememberUser(user);
+    } catch {
+      failed = true;
+    }
+    const stored = remembersDevice();
+    setRememberDevice(stored);
+    if (failed || stored !== remember) setDeviceError(t('profile.rememberSaveFailed'));
+  }
 
   async function submitDetails(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -81,6 +105,15 @@ export function ProfileModal({ user, onClose, onUserUpdated }: Props) {
         {profileNotice && <p className="profile-success" role="status">{profileNotice}</p>}
         <button className="primary-button modal-submit" type="submit" disabled={submitting}>{submitting ? t('states.saving') : t('profile.save')}</button>
       </form>
+      <div className="profile-device">
+        <p className="profile-form-title">{t('profile.offlineTitle')}</p>
+        <div className="remember-device">
+          <input id="profile-remember" type="checkbox" checked={rememberDevice} onChange={(event) => void changeRememberDevice(event.target.checked)} aria-describedby="profile-remember-hint" />
+          <label htmlFor="profile-remember">{t('profile.rememberOffline')}</label>
+          <small id="profile-remember-hint">{t('profile.rememberOfflineHint')}</small>
+        </div>
+        <ErrorToast message={deviceError} onDismiss={() => setDeviceError('')} />
+      </div>
       <form className="profile-password-form" onSubmit={(event) => void submitPassword(event)}>
         <p className="profile-form-title">{t('profile.changePassword')}</p>
         <label className="form-label" htmlFor="profile-current-password">{t('profile.currentPassword')}</label>

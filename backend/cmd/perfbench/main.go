@@ -95,7 +95,7 @@ func benchIngest(ctx context.Context, pool *pgxpool.Pool, repository *store.Stor
 			log.Fatal(err)
 		}
 		start := time.Now()
-		if err := repository.CommitSourceRefresh(ctx, store.SourceLease{ID: id, Token: "perfbench"}, feeds.Document{Title: "Perfbench", Items: items}); err != nil {
+		if _, err := repository.CommitSourceRefresh(ctx, store.SourceLease{ID: id, Token: "perfbench"}, feeds.Document{Title: "Perfbench", Items: items}); err != nil {
 			log.Fatal(err)
 		}
 		return time.Since(start)

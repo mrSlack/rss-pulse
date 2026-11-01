@@ -164,6 +164,16 @@ func TestArticleSearchUpgradeBackfillsAndBuildsIndex(t *testing.T) {
 	assertSearch(t, f, "größere umleitung", "de")
 	assertSearch(t, f, "link text", "markup")
 	assertSearchUsesIndex(t, f)
+	// The backfill rewrote every row; the upgrade vacuums the table so the old row
+	// versions become reusable and index-only scans work again without waiting
+	// for autovacuum.
+	var vacuumed, analyzed bool
+	if err := f.pool.QueryRow(ctx, `SELECT last_vacuum IS NOT NULL, last_analyze IS NOT NULL FROM pg_stat_user_tables WHERE relid = 'articles'::regclass`).Scan(&vacuumed, &analyzed); err != nil {
+		t.Fatal(err)
+	}
+	if !vacuumed || !analyzed {
+		t.Fatalf("articles vacuumed=%v analyzed=%v after the upgrade, want both", vacuumed, analyzed)
+	}
 
 	// A completed upgrade is recorded and later runs return without touching rows.
 	if _, err := f.pool.Exec(ctx, `UPDATE articles SET search_key = NULL WHERE guid = 'ru'`); err != nil {
@@ -320,5 +330,27 @@ func TestArticleSearchUpgradeStopsWhenCanceled(t *testing.T) {
 	runSearchUpgrade(t, f)
 	if exists, valid := searchIndexState(t, f, searchIndexName); !exists || !valid {
 		t.Fatalf("search index exists=%v valid=%v after a canceled and a complete run", exists, valid)
+	}
+}
+
+func TestArticleSearchUpgradeReportsBackfillProgress(t *testing.T) {
+	f := newDedupFixture(t)
+	f.refresh(t, searchFixtureItems()...)
+	ctx := context.Background()
+	command, err := f.pool.Exec(ctx, `UPDATE articles SET search_key = NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported []int64
+	upgrade := store.ArticleSearchUpgrade{BatchSize: 2, Progress: func(filled int64) { reported = append(reported, filled) }}
+	if err := upgrade.Run(ctx, f.pool); err != nil {
+		t.Fatalf("ArticleSearchUpgrade.Run() error = %v", err)
+	}
+	var total int64
+	for _, filled := range reported {
+		total += filled
+	}
+	if total != command.RowsAffected() || len(reported) < 2 {
+		t.Fatalf("progress reports %v (sum %d), want one per batch summing to %d", reported, total, command.RowsAffected())
 	}
 }

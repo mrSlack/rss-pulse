@@ -27,10 +27,12 @@ type fakeRefreshRepository struct {
 	claimHook      func(context.Context, int64)
 	claimLeases    bool
 	unclaimed      map[int64]bool
+	claimErrors    map[int64]bool
 	abandoned      []abandonCall
 	released       []store.SourceLease
 	committed      []store.SourceLease
 	notModified    []store.SourceLease
+	commitCounts   store.RefreshCounts
 	firstUserEnter chan struct{}
 	allowUserQuery chan struct{}
 }
@@ -71,6 +73,9 @@ func (f *fakeRefreshRepository) ClaimSource(ctx context.Context, sourceID int64,
 	if f.claimHook != nil {
 		f.claimHook(ctx, sourceID)
 	}
+	if f.claimErrors[sourceID] {
+		return store.SourceLease{}, false, errors.New("database unavailable")
+	}
 	if !f.claimLeases || f.unclaimed[sourceID] {
 		return store.SourceLease{}, false, nil
 	}
@@ -92,11 +97,11 @@ func (f *fakeRefreshRepository) AbandonSourceLease(ctx context.Context, lease st
 	return nil
 }
 
-func (f *fakeRefreshRepository) CommitSourceRefresh(_ context.Context, lease store.SourceLease, _ feeds.Document) error {
+func (f *fakeRefreshRepository) CommitSourceRefresh(_ context.Context, lease store.SourceLease, _ feeds.Document) (store.RefreshCounts, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.committed = append(f.committed, lease)
-	return nil
+	return f.commitCounts, nil
 }
 
 func (f *fakeRefreshRepository) CommitSourceNotModified(_ context.Context, lease store.SourceLease) error {

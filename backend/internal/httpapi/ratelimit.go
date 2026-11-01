@@ -15,24 +15,10 @@ import (
 	"github.com/pulse-reader/app/internal/store"
 )
 
-// Sign-in throttling limits. The state lives in PostgreSQL (login_attempts), so
-// it survives restarts and is shared by every API instance.
-const (
-	accountFailureLimit  = 10
-	accountFailureWindow = 15 * time.Minute
-	ipAttemptLimit       = 30
-	ipAttemptWindow      = time.Minute
-	// limiterSweepInterval is how often each API instance deletes attempts
-	// that have left their window.
-	limiterSweepInterval = time.Minute
-)
-
-var loginThrottle = store.LoginThrottle{
-	AccountFailureLimit:  accountFailureLimit,
-	AccountFailureWindow: accountFailureWindow,
-	IPAttemptLimit:       ipAttemptLimit,
-	IPAttemptWindow:      ipAttemptWindow,
-}
+// limiterSweepInterval is how often each API instance deletes attempts that
+// have left their window while sign-ins arrive. The periodic maintenance job
+// also deletes them, so rows do not linger once sign-ins stop.
+const limiterSweepInterval = time.Minute
 
 // DefaultTrustedProxyCIDRs covers loopback, RFC 1918 and IPv6 unique local
 // addresses, which includes the Docker networks between Nginx and the API.
@@ -109,7 +95,10 @@ func parseAddr(value string) (netip.Addr, bool) {
 // as a failure so concurrent guesses cannot all pass the check before any of
 // them is recorded; success clears the account and cancel withdraws the
 // provisional entry for outcomes that are not credential failures. The store
-// performs the check and the recording atomically across API instances.
+// performs the check and the recording atomically across API instances; the
+// state lives in PostgreSQL (login_attempts), so it survives restarts. The
+// limits are store.DefaultLoginThrottle, the same value the maintenance job uses
+// to delete expired attempts, so checking and cleanup cannot drift apart.
 type loginLimiter struct {
 	store  *store.Store
 	now    func() time.Time
@@ -133,7 +122,7 @@ func newLoginLimiter(repository *store.Store, now func() time.Time, logger *slog
 func (l *loginLimiter) begin(ctx context.Context, ip, account string) (store.LoginAttempt, time.Duration, error) {
 	now := l.now()
 	l.sweep(ctx, now)
-	return l.store.BeginLoginAttempt(ctx, loginThrottle, ip, account, now)
+	return l.store.BeginLoginAttempt(ctx, store.DefaultLoginThrottle, ip, account, now)
 }
 
 // succeed clears the account's failures after a correct password.
@@ -151,8 +140,11 @@ func (l *loginLimiter) cancel(ctx context.Context, attempt store.LoginAttempt) {
 }
 
 // sweep deletes expired attempts at most once per limiterSweepInterval on
-// this instance. Rows therefore live at most accountFailureWindow plus one
-// sweep interval, and every row belongs to an attempt the per-IP limit allowed.
+// this instance. Under sign-in traffic, such as guessing from many addresses,
+// rows therefore live at most the account window plus one sweep interval, which
+// keeps the table and the limit checks small between the hours-apart
+// maintenance runs. Every row belongs to an attempt the per-IP limit allowed.
+// Once sign-ins stop, the maintenance job removes the rest.
 func (l *loginLimiter) sweep(ctx context.Context, now time.Time) {
 	l.mu.Lock()
 	if now.Sub(l.lastSweep) < limiterSweepInterval {
@@ -161,7 +153,7 @@ func (l *loginLimiter) sweep(ctx context.Context, now time.Time) {
 	}
 	l.lastSweep = now
 	l.mu.Unlock()
-	if _, err := l.store.DeleteExpiredLoginAttempts(ctx, loginThrottle, now); err != nil {
+	if _, err := l.store.DeleteExpiredLoginAttempts(ctx, store.DefaultLoginThrottle, now); err != nil {
 		l.logger.Warn("sign-in rate limit: deleting expired attempts failed", slog.String("error", err.Error()))
 	}
 }

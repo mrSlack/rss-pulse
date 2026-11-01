@@ -136,7 +136,7 @@ Pulse can be installed as an app and keeps recently loaded article lists readabl
 
 ### Data retention
 
-A background maintenance job runs about one minute after API start and then every 6 hours. It deletes articles whose publication and first-seen times are both older than `ARTICLE_RETENTION_DAYS` (default 180, allowed 30–3,650) unless at least one user has saved them; read/saved states of deleted articles are removed with them. A refresh does not re-insert dated items older than that period unless they are already stored. Decided (allowed/rejected) quarantine records and non-moderatable legacy records are deleted once neither their decision nor their last appearance in a refresh is newer than `QUARANTINE_RETENTION_DAYS` (default 90, allowed 7–3,650); pending records are kept. Shared feed sources that nobody has subscribed to for `UNSUBSCRIBED_SOURCE_RETENTION_DAYS` (default 30, allowed 1–3,650, counted from the first job run after the last subscriber left) are deleted with their articles, unless a feed request for the URL or a quarantined article awaiting moderation is still pending; subscribing again within that period keeps the source, and after its deletion the URL needs administrator approval again. Expired sessions are removed by the same job. Set any of these variables to `0` to disable that cleanup; an invalid value stops the API at startup.
+A background maintenance job runs about one minute after API start and then every 6 hours. It deletes articles whose publication and first-seen times are both older than `ARTICLE_RETENTION_DAYS` (default 180, allowed 30–3,650) unless at least one user has saved them; read/saved states of deleted articles are removed with them. A refresh does not re-insert dated items older than that period unless they are already stored. Decided (allowed/rejected) quarantine records and non-moderatable legacy records are deleted once neither their decision nor their last appearance in a refresh is newer than `QUARANTINE_RETENTION_DAYS` (default 90, allowed 7–3,650); pending records are kept. Shared feed sources that nobody has subscribed to for `UNSUBSCRIBED_SOURCE_RETENTION_DAYS` (default 30, allowed 1–3,650, counted from the first job run after the last subscriber left) are deleted with their articles, unless a feed request for the URL or a quarantined article awaiting moderation is still pending; subscribing again within that period keeps the source, and after its deletion the URL needs administrator approval again. Expired sessions and sign-in attempts older than their rate-limit window are removed by the same job. Set any of these variables to `0` to disable that cleanup; an invalid value stops the API at startup.
 
 ## Backups, logs, and shutdown
 
@@ -236,7 +236,49 @@ The API writes structured logs (Go `log/slog`) to stderr. `LOG_FORMAT` selects `
 
 Follow logs with `docker compose -f <compose-file> logs -f api`. With JSON logs, a filter such as `docker compose --env-file .env.production -f compose.production.yml logs --no-log-prefix api | jq 'select(.status >= 500)'` shows failed requests.
 
-`GET /api/health/live` reports that the API process is running without contacting the database. `GET /api/health/ready` also checks the database (2-second timeout) and answers `503` when it is unavailable; the Compose health checks use it. `GET /api/health` remains an alias of the readiness check. The API does not export Prometheus metrics yet.
+`GET /api/health/live` reports that the API process is running without contacting the database. `GET /api/health/ready` also checks the database (2-second timeout) and answers `503` when it is unavailable; the Compose health checks use it. `GET /api/health` remains an alias of the readiness check.
+
+Set `METRICS_ADDR` (for example `METRICS_ADDR=:9090`; empty by default, which disables metrics) to export Prometheus metrics on a separate listener at `http://api:9090/metrics`. It is not part of the public site: Nginx forwards only `/api/` to port 8080, and the Compose files declare port 9090 with `expose` only, without a host port. Run Prometheus as a container on the same Docker network (`rss-reader-net` locally, `pulse-production_default` in production) and scrape `api:9090`; every container on that network can reach the port, so attach only trusted services. An invalid value or the API port 8080 stops the API at startup. The metrics cover API requests by route, feed refresh outcomes and backlog, sign-in outcomes, maintenance runs, the search upgrade, and the database pool; [docs/PROJECT.md](docs/PROJECT.md#metrics) lists them with an example scrape configuration and alert rules.
+
+### Database maintenance and slow queries
+
+Open `psql` in the production database container with:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Table and index sizes, dead rows, and the last vacuum:
+
+```sql
+SELECT relname,
+       pg_size_pretty(pg_table_size(relid))          AS table_size,
+       pg_size_pretty(pg_indexes_size(relid))        AS index_size,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+       n_live_tup, n_dead_tup, last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(relid) DESC
+LIMIT 10;
+```
+
+Autovacuum is enabled by default and suffices for normal operation: deleted and updated rows leave free space in the table file that new articles reuse. The background search upgrade rewrites every article once, which makes `articles` grow by up to about the size of its data (from 1.2 GB to 1.7 GB for 500,000 articles in testing); it then runs `VACUUM (ANALYZE) articles` itself (about 10 seconds there, without blocking reads or writes), so the space becomes reusable but the file keeps its size. A manual `VACUUM (ANALYZE, VERBOSE) articles;` is always safe while Pulse runs. Reclaim the disk space only when it is tight: `VACUUM (FULL, ANALYZE) articles;` rewrites the table and blocks every read and write of it until it finishes (2 minutes 13 seconds for 500,000 articles in testing) and needs free space for a full copy, so back up first, stop `web` and `api` (`docker compose --env-file .env.production -f compose.production.yml stop web api`), run it, and start them again (`... up -d --wait`). `pg_repack` can do this online but is not part of the official PostgreSQL image. Details are in "Database maintenance" in `docs/PROJECT.md`.
+
+The production database records query statistics with `pg_stat_statements`, logs statements that run at least `DB_LOG_MIN_DURATION_MS` milliseconds (`.env.production`, default 500; `-1` disables, `0` logs everything; parameter values are never logged), and measures I/O times (`track_io_timing`). These are PostgreSQL start arguments in `compose.production.yml`: the first update that adds them and every change of `DB_LOG_MIN_DURATION_MS` recreates the `db` container, which interrupts database access for a few seconds; `scripts/update-production.sh` handles this through `up -d`. Show the slowest statements in total (order by `mean_exec_time` for individually slow ones):
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+SELECT calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 2)  AS mean_ms,
+       left(regexp_replace(query, '\s+', ' ', 'g'), 120) AS query
+FROM pg_stat_statements
+WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+ORDER BY total_exec_time DESC
+LIMIT 15;
+```
+
+`SELECT pg_stat_statements_reset();` starts a new measurement period. Slow statements in the log: `docker compose --env-file .env.production -f compose.production.yml logs db | grep 'duration:'`. See "Slow-query visibility" in `docs/PROJECT.md`.
 
 ### Shutdown
 

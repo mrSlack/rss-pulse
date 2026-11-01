@@ -25,7 +25,7 @@ const (
 // ArticleSearchUpgrade completes the article search schema of migration 018 while the
 // API is already serving: it fills articles.search_key for rows without it in batches,
 // builds the trigram index articles_search_key_trgm_idx with CREATE INDEX CONCURRENTLY,
-// and analyzes the table. Search is correct at every step (see articleSearchKey); only
+// and vacuums and analyzes the table. Search is correct at every step (see articleSearchKey); only
 // its speed depends on the progress. Run is idempotent and resumes after an
 // interruption; concurrent runs for the same schema wait for each other through a
 // session advisory lock.
@@ -37,6 +37,9 @@ type ArticleSearchUpgrade struct {
 	Pause time.Duration
 	// Logger receives progress records; nil discards them.
 	Logger *slog.Logger
+	// Progress, when set, is called after each backfill batch with the number of
+	// articles that batch filled.
+	Progress func(filled int64)
 }
 
 // Run performs the remaining steps of the upgrade and returns nil once all of them have
@@ -86,9 +89,14 @@ func (u ArticleSearchUpgrade) Run(ctx context.Context, pool *pgxpool.Pool) error
 	if err := buildArticleSearchIndex(ctx, conn, logger); err != nil {
 		return fmt.Errorf("build article search index: %w", err)
 	}
-	// The planner estimates search selectivity from the statistics of the index expression.
-	if _, err := conn.Exec(ctx, `ANALYZE articles`); err != nil {
-		return fmt.Errorf("analyze articles: %w", err)
+	// The planner estimates search selectivity from the statistics of the index
+	// expression. The backfill wrote a new version of every row: a plain VACUUM
+	// makes the old versions reusable and marks the pages all-visible again for
+	// index-only scans (unread counters) without waiting for autovacuum. It does not
+	// block reads or writes (about 10 seconds on 500,000 articles) and does not
+	// shrink the file; see "Database maintenance" in docs/PROJECT.md.
+	if _, err := conn.Exec(ctx, `VACUUM (ANALYZE) articles`); err != nil {
+		return fmt.Errorf("vacuum articles: %w", err)
 	}
 	if _, err := conn.Exec(ctx, `INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, articleSearchUpgradeMarker); err != nil {
 		return err
@@ -124,6 +132,9 @@ func (u ArticleSearchUpgrade) backfill(ctx context.Context, conn *pgxpool.Conn, 
 		}
 		lastID = *batchEnd
 		total += filled
+		if u.Progress != nil {
+			u.Progress(filled)
+		}
 		if time.Since(lastLogged) >= 30*time.Second {
 			logger.Info("article search key backfill progress", slog.Int64("filled", total), slog.Int64("last_article_id", lastID))
 			lastLogged = time.Now()

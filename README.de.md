@@ -134,7 +134,7 @@ Pulse lässt sich als App installieren und hält zuletzt geladene Artikellisten 
 
 ### Datenaufbewahrung
 
-Ein Wartungsjob läuft etwa eine Minute nach dem API-Start und danach alle 6 Stunden. Er löscht Artikel, deren Veröffentlichungs- und Erfassungszeitpunkt beide älter als `ARTICLE_RETENTION_DAYS` sind (Standard 180, zulässig 30–3.650), sofern sie niemand gespeichert hat; Lese- und Merkstatus dieser Artikel werden mitgelöscht. Eine Aktualisierung fügt datierte Einträge, die älter als dieser Zeitraum sind, nicht erneut ein, sofern sie nicht bereits gespeichert sind. Entschiedene (zugelassene/abgelehnte) Quarantäne-Einträge und nicht moderierbare Alt-Einträge werden gelöscht, sobald weder die Entscheidung noch ihr letztes Auftreten in einer Aktualisierung jünger als `QUARANTINE_RETENTION_DAYS` ist (Standard 90, zulässig 7–3.650); ausstehende Einträge bleiben erhalten. Gemeinsame Feed-Quellen, die seit `UNSUBSCRIBED_SOURCE_RETENTION_DAYS` Tagen niemand mehr abonniert hat (Standard 30, zulässig 1–3.650, gezählt ab dem ersten Joblauf nach der Abmeldung des letzten Abonnenten), werden samt ihren Artikeln gelöscht, sofern weder eine Feed-Anfrage für die URL noch ein zur Moderation ausstehender Quarantäne-Eintrag offen ist; wer die Quelle innerhalb dieser Frist erneut abonniert, behält sie, und nach ihrer Löschung muss die URL erneut von einem Administrator freigegeben werden. Abgelaufene Sitzungen entfernt derselbe Job. Der Wert `0` deaktiviert die jeweilige Bereinigung; ein ungültiger Wert verhindert den Start der API.
+Ein Wartungsjob läuft etwa eine Minute nach dem API-Start und danach alle 6 Stunden. Er löscht Artikel, deren Veröffentlichungs- und Erfassungszeitpunkt beide älter als `ARTICLE_RETENTION_DAYS` sind (Standard 180, zulässig 30–3.650), sofern sie niemand gespeichert hat; Lese- und Merkstatus dieser Artikel werden mitgelöscht. Eine Aktualisierung fügt datierte Einträge, die älter als dieser Zeitraum sind, nicht erneut ein, sofern sie nicht bereits gespeichert sind. Entschiedene (zugelassene/abgelehnte) Quarantäne-Einträge und nicht moderierbare Alt-Einträge werden gelöscht, sobald weder die Entscheidung noch ihr letztes Auftreten in einer Aktualisierung jünger als `QUARANTINE_RETENTION_DAYS` ist (Standard 90, zulässig 7–3.650); ausstehende Einträge bleiben erhalten. Gemeinsame Feed-Quellen, die seit `UNSUBSCRIBED_SOURCE_RETENTION_DAYS` Tagen niemand mehr abonniert hat (Standard 30, zulässig 1–3.650, gezählt ab dem ersten Joblauf nach der Abmeldung des letzten Abonnenten), werden samt ihren Artikeln gelöscht, sofern weder eine Feed-Anfrage für die URL noch ein zur Moderation ausstehender Quarantäne-Eintrag offen ist; wer die Quelle innerhalb dieser Frist erneut abonniert, behält sie, und nach ihrer Löschung muss die URL erneut von einem Administrator freigegeben werden. Abgelaufene Sitzungen und Anmeldeversuche außerhalb ihres Rate-Limit-Zeitfensters entfernt derselbe Job. Der Wert `0` deaktiviert die jeweilige Bereinigung; ein ungültiger Wert verhindert den Start der API.
 
 ## Sicherung, Logs und Stoppen
 
@@ -234,7 +234,49 @@ Die API schreibt strukturierte Logs (Go `log/slog`) nach stderr. `LOG_FORMAT` w�
 
 Logs verfolgen Sie mit `docker compose -f <compose-datei> logs -f api`. Bei JSON-Logs zeigt etwa `docker compose --env-file .env.production -f compose.production.yml logs --no-log-prefix api | jq 'select(.status >= 500)'` fehlgeschlagene Anfragen.
 
-`GET /api/health/live` meldet, dass der API-Prozess läuft, ohne die Datenbank anzusprechen. `GET /api/health/ready` prüft zusätzlich die Datenbank (2 Sekunden Timeout) und antwortet `503`, wenn sie nicht erreichbar ist; die Compose-Health-Checks verwenden diesen Endpunkt. `GET /api/health` bleibt ein Alias der Bereitschaftsprüfung. Prometheus-Metriken exportiert die API noch nicht.
+`GET /api/health/live` meldet, dass der API-Prozess läuft, ohne die Datenbank anzusprechen. `GET /api/health/ready` prüft zusätzlich die Datenbank (2 Sekunden Timeout) und antwortet `503`, wenn sie nicht erreichbar ist; die Compose-Health-Checks verwenden diesen Endpunkt. `GET /api/health` bleibt ein Alias der Bereitschaftsprüfung.
+
+Mit `METRICS_ADDR` (zum Beispiel `METRICS_ADDR=:9090`; standardmäßig leer, also ohne Metriken) exportiert die API Prometheus-Metriken auf einem eigenen Listener unter `http://api:9090/metrics`. Er gehört nicht zur öffentlichen Website: Nginx leitet nur `/api/` an Port 8080 weiter, und die Compose-Dateien geben Port 9090 nur per `expose` frei, ohne Host-Port. Betreiben Sie Prometheus als Container im selben Docker-Netzwerk (`rss-reader-net` lokal, `pulse-production_default` in Produktion) und lassen Sie es `api:9090` abfragen; jeder Container in diesem Netzwerk erreicht den Port, verbinden Sie also nur vertrauenswürdige Dienste. Ein ungültiger Wert oder der API-Port 8080 stoppt die API beim Start. Die Metriken umfassen API-Anfragen nach Route, Ergebnisse und Rückstand der Feed-Aktualisierung, Anmeldeergebnisse, Wartungsläufe, das Such-Upgrade und den Datenbank-Pool; [docs/PROJECT.md](docs/PROJECT.md#metrics) listet sie mit einer Beispiel-Scrape-Konfiguration und Alarmregeln auf (englisch).
+
+### Datenbankwartung und langsame Abfragen
+
+`psql` im Datenbankcontainer der Produktion öffnen:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Tabellen- und Indexgrößen, tote Zeilen und der letzte Vacuum-Lauf:
+
+```sql
+SELECT relname,
+       pg_size_pretty(pg_table_size(relid))          AS table_size,
+       pg_size_pretty(pg_indexes_size(relid))        AS index_size,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+       n_live_tup, n_dead_tup, last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(relid) DESC
+LIMIT 10;
+```
+
+Autovacuum ist standardmäßig aktiv und genügt im normalen Betrieb: gelöschte und geänderte Zeilen hinterlassen freien Platz in der Tabellendatei, den neue Artikel wiederverwenden. Das Hintergrund-Upgrade der Suche schreibt jeden Artikel einmal neu; dadurch wächst `articles` um bis zu etwa die Größe seiner Daten (im Test von 1,2 GB auf 1,7 GB bei 500.000 Artikeln). Anschließend führt es selbst `VACUUM (ANALYZE) articles` aus (dort etwa 10 Sekunden, ohne Lese- oder Schreibzugriffe zu blockieren): Der Platz wird wiederverwendbar, die Datei behält aber ihre Größe. Ein manuelles `VACUUM (ANALYZE, VERBOSE) articles;` ist im laufenden Betrieb immer unbedenklich. Den Speicherplatz nur zurückgewinnen, wenn er knapp ist: `VACUUM (FULL, ANALYZE) articles;` schreibt die Tabelle neu, blockiert bis zum Ende jeden Lese- und Schreibzugriff auf sie (im Test 2 Minuten 13 Sekunden bei 500.000 Artikeln) und braucht freien Platz für eine vollständige Kopie. Deshalb zuerst sichern, `web` und `api` stoppen (`docker compose --env-file .env.production -f compose.production.yml stop web api`), den Befehl ausführen und die Dienste wieder starten (`... up -d --wait`). `pg_repack` kann das im laufenden Betrieb, ist aber nicht im offiziellen PostgreSQL-Image enthalten. Details stehen im Abschnitt „Database maintenance“ in `docs/PROJECT.md`.
+
+Die Produktionsdatenbank sammelt Abfragestatistiken mit `pg_stat_statements`, protokolliert Anweisungen, die mindestens `DB_LOG_MIN_DURATION_MS` Millisekunden laufen (`.env.production`, Standard 500; `-1` deaktiviert, `0` protokolliert alles; Parameterwerte werden nie protokolliert), und misst I/O-Zeiten (`track_io_timing`). Das sind PostgreSQL-Startargumente in `compose.production.yml`: Das erste Update, das sie einführt, und jede Änderung von `DB_LOG_MIN_DURATION_MS` erstellen den `db`-Container neu, was den Datenbankzugriff für einige Sekunden unterbricht; `scripts/update-production.sh` erledigt das über `up -d`. Die Anweisungen mit der größten Gesamtlaufzeit (für einzeln langsame nach `mean_exec_time` sortieren):
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+SELECT calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 2)  AS mean_ms,
+       left(regexp_replace(query, '\s+', ' ', 'g'), 120) AS query
+FROM pg_stat_statements
+WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+ORDER BY total_exec_time DESC
+LIMIT 15;
+```
+
+`SELECT pg_stat_statements_reset();` beginnt einen neuen Messzeitraum. Langsame Anweisungen im Log: `docker compose --env-file .env.production -f compose.production.yml logs db | grep 'duration:'`. Siehe „Slow-query visibility“ in `docs/PROJECT.md`.
 
 ### Stoppen
 
