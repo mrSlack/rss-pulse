@@ -1,3 +1,13 @@
+# Session handoff — 2026-11-01 (code review fixes, merge to master)
+
+- **State:** `improvements` reviewed as a whole (`master...improvements`); 9 findings confirmed with failing tests and fixed on `review-fix/{rate-limit,parsers-opml,article-feed,feed-requests}`, merged into `improvements`, then `improvements` merged into `master` (not pushed).
+- **Fixes:** sign-in limiter no longer evicts locked/near-limit keys and fails closed when full of locks; RFC 822 dates with 2-digit year/no seconds parse again; OPML parser tracks wrapper elements; OPML import/export use count-free queries; article paging ignores stale load-more after a view change; mark-all-read is bounded by `latestArticleId` (`upToId`) instead of publish date only; repeated feed requests update the requester's intent; `GET /api/admin/feed-requests` now returns `{requests, total}` with `offset` paging (breaking for external clients) and the admin UI shows the true total with "Load more"; dead `Control.IsRunning`/`DiscardEmptySource` removed.
+- **Verified on merged tree:** gofmt/vet/tidy clean, `REQUIRE_INTEGRATION=1 go test ./...` ok; frontend lint, typecheck, unit tests, build ok; Playwright 19/19; compose configs valid.
+- **Known/remaining:** same as the stage 2–9 entry below (CI deferred, no staticcheck/govulncheck/race run, slow common-word phrase search). Mark-read ID bound has a tiny race with in-flight ingest transactions.
+- **Next:** rebuild containers; back up production before upgrading (migration 016 rewrites all articles).
+
+---
+
 # Session handoff — 2026-11-01 (roadmap stages 2–9)
 
 - **State:** all roadmap stages from `docs/2026-11-01-project-review-and-roadmap.md` are implemented. Each stage has its own branch (`stage-2/sign-in-protection` … `stage-9/operations`); all are merged with integration fixes into `improvements` (stacked on `stage-1/quick-fixes` and `docs/project-review-plan`). Nothing is pushed or merged into `master`.
