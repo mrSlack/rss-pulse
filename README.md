@@ -130,6 +130,10 @@ Sign-in is rate limited: after 10 failed attempts for an account within 15 minut
 
 The bundled Nginx sends a Content Security Policy and other browser security headers. It does not terminate TLS and therefore does not send `Strict-Transport-Security`; configure HSTS on the TLS-terminating reverse proxy (for example `add_header Strict-Transport-Security "max-age=31536000" always;` in a host-level Nginx).
 
+### Data retention
+
+A background maintenance job runs about one minute after API start and then every 6 hours. It deletes articles whose publication and first-seen times are both older than `ARTICLE_RETENTION_DAYS` (default 180, allowed 30–3,650) unless at least one user has saved them; read/saved states of deleted articles are removed with them. A refresh does not re-insert dated items older than that period unless they are already stored. Decided (allowed/rejected) quarantine records and non-moderatable legacy records are deleted once neither their decision nor their last appearance in a refresh is newer than `QUARANTINE_RETENTION_DAYS` (default 90, allowed 7–3,650); pending records are kept. Expired sessions are removed by the same job. Set either variable to `0` to disable that cleanup; an invalid value stops the API at startup.
+
 ## Backups, logs, and shutdown
 
 Create a database dump before moving or upgrading data:

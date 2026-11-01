@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/pulse-reader/app/internal/httpapi"
+	"github.com/pulse-reader/app/internal/maintenance"
 	"github.com/pulse-reader/app/internal/store"
 	"github.com/pulse-reader/app/internal/syncer"
 )
@@ -25,6 +26,10 @@ func main() {
 	trustedProxies, err := httpapi.ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
 	if err != nil {
 		log.Fatalf("TRUSTED_PROXY_CIDRS must be a comma-separated list of CIDRs or \"none\": %v", err)
+	}
+	retention, err := maintenance.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("invalid retention configuration: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -47,6 +52,9 @@ func main() {
 		log.Fatalf("shared-source migration failed: %v", err)
 	}
 	repository := store.New(pool)
+	repository.SetArticleRetentionDays(retention.ArticleRetentionDays)
+	log.Printf("retention: articles %d days, quarantine %d days (0 = disabled)", retention.ArticleRetentionDays, retention.QuarantineRetentionDays)
+	maintenanceDone := maintenance.Job{Repository: repository, Config: retention, InitialDelay: maintenance.DefaultInitialDelay, Interval: maintenance.DefaultInterval}.Start(ctx)
 	refreshControl := syncer.NewControl()
 	refreshConcurrency := syncer.ConcurrencyFromEnv()
 	log.Printf("rss refresh concurrency: %d", refreshConcurrency)
@@ -82,6 +90,7 @@ func main() {
 		if err := server.Shutdown(shutdownContext); err != nil {
 			log.Printf("server shutdown: %v", err)
 		}
+		<-maintenanceDone
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server failed: %v", err)

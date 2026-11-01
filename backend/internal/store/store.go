@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,6 +53,8 @@ func IsValidFolderColor(color string) bool {
 
 type Store struct {
 	pool *pgxpool.Pool
+	// articleRetentionDays is read by refresh commits; 0 disables the retention cutoff.
+	articleRetentionDays atomic.Int32
 }
 
 type Folder struct {

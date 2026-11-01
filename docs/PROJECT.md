@@ -130,6 +130,17 @@ The API is served under `/api/`. It includes a public health endpoint; authentic
 
 API errors use an object with a stable `code` and an English `error` message. Existing HTTP status codes communicate request outcome; localized text is resolved in the frontend.
 
+## Data retention and maintenance
+
+`backend/internal/maintenance` runs a background job started by the API with the process context: once about one minute after start, then every 6 hours. It stops when the context is cancelled, and shutdown waits for it. Each step is independent, logs its deletion count, and a failing step does not skip the others.
+
+- **Articles** (`ARTICLE_RETENTION_DAYS`, default 180, valid 30–3,650, `0` disables): an article is deleted when both `published_at` and `created_at` are older than the period and no user has it saved. Deletion runs in batches of 5,000 ids per statement (`FOR UPDATE SKIP LOCKED`) to keep locks short; `user_article_states` rows cascade. Migration `012_article_retention.sql` indexes `user_article_states (article_id)` for the cascade and the saved check.
+- **Churn prevention:** a refresh commit drops dated items (`HasPublishedAt`) older than the article period whose GUID is not already stored for that source, before stop-word filtering and upserts. Otherwise a feed that still lists old items would re-insert deleted articles as unread. Already stored articles with that GUID are still updated; undated items are unaffected.
+- **Quarantine** (`QUARANTINE_RETENTION_DAYS`, default 90, valid 7–3,650, `0` disables): allowed or rejected records whose `decided_at` and `last_blocked_at` are both older than the period, and non-moderatable legacy records (`moderation_eligible = false` or no summary) whose `last_blocked_at` is older than the period, are deleted. Requiring an old `last_blocked_at` keeps a decision while the item is still listed by its feed, so a decided item cannot return as pending. Moderatable pending records are never deleted.
+- **Sessions:** expired sessions are deleted by the job. Session lookup on authenticated requests is read-only; its `expires_at > NOW()` predicate rejects expired sessions.
+
+Invalid retention values stop the API at startup. Feed sources without subscribers are not deleted automatically (see deferred work).
+
 ## Project structure
 
 - `frontend/src/` — React/TypeScript application, locale catalogs, and styles.
@@ -140,6 +151,8 @@ API errors use an object with a stable `code` and an English `error` message. Ex
 - `backend/internal/feeds/` — feed URL validation, fetching, and RSS/Atom parsing.
 - `backend/internal/store/` — PostgreSQL persistence, account/library operations, and migrations.
 - `backend/internal/syncer/` — scheduled and manual refresh coordination and worker pool.
+- `backend/internal/maintenance/` — periodic retention cleanup of articles, quarantine records, and sessions.
+- `backend/cmd/seed/` — development tool that fills an empty database with a large synthetic dataset for performance measurements.
 - `backend/test/` — backend test files organized by component.
 - `data/` — bind-mounted PostgreSQL data for local development.
 - `compose.frontend.yml`, `compose.backend.yml`, and `compose.database.yml` — separate local Compose groups.
@@ -160,6 +173,7 @@ New schema changes are added as separately numbered SQL files. The folder color 
 - Arbitrary HTML rendering of feed content.
 - Translating RSS/user-created content or synchronizing language preferences between devices.
 - Distributed refresh scheduling across independent backend deployments.
+- Automatic deletion of feed sources without subscribers. A source can be re-subscribed between the cleanup's check and its deletion (the subscribe flow resolves the source and creates the subscription in separate steps), and deleting a source also drops its quarantine history, so this needs a dedicated design.
 
 ## Operational instructions
 

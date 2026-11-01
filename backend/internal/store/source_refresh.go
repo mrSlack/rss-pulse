@@ -99,7 +99,11 @@ func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, docu
 	} else if err != nil {
 		return err
 	}
-	allowedItems, err := filterAndLogBlockedItems(ctx, tx, lease.ID, document.Title, document.Items)
+	items, err := dropItemsBeyondRetention(ctx, tx, lease.ID, document.Items, s.ArticleRetentionDays())
+	if err != nil {
+		return err
+	}
+	allowedItems, err := filterAndLogBlockedItems(ctx, tx, lease.ID, document.Title, items)
 	if err != nil {
 		return err
 	}

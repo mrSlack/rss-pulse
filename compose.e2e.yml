@@ -32,6 +32,8 @@ services:
       INITIAL_ADMIN_EMAIL: admin@pulse.test
       INITIAL_ADMIN_PASSWORD: test-only-admin-password-2026
       SESSION_COOKIE_SECURE: "false"
+      ARTICLE_RETENTION_DAYS: "180"
+      QUARANTINE_RETENTION_DAYS: "90"
     volumes:
       - ./backend:/workspace/backend
     depends_on:
