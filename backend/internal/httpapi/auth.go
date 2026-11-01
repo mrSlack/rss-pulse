@@ -94,12 +94,19 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, passwordHash, err := h.store.UserCredentialByEmail(r.Context(), request.Email)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !auth.VerifyPassword(passwordHash, request.Password)) {
+	if errors.Is(err, store.ErrNotFound) {
+		// Spend the same Argon2id work as for an existing account so response
+		// timing does not reveal which e-mail addresses are registered.
+		auth.SimulatePasswordVerification(request.Password)
 		writeError(w, http.StatusUnauthorized, "auth.invalid_credentials", "The email address or password is incorrect.")
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
+		return
+	}
+	if !auth.VerifyPassword(passwordHash, request.Password) {
+		writeError(w, http.StatusUnauthorized, "auth.invalid_credentials", "The email address or password is incorrect.")
 		return
 	}
 	token, err := auth.NewSessionToken()

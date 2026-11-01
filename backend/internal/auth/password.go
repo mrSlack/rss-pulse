@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -77,6 +78,31 @@ func VerifyPassword(encoded, password string) bool {
 	}
 	actual := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1
+}
+
+const dummyPassword = "pulse-missing-account-timing-equalizer"
+
+var dummy struct {
+	once sync.Once
+	hash string
+}
+
+// dummyHash returns a valid Argon2id hash with production parameters, computed
+// once per process.
+func dummyHash() string {
+	dummy.once.Do(func() {
+		if hash, err := HashPassword(dummyPassword); err == nil {
+			dummy.hash = hash
+		}
+	})
+	return dummy.hash
+}
+
+// SimulatePasswordVerification performs the same Argon2id work as
+// VerifyPassword for a sign-in attempt whose account does not exist, so the
+// response time does not reveal whether an e-mail address is registered.
+func SimulatePasswordVerification(password string) {
+	VerifyPassword(dummyHash(), password)
 }
 
 func NewSessionToken() (string, error) {

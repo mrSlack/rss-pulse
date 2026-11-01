@@ -496,6 +496,25 @@ func TestNewSubscriberReusesFreshSharedSourceWithoutFetchingAgain(t *testing.T) 
 	}
 }
 
+func TestUnknownAccountAndWrongPasswordAreIndistinguishable(t *testing.T) {
+	pool, _, _ := isolatedAPIDatabase(t)
+	handler := httpapi.New(store.New(pool), syncer.NewControl(), true)
+
+	wrongPassword := authenticatedRequest(t, handler, http.MethodPost, "/api/auth/login", `{"email":"reader@example.com","password":"not-the-password"}`, nil)
+	unknownAccount := authenticatedRequest(t, handler, http.MethodPost, "/api/auth/login", `{"email":"nobody@example.com","password":"not-the-password"}`, nil)
+	for name, response := range map[string]*httptest.ResponseRecorder{"wrong password": wrongPassword, "unknown account": unknownAccount} {
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("%s login = %d, want 401", name, response.Code)
+		}
+		if len(response.Result().Cookies()) != 0 {
+			t.Fatalf("%s login set a session cookie", name)
+		}
+	}
+	if wrongPassword.Body.String() != unknownAccount.Body.String() {
+		t.Fatalf("responses differ: wrong password %s, unknown account %s", wrongPassword.Body.String(), unknownAccount.Body.String())
+	}
+}
+
 func isolatedAPIDatabase(t *testing.T) (*pgxpool.Pool, int64, int64) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
