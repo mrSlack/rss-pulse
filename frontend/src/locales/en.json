@@ -279,6 +279,7 @@
   "errors.userSignOut": "Could not sign the user out.",
   "errors.stopWordSave": "Could not update the blocked-word dictionary.",
   "apiErrors.network": "Could not connect to the server.",
+  "apiErrors.timeout": "The server did not respond in time. Check your connection and try again.",
   "apiErrors.request_failed": "The request failed ({{status}}).",
   "apiErrors.auth.same_origin": "This request must come from this site.",
   "apiErrors.auth.sign_in_required": "Please sign in to continue.",

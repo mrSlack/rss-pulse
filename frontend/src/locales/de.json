@@ -279,6 +279,7 @@
   "errors.userSignOut": "Benutzer konnte nicht abgemeldet werden.",
   "errors.stopWordSave": "Das Wörterbuch gesperrter Wörter konnte nicht geändert werden.",
   "apiErrors.network": "Verbindung zum Server fehlgeschlagen.",
+  "apiErrors.timeout": "Der Server hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
   "apiErrors.request_failed": "Die Anfrage ist fehlgeschlagen ({{status}}).",
   "apiErrors.auth.same_origin": "Diese Anfrage muss von dieser Website stammen.",
   "apiErrors.auth.sign_in_required": "Bitte melden Sie sich an, um fortzufahren.",

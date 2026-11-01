@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, api, extractArticleImages, folderColorClass, folderColorStyle, isAbortError, setUnauthorizedHandler } from '../../src/api';
+import { ApiError, REQUEST_TIMEOUT_MS, SESSION_CHECK_TIMEOUT_MS, api, extractArticleImages, folderColorClass, folderColorStyle, isAbortError, setUnauthorizedHandler } from '../../src/api';
 import i18n from '../../src/i18n';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   setUnauthorizedHandler(null);
 });
@@ -35,9 +36,102 @@ describe('typed API errors', () => {
     const pending = api.getArticles(new URLSearchParams({ filter: 'all' }), controller.signal).catch((reason: unknown) => reason);
     controller.abort();
     const error = await pending;
-    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
     expect(isAbortError(error)).toBe(true);
     expect(error).not.toBeInstanceOf(ApiError);
+  });
+});
+
+/** A fetch that never answers until its signal is aborted. */
+function hangingFetch() {
+  return vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+  }));
+}
+
+function observe(promise: Promise<unknown>) {
+  const state: { error?: unknown; settled: boolean } = { settled: false };
+  promise.then(() => { state.settled = true; }, (error: unknown) => { state.error = error; state.settled = true; });
+  return state;
+}
+
+describe('request timeouts', () => {
+  it('outlasts the proxy and server time limits so only a hanging connection times out', () => {
+    // nginx.conf proxy_read_timeout 30s; the API's WriteTimeout is 25s.
+    expect(REQUEST_TIMEOUT_MS).toBeGreaterThan(30_000);
+    expect(SESSION_CHECK_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+  });
+
+  it('fails a request that gets no response with a timeout error', async () => {
+    vi.useFakeTimers();
+    const fetchMock = hangingFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const state = observe(api.getFeeds());
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(state.error).toBeInstanceOf(ApiError);
+    expect(state.error).toMatchObject({ status: 0, code: 'timeout', message: i18n.t('apiErrors.timeout') });
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it('also limits changes, so a hanging save does not spin forever', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', hangingFetch());
+    const state = observe(api.updateArticle(1, { isRead: true }));
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+    expect(state.error).toMatchObject({ code: 'timeout' });
+  });
+
+  it('gives up on the session check sooner, so a hanging start falls back to offline mode', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', hangingFetch());
+    const state = observe(api.currentUser());
+    await vi.advanceTimersByTimeAsync(SESSION_CHECK_TIMEOUT_MS);
+    expect(state.error).toMatchObject({ status: 0, code: 'timeout' });
+  });
+
+  it('does not limit an OPML import, whose upload time depends on the file and the link', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', hangingFetch());
+    const controller = new AbortController();
+    const state = observe(api.importOpml('<opml/>', controller.signal));
+    await vi.advanceTimersByTimeAsync(10 * REQUEST_TIMEOUT_MS);
+    expect(state.settled).toBe(false);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(isAbortError(state.error)).toBe(true);
+  });
+
+  it('reports a cancelled request as an abort, not as a timeout, and stops its timer', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', hangingFetch());
+    const controller = new AbortController();
+    const state = observe(api.getArticles(new URLSearchParams(), controller.signal));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(isAbortError(state.error)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('honours a signal that was aborted before the request started', async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+    const pending = api.getFeeds(controller.signal).catch((reason: unknown) => reason);
+    // The hanging fetch only rejects on an abort event, so check the signal it got.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    void pending;
+  });
+
+  it('stops the timer once a response has been read', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])));
+    await expect(api.getFeeds()).resolves.toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

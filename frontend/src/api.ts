@@ -168,37 +168,81 @@ function parseApiError(value: unknown): { code?: string; error?: string } {
 type RequestOptions = RequestInit & {
   /** Skip the expired-session handler (session probe and sign-in). */
   anonymous?: boolean;
+  /** Time limit in milliseconds, or null for none. Defaults to REQUEST_TIMEOUT_MS. */
+  timeoutMs?: number | null;
 };
 
+/**
+ * Time limit of a request that gets no complete response. It is longer than
+ * nginx's proxy_read_timeout (30 s) and the API's write timeout (25 s), so a
+ * slow but working server answers (or fails) first: it only fires when the
+ * connection hangs, and the UI then shows an error instead of waiting forever.
+ */
+export const REQUEST_TIMEOUT_MS = 40_000;
+/**
+ * The session check is cheap on the server. When it hangs, Pulse starts as it
+ * does without a network (with the remembered account, if any) after this time.
+ */
+export const SESSION_CHECK_TIMEOUT_MS = 15_000;
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { anonymous, ...init } = options;
-  let response: Response;
+  const { anonymous, timeoutMs = REQUEST_TIMEOUT_MS, signal: callerSignal, ...init } = options;
+  // One signal for the caller's cancellation and the time limit. A timeout is
+  // reported as an ApiError (status 0, like a network failure), a cancellation
+  // as the usual AbortError.
+  const controller = new AbortController();
+  let timedOut = false;
+  const cancel = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) cancel();
+  else callerSignal?.addEventListener('abort', cancel, { once: true });
+  const timer = timeoutMs === null ? undefined : setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const failure = (reason: unknown) => {
+    if (timedOut) return new ApiError(i18n.t('apiErrors.timeout'), 0, 'timeout');
+    if (isAbortError(reason) || controller.signal.aborted) return reason;
+    return new ApiError(i18n.t('apiErrors.network'), 0, 'network');
+  };
+
   try {
-    response = await fetch(`/api${path}`, {
-      ...init,
-      credentials: 'same-origin',
-      headers: {
-        ...(typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers,
-      },
-    });
-  } catch (reason) {
-    if (isAbortError(reason)) throw reason;
-    throw new ApiError(i18n.t('apiErrors.network'), 0, 'network');
-  }
+    let response: Response;
+    try {
+      response = await fetch(`/api${path}`, {
+        ...init,
+        signal: controller.signal,
+        credentials: 'same-origin',
+        headers: {
+          ...(typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
+          ...init.headers,
+        },
+      });
+    } catch (reason) {
+      throw failure(reason);
+    }
 
-  if (!response.ok) {
-    const body = parseApiError(await response.json().catch(() => null));
-    const fallback = body.error || i18n.t('apiErrors.request_failed', { status: response.status });
-    const message = body.code
-      ? i18n.t(`apiErrors.${body.code}`, { defaultValue: fallback, status: response.status })
-      : fallback;
-    if (response.status === 401 && !anonymous) unauthorizedHandler?.();
-    throw new ApiError(message, response.status, body.code);
-  }
+    if (!response.ok) {
+      const body = parseApiError(await response.json().catch(() => null));
+      const fallback = body.error || i18n.t('apiErrors.request_failed', { status: response.status });
+      const message = body.code
+        ? i18n.t(`apiErrors.${body.code}`, { defaultValue: fallback, status: response.status })
+        : fallback;
+      if (response.status === 401 && !anonymous) unauthorizedHandler?.();
+      throw new ApiError(message, response.status, body.code);
+    }
 
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+    if (response.status === 204) return undefined as T;
+    try {
+      return (await response.json()) as T;
+    } catch (reason) {
+      // The body stopped arriving (time limit or cancellation), or was not JSON.
+      if (timedOut || controller.signal.aborted) throw failure(reason);
+      throw reason;
+    }
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', cancel);
+  }
 }
 
 /** The view the article list shows; also the scope of "mark all as read". */
@@ -219,7 +263,7 @@ export type OpmlImportResult = {
 };
 
 export const api = {
-  currentUser: (signal?: AbortSignal) => request<SessionUser>('/auth/me', { anonymous: true, signal }),
+  currentUser: (signal?: AbortSignal) => request<SessionUser>('/auth/me', { anonymous: true, signal, timeoutMs: SESSION_CHECK_TIMEOUT_MS }),
   login: (email: string, password: string) => request<SessionUser>('/auth/login', {
     method: 'POST',
     anonymous: true,
@@ -252,6 +296,8 @@ export const api = {
   importOpml: (document: Blob | string, signal?: AbortSignal) => request<OpmlImportResult>('/opml', {
     method: 'POST',
     signal,
+    // Upload time depends on the file size and the link speed, so no fixed limit fits.
+    timeoutMs: null,
     headers: { 'Content-Type': 'text/x-opml' },
     body: document,
   }),

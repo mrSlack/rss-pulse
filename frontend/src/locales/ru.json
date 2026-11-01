@@ -283,6 +283,7 @@
   "errors.userSignOut": "Не удалось завершить сеансы пользователя.",
   "errors.stopWordSave": "Не удалось изменить словарь запрещённых слов.",
   "apiErrors.network": "Не удалось подключиться к серверу.",
+  "apiErrors.timeout": "Сервер не ответил вовремя. Проверьте подключение и повторите попытку.",
   "apiErrors.request_failed": "Не удалось выполнить запрос ({{status}}).",
   "apiErrors.auth.same_origin": "Запрос должен быть отправлен с этого сайта.",
   "apiErrors.auth.sign_in_required": "Войдите, чтобы продолжить.",
