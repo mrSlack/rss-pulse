@@ -1,3 +1,11 @@
+# Session handoff — 2026-11-01 (project review and roadmap)
+
+- **Done:** Full project review and phased improvement plan in `docs/2026-11-01-project-review-and-roadmap.md` (findings with IDs, roadmap Phases 0–6, open questions). Branch `docs/project-review-plan`; no application code changed.
+- **Verified:** REL-1 reproduced in `golang:1.27.3` — `Mon, 2 Jan 2006 15:04:05 GMT` and zone-less ISO dates fail all parser layouts. Other findings come from code reading and are not yet covered by tests; no test suites were run (docs-only change).
+- **Next:** Get answers to the document's open questions (§4), then start Milestone A (Phase 0 hygiene/CI, Phase 1 security, tasks 2.1–2.2), writing a regression test first for each finding.
+
+---
+
 # Session handoff — 2026-10-26 (feed article quarantine)
 
 - **Done:** Added stop-word article quarantine with complete feed payloads, reversible Administrator decisions, and promotion to the shared source article table at the original publication time. Visibility remains limited to users subscribed to that source. Added moderation API/UI, translations, migration history, and an admin Playwright screenshot.
