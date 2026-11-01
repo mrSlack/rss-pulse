@@ -85,11 +85,11 @@ function networkFirstApi(event: FetchEvent): Promise<Response> {
   // Handled whether or not the page still waits for it: a response that
   // arrives after the stored copy was shown refreshes the cache. The
   // generation check in storeApiResponse drops it if the cache was cleared
-  // in the meantime (sign-out, another account).
-  event.waitUntil(network.then((response) => {
-    if (clearsApiCache(request.method, new URL(request.url).pathname, response.status)) return clearApiCache();
-    if (isCacheableApiResponse(response)) return storeApiResponse(request, response.clone(), generation);
-    return undefined;
+  // in the meantime (sign-out, another account). This handler is attached
+  // before the page's, so the body is cloned before the page reads it.
+  event.waitUntil(network.then(async (response) => {
+    if (clearsApiCache(request.method, new URL(request.url).pathname, response.status)) await clearApiCache();
+    else if (isCacheableApiResponse(response)) await storeApiResponse(request, response.clone(), generation);
   }).catch(() => undefined));
   return networkFirstWithTimeout(
     network,
