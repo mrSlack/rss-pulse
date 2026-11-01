@@ -5,9 +5,11 @@ import { LanguageSelector } from './LanguageSelector';
 import type { Theme } from './theme';
 import './i18n';
 import { ErrorToast } from './ErrorToast';
+import { remembersDevice } from './offlineData';
 
 type SignInProps = {
-  onLogin: (email: string, password: string) => Promise<void>;
+  /** `remember`: keep the account and loaded articles on this device for offline use. */
+  onLogin: (email: string, password: string, remember: boolean) => Promise<void>;
   busy?: boolean;
   theme?: Theme;
   onToggleTheme?: () => void;
@@ -19,6 +21,7 @@ export function SignIn({ onLogin, busy = false, theme, onToggleTheme, notice = '
   const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(remembersDevice);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -27,7 +30,7 @@ export function SignIn({ onLogin, busy = false, theme, onToggleTheme, notice = '
     setError('');
     setSubmitting(true);
     try {
-      await onLogin(email.trim(), password);
+      await onLogin(email.trim(), password, remember);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('signin.unexpectedError'));
     } finally {
@@ -57,6 +60,11 @@ export function SignIn({ onLogin, busy = false, theme, onToggleTheme, notice = '
           <input id="signin-email" type="email" autoComplete="username" autoFocus required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
           <label htmlFor="signin-password">{t('signin.password')}</label>
           <input id="signin-password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t('signin.passwordPlaceholder')} />
+          <div className="remember-device signin-remember">
+            <input id="signin-remember" type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} aria-describedby="signin-remember-hint" />
+            <label htmlFor="signin-remember">{t('signin.rememberOffline')}</label>
+            <small id="signin-remember-hint">{t('signin.rememberOfflineHint')}</small>
+          </div>
           <button className="signin-submit" type="submit" disabled={disabled}>{disabled ? t('signin.submitting') : t('signin.submit')}<span aria-hidden="true">↗</span></button>
         </form>
         <div className="signin-foot"><span />{t('signin.footer')}</div>
