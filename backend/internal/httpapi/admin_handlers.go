@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -221,15 +222,16 @@ func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "feed.request_id_invalid", "The feed request ID is invalid.")
 		return
 	}
-	if _, err := h.store.ApproveFeedRequest(r.Context(), *requestID); errors.Is(err, store.ErrNotFound) {
+	result, err := h.store.ApproveFeedRequest(r.Context(), *requestID)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "feed.request_not_found", "The feed request could not be found.")
-		return
-	} else if errors.Is(err, store.ErrFeedLimitReached) {
-		writeError(w, http.StatusConflict, "feed.limit_reached", "The requester has reached the maximum of 100 feeds.")
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "feed.request_approve_failed", "The feed request could not be approved.")
 		return
+	}
+	for _, skipped := range result.Skipped {
+		log.Printf("feed request %d approved for source %d: skipped user %d (%s)", *requestID, result.SourceID, skipped.UserID, skipped.Reason)
 	}
 	if h.control != nil {
 		h.control.Request(true)

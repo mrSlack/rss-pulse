@@ -174,10 +174,6 @@ func (h *Handler) createFeed(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "feed.url_invalid", "Enter a valid HTTP or HTTPS feed URL.")
 			return
 		}
-		if errors.Is(err, store.ErrFeedRequestPending) {
-			writeError(w, http.StatusConflict, "feed.request_pending", "A request for this feed is already pending.")
-			return
-		}
 		if errors.Is(err, store.ErrFeedRequestLimitReached) {
 			writeFeedRequestLimitReached(w)
 			return
