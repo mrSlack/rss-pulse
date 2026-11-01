@@ -112,7 +112,16 @@ func (s *Store) RequestFeedApproval(ctx context.Context, userID int64, rawURL, t
 	err = tx.QueryRow(ctx, `SELECT r.request_id FROM feed_request_requesters r JOIN feed_requests fr ON fr.id=r.request_id
 		WHERE fr.normalized_url=$1 AND r.user_id=$2`, normalizedURL, userID).Scan(&requestID)
 	if err == nil {
-		// Asking again for a URL you already requested is idempotent.
+		// Asking again for a URL you already requested keeps your place in the queue
+		// but replaces what approval will do for you: the latest folder, title, and
+		// subscription to replace (or none, for a new feed) win.
+		if _, err := tx.Exec(ctx, `UPDATE feed_request_requesters SET folder_id=$3,title=$4,replace_feed_id=$5
+			WHERE request_id=$1 AND user_id=$2`, requestID, userID, folderID, title, replaceFeedID); err != nil {
+			return FeedRequestResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return FeedRequestResult{}, err
+		}
 		return FeedRequestResult{RequestID: requestID}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

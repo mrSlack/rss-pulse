@@ -241,3 +241,59 @@ func TestRequestWithoutRemainingRequestersDisappears(t *testing.T) {
 		t.Fatalf("requests without requesters = %+v, want none", requests)
 	}
 }
+
+func TestRepeatedRequestReplacesRequesterIntent(t *testing.T) {
+	ctx := context.Background()
+	pool, _, readerID := isolatedAPIDatabase(t)
+	repository := store.New(pool)
+	handler := httpapi.New(repository, syncer.NewControl(), false)
+	adminCookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
+	readerCookie := loginForTest(t, handler, "reader@example.com", "a-long-reader-password", false)
+
+	var oldSourceID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url='https://example.com/rss'`).Scan(&oldSourceID); err != nil {
+		t.Fatal(err)
+	}
+	oldFeed, err := repository.SubscribeSource(ctx, readerID, oldSourceID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder, err := repository.CreateFolderForUser(ctx, readerID, "Moved", store.DefaultFolderColor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The reader first asks for the URL as a new feed, then edits an existing
+	// subscription to the same URL. The latest request must win on approval.
+	added := authenticatedRequest(t, handler, http.MethodPost, "/api/feeds", `{"url":"https://target.example/rss","folderId":null}`, readerCookie)
+	if added.Code != http.StatusAccepted {
+		t.Fatalf("new-feed request = %d %s", added.Code, added.Body.String())
+	}
+	replace := authenticatedRequest(t, handler, http.MethodPatch, "/api/feeds/"+intString(oldFeed.ID), `{"title":"Renamed","url":"https://target.example/rss","folderId":`+intString(folder.ID)+`}`, readerCookie)
+	if replace.Code != http.StatusAccepted {
+		t.Fatalf("replace request = %d %s", replace.Code, replace.Body.String())
+	}
+	requests := pendingRequests(t, handler, adminCookie)
+	if len(requests) != 1 || requests[0].Title != "Renamed" || requests[0].FolderName == nil || *requests[0].FolderName != "Moved" {
+		t.Fatalf("pending requests = %+v, want one request with the latest title and folder", requests)
+	}
+	approved := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/feed-requests/"+intString(requests[0].ID)+"/approve", "{}", adminCookie)
+	if approved.Code != http.StatusNoContent {
+		t.Fatalf("approve = %d %s", approved.Code, approved.Body.String())
+	}
+	if count := subscriptionsTo(t, pool, readerID, "https://target.example/rss"); count != 1 {
+		t.Fatalf("subscriptions to target = %d, want 1", count)
+	}
+	var targetFeedID int64
+	var titleOverride *string
+	var folderID *int64
+	if err := pool.QueryRow(ctx, `SELECT uf.id,uf.title_override,uf.folder_id FROM user_feeds uf JOIN feed_sources fs ON fs.id=uf.feed_source_id
+		WHERE uf.user_id=$1 AND fs.normalized_url='https://target.example/rss'`, readerID).Scan(&targetFeedID, &titleOverride, &folderID); err != nil {
+		t.Fatal(err)
+	}
+	if targetFeedID != oldFeed.ID || titleOverride == nil || *titleOverride != "Renamed" || folderID == nil || *folderID != folder.ID {
+		t.Fatalf("target subscription = id %d title %v folder %v, want the replaced feed %d renamed into folder %d", targetFeedID, titleOverride, folderID, oldFeed.ID, folder.ID)
+	}
+	if count := subscriptionsTo(t, pool, readerID, "https://example.com/rss"); count != 0 {
+		t.Fatalf("old URL subscriptions = %d, want 0 after the replacement", count)
+	}
+}
