@@ -5,6 +5,8 @@ type TestUser = {
   email: string;
   role: 'Administrator' | 'Reader';
   refreshIntervalMinutes: number | null;
+  disabled?: boolean;
+  disabledAt?: string | null;
 };
 
 async function expectNoHorizontalOverflow(page: import('@playwright/test').Page) {
@@ -51,10 +53,13 @@ test('admin workspace visits every section without API, script, or layout errors
     }
   });
   page.on('requestfailed', (requestEvent) => {
+    // Loads are cancelled on purpose when a view unmounts (React StrictMode
+    // mounts every effect twice in development).
+    if (requestEvent.failure()?.errorText === 'net::ERR_ABORTED') return;
     if (requestEvent.url().includes('/api/')) failedRequests.push(`${requestEvent.method()} ${requestEvent.url()}`);
   });
 
-  let currentUser: TestUser = {
+  const currentUser: TestUser = {
     id: 1,
     email: 'admin@example.com',
     role: 'Administrator',
@@ -62,11 +67,13 @@ test('admin workspace visits every section without API, script, or layout errors
   };
   let users: TestUser[] = [
     currentUser,
-    { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null },
+    { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null, disabled: false, disabledAt: null },
+    { id: 4, email: 'former@example.com', role: 'Reader', refreshIntervalMinutes: 30, disabled: true, disabledAt: '2026-10-30T08:00:00Z' },
   ];
+  const signedOutUsers: number[] = [];
   let feedRequests = [
-    { id: 11, url: 'https://one.example/rss', requestedBy: 'reader@example.com', folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z' },
-    { id: 12, url: 'https://two.example/rss', requestedBy: 'reader@example.com', folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:01:00Z' },
+    { id: 11, url: 'https://one.example/rss', requestedBy: 'reader@example.com', requesters: ['reader@example.com', 'former@example.com'], folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z' },
+    { id: 12, url: 'https://two.example/rss', requestedBy: 'reader@example.com', requesters: ['reader@example.com'], folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:01:00Z' },
   ];
   let stopWords = [{ id: 21, term: 'pornography', createdAt: '2026-10-26T10:00:00Z' }];
   let blockedArticles = [{
@@ -110,7 +117,7 @@ test('admin workspace visits every section without API, script, or layout errors
       sharedFeedTTLMinutes = body.sharedFeedTTLMinutes;
       return json({ refreshIntervalMinutes, sharedFeedTTLMinutes });
     }
-    if (path === '/api/admin/feed-requests' && method === 'GET') return json(feedRequests);
+    if (path === '/api/admin/feed-requests' && method === 'GET') return json({ requests: feedRequests, total: feedRequests.length });
     const approve = path.match(/^\/api\/admin\/feed-requests\/(\d+)\/approve$/);
     if (approve && method === 'POST') {
       feedRequests = feedRequests.filter((item) => item.id !== Number(approve[1]));
@@ -148,10 +155,17 @@ test('admin workspace visits every section without API, script, or layout errors
     if (updateUser && method === 'PATCH') {
       const body = route.request().postDataJSON() as Partial<TestUser>;
       const id = Number(updateUser[1]);
-      users = users.map((user) => user.id === id ? { ...user, ...body } : user);
+      const disabledAt = body.disabled === undefined ? {} : { disabledAt: body.disabled ? '2026-11-01T09:00:00Z' : null };
+      users = users.map((user) => user.id === id ? { ...user, ...body, ...disabledAt } : user);
       const user = users.find((item) => item.id === id);
       if (!user) return json({ code: 'user.not_found', error: 'The user was not found.' }, 404);
       return json(user);
+    }
+
+    const signOutUser = path.match(/^\/api\/admin\/users\/(\d+)\/sign-out$/);
+    if (signOutUser && method === 'POST') {
+      signedOutUsers.push(Number(signOutUser[1]));
+      return route.fulfill({ status: 204 });
     }
 
     unexpectedAPIRequests.push(`${method} ${path}`);
@@ -168,6 +182,9 @@ test('admin workspace visits every section without API, script, or layout errors
   await page.getByRole('button', { name: 'Feed requests' }).click();
   await expect(page.getByRole('heading', { name: 'Feed requests' })).toBeVisible();
   await expect(page.getByText('https://one.example/rss')).toBeVisible();
+  const requestsLayout = await page.addStyleTag({ content: '.admin-workspace { grid-template-columns: minmax(0, 1fr) !important; } .admin-subnav { display: none !important; }' });
+  await expect(page.locator('section[aria-labelledby="feed-requests-title"]')).toHaveScreenshot('feed-requests-requesters.png');
+  await requestsLayout.evaluate((style) => style.parentNode?.removeChild(style));
   await page.locator('.admin-table tbody tr').filter({ hasText: 'https://one.example/rss' }).getByRole('button', { name: 'Approve' }).click();
   await expect(page.getByText('https://one.example/rss')).toHaveCount(0);
   await page.locator('.admin-table tbody tr').filter({ hasText: 'https://two.example/rss' }).getByRole('button', { name: 'Reject' }).click();
@@ -206,6 +223,23 @@ test('admin workspace visits every section without API, script, or layout errors
   await page.getByLabel('Role for reader@example.com').selectOption('Administrator');
   await page.getByLabel('Interval for reader@example.com').selectOption('60');
   await expect(page.getByText('User interval saved.')).toBeVisible();
+  await expect(page.getByLabel('Role for admin@example.com')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Disable admin@example.com' })).toHaveCount(0);
+  const usersLayout = await page.addStyleTag({ content: '.admin-workspace { grid-template-columns: minmax(0, 1fr) !important; } .admin-subnav { display: none !important; } .admin-notice { display: none !important; }' });
+  await expect(page.locator('section[aria-labelledby="users-title"]')).toHaveScreenshot('user-account-controls.png');
+  await usersLayout.evaluate((style) => style.parentNode?.removeChild(style));
+  const readerRow = page.locator('.admin-table tbody tr').filter({ hasText: 'reader@example.com' });
+  await readerRow.getByRole('button', { name: 'Disable reader@example.com' }).click();
+  await expect(readerRow.getByText(/They are signed out immediately/)).toBeVisible();
+  await readerRow.getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('Account disabled and signed out.')).toBeVisible();
+  await expect(readerRow.getByText('Disabled', { exact: true })).toBeVisible();
+  await page.locator('.admin-table tbody tr').filter({ hasText: 'former@example.com' }).getByRole('button', { name: 'Enable former@example.com' }).click();
+  await expect(page.getByText('Account enabled.')).toBeVisible();
+  await page.getByRole('button', { name: 'Sign out new@example.com everywhere' }).click();
+  await page.locator('.admin-table tbody tr').filter({ hasText: 'new@example.com' }).getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('User signed out on every device.')).toBeVisible();
+  expect(signedOutUsers).toEqual([3]);
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole('button', { name: 'Settings' }).click();
@@ -227,4 +261,46 @@ test('admin workspace visits every section without API, script, or layout errors
   expect(failedRequests, 'The browser UI should have no failed API network requests').toEqual([]);
   expect(pageErrors, 'The page should raise no uncaught JavaScript errors').toEqual([]);
   expect(consoleErrors, 'The browser console should contain no errors').toEqual([]);
+});
+
+test('feed request queue shows the total and loads further pages', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const allRequests = Array.from({ length: 3 }, (_, index) => ({
+    id: index + 1, url: `https://page.example/${index + 1}.xml`, requestedBy: 'reader@example.com', requesters: ['reader@example.com'],
+    folderId: null, folderName: null, title: '', createdAt: '2026-10-26T10:00:00Z',
+  }));
+  const requestedOffsets: number[] = [];
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/api/auth/me') return json({ id: 1, email: 'admin@example.com', role: 'Administrator', refreshIntervalMinutes: null });
+    if (path === '/api/feeds' || path === '/api/folders' || path === '/api/admin/stop-words' || path === '/api/admin/blocked-articles') return json([]);
+    if (path === '/api/articles') return json({ items: [], hasMore: false });
+    if (path === '/api/refresh') return json({ running: false });
+    if (path === '/api/admin/settings') return json({ refreshIntervalMinutes: 15, sharedFeedTTLMinutes: 15, users: [] });
+    if (path === '/api/admin/feed-requests') {
+      // A page size of two stands in for the server default of 100.
+      const offset = Number(url.searchParams.get('offset') ?? '0');
+      requestedOffsets.push(offset);
+      return json({ requests: allRequests.slice(offset, offset + 2), total: allRequests.length });
+    }
+    return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+  });
+
+  await page.goto('/');
+  await page.locator('.profile-menu-sidebar > summary').click();
+  await page.getByRole('button', { name: 'Administration' }).click();
+  await page.getByRole('button', { name: 'Feed requests' }).click();
+  await page.setViewportSize({ width: 360, height: 780 });
+  const section = page.locator('section[aria-labelledby="feed-requests-title"]');
+  await expect(section.locator('.admin-user-count')).toHaveText('3');
+  await expect(section.getByText('Showing 2 of 3 pending requests.')).toBeVisible();
+  await expect(section.getByText('https://page.example/3.xml')).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+  await section.getByRole('button', { name: 'Load more' }).click();
+  await expect(section.getByText('https://page.example/3.xml')).toBeVisible();
+  await expect(section.getByRole('button', { name: 'Load more' })).toHaveCount(0);
+  expect(requestedOffsets).toContain(2);
+  await expectNoHorizontalOverflow(page);
 });

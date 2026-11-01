@@ -99,11 +99,11 @@ func TestQuarantinePersistsPayloadAndDecisions(t *testing.T) {
 	if _, err := s.SubscribeSource(ctx, reader, source, nil); err != nil {
 		t.Fatal(err)
 	}
-	visible, err := s.ListArticlesForUser(ctx, reader, "all", nil, nil, "", nil, 100, 0)
+	visible, err := s.ListArticlesForUser(ctx, reader, "all", nil, nil, "", nil, 100, 0, nil)
 	if err != nil || len(visible) != 1 {
 		t.Fatalf("subscriber articles=%v err=%v", visible, err)
 	}
-	hidden, err := s.ListArticlesForUser(ctx, admin, "all", nil, nil, "", nil, 100, 0)
+	hidden, err := s.ListArticlesForUser(ctx, admin, "all", nil, nil, "", nil, 100, 0, nil)
 	if err != nil || len(hidden) != 0 {
 		t.Fatalf("unsubscribed articles=%v err=%v", hidden, err)
 	}

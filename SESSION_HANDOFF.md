@@ -1,3 +1,40 @@
+# Session handoff — 2026-11-01 (code review fixes, merge to master)
+
+- **State:** `improvements` reviewed as a whole (`master...improvements`); 9 findings confirmed with failing tests and fixed on `review-fix/{rate-limit,parsers-opml,article-feed,feed-requests}`, merged into `improvements`, then `improvements` merged into `master` (not pushed).
+- **Fixes:** sign-in limiter no longer evicts locked/near-limit keys and fails closed when full of locks; RFC 822 dates with 2-digit year/no seconds parse again; OPML parser tracks wrapper elements; OPML import/export use count-free queries; article paging ignores stale load-more after a view change; mark-all-read is bounded by `latestArticleId` (`upToId`) instead of publish date only; repeated feed requests update the requester's intent; `GET /api/admin/feed-requests` now returns `{requests, total}` with `offset` paging (breaking for external clients) and the admin UI shows the true total with "Load more"; dead `Control.IsRunning`/`DiscardEmptySource` removed.
+- **Verified on merged tree:** gofmt/vet/tidy clean, `REQUIRE_INTEGRATION=1 go test ./...` ok; frontend lint, typecheck, unit tests, build ok; Playwright 19/19; compose configs valid.
+- **Known/remaining:** same as the stage 2–9 entry below (CI deferred, no staticcheck/govulncheck/race run, slow common-word phrase search). Mark-read ID bound has a tiny race with in-flight ingest transactions.
+- **Next:** rebuild containers; back up production before upgrading (migration 016 rewrites all articles).
+
+---
+
+# Session handoff — 2026-11-01 (roadmap stages 2–9)
+
+- **State:** all roadmap stages from `docs/2026-11-01-project-review-and-roadmap.md` are implemented. Each stage has its own branch (`stage-2/sign-in-protection` … `stage-9/operations`); all are merged with integration fixes into `improvements` (stacked on `stage-1/quick-fixes` and `docs/project-review-plan`). Nothing is pushed or merged into `master`.
+- **Verified on `improvements` (final tree):** `gofmt -l` empty, `go vet`, `go mod tidy -diff` clean, `REQUIRE_INTEGRATION=1 go test -count=1 ./...` all packages ok; `npm run lint` 0 problems, 66/66 unit tests, typecheck and build ok, `npm audit --omit=dev` 0; Playwright 18/18 on `compose.e2e.yml`; all compose files validate; shellcheck clean; production images build; nginx headers/caching/gzip checked with curl; fresh-DB start applies 001–017; upgrade from a `master`-migrated database (010) with data to 017 succeeds with data intact.
+- **Integration fixes made by the coordinator:** seed test signature after cursor paging; scheduler ignores disabled accounts; dead `ErrFeedRequestPending` removed; production update waits up to 900 s (`DEPLOY_WAIT_TIMEOUT`) and API health start period 900 s for long migration 016; admin users baseline screenshot updated; Nginx forwards/logs `request_id` without query strings; OpenAPI entries for mark-read and OPML routes.
+- **Not done / known:** CI deferred by owner; staticcheck and govulncheck not run (staticcheck `@latest` blocked by permissions, pinned govulncheck crashes on Go 1.27); race detector not run (no cgo in alpine image); slow phrase searches of very common words; running dev containers were not rebuilt. `frontend/dist` and `frontend/test-results` may be root-owned from containers.
+- **Next:** review and merge `improvements` into `master` (suggest reviewing per stage branch), rebuild containers, back up production before the first upgrade (migration 016 rewrites all articles).
+
+---
+
+# Session handoff — 2026-11-01 (stage 1: quick fixes)
+
+- **Done (branch `stage-1/quick-fixes`, stacked on `docs/project-review-plan`):** untracked `backend/api` binary and ignored it (history not rewritten, per decision); dev API no longer runs `go mod tidy` at start and the dev image copies `go.sum`; `AGENTS.md` Go test command now sets `TEST_DATABASE_URL` and `REQUIRE_INTEGRATION=1` (skips become failures); REL-1 robust feed date parsing; SEC-2 dummy-hash Argon2id work for unknown sign-in e-mails; SEC-4 `netip`-based special-purpose range blocklist with NAT64/6to4 unwrapping.
+- **Verified:** against a temporary tmpfs PostgreSQL 18 container: `gofmt -l` clean, `go vet` ok, `go mod tidy -diff` clean, `REQUIRE_INTEGRATION=1 go test -count=1 ./...` all packages ok; `REQUIRE_INTEGRATION=1` without a DSN fails as intended; dev backend image builds; `compose.backend.yml config` ok. Frontend untouched; Playwright not run. Running app containers were not rebuilt.
+- **Next:** stage 2 (sign-in rate limiting, Nginx security headers/CSP, pending-request cap, ESLint) per `docs/2026-11-01-project-review-and-roadmap.md`.
+
+---
+
+# Session handoff — 2026-11-01 (project review and roadmap)
+
+- **Done:** Full project review and phased improvement plan in `docs/2026-11-01-project-review-and-roadmap.md` (findings with IDs, roadmap Phases 0–6, open questions). Branch `docs/project-review-plan`; no application code changed.
+- **Verified:** REL-1 reproduced in `golang:1.27.3` — `Mon, 2 Jan 2006 15:04:05 GMT` and zone-less ISO dates fail all parser layouts. Other findings come from code reading and are not yet covered by tests; no test suites were run (docs-only change).
+- **Next:** Get answers to the document's open questions (§4), then start Milestone A (Phase 0 hygiene and local checks, Phase 1 security, tasks 2.1–2.2), writing a regression test first for each finding.
+- **Decision:** CI is out of scope; add it only when the owner explicitly requests it.
+
+---
+
 # Session handoff — 2026-10-26 (feed article quarantine)
 
 - **Done:** Added stop-word article quarantine with complete feed payloads, reversible Administrator decisions, and promotion to the shared source article table at the original publication time. Visibility remains limited to users subscribed to that source. Added moderation API/UI, translations, migration history, and an admin Playwright screenshot.

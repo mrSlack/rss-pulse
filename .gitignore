@@ -14,6 +14,7 @@ frontend/*.tsbuildinfo
 /frontend/.last-run.json
 backend/*.log
 backend/pulse-reader
+/backend/api
 data/postgres/*
 !data/postgres/.gitkeep
 data/postgres-production/*

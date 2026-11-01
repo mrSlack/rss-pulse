@@ -32,13 +32,15 @@ services:
       INITIAL_ADMIN_EMAIL: admin@pulse.test
       INITIAL_ADMIN_PASSWORD: test-only-admin-password-2026
       SESSION_COOKIE_SECURE: "false"
+      ARTICLE_RETENTION_DAYS: "180"
+      QUARANTINE_RETENTION_DAYS: "90"
     volumes:
       - ./backend:/workspace/backend
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/api/health/ready >/dev/null || exit 1"]
       interval: 5s
       timeout: 4s
       retries: 20

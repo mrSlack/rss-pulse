@@ -19,6 +19,17 @@ type User struct {
 	FirstName              string `json:"firstName"`
 	LastName               string `json:"lastName"`
 	Nickname               string `json:"nickname"`
+	// Disabled accounts cannot sign in; DisabledAt is when that happened.
+	Disabled   bool       `json:"disabled"`
+	DisabledAt *time.Time `json:"disabledAt"`
+}
+
+// UserAdminUpdate lists the administrator-editable account fields. Nil fields are unchanged.
+type UserAdminUpdate struct {
+	Role           *string
+	UpdateInterval bool
+	Interval       *int
+	Disabled       *bool
 }
 
 type AdminSettings struct {
@@ -34,8 +45,9 @@ func validEmail(value string) bool {
 func (s *Store) UserCredentialByEmail(ctx context.Context, email string) (User, string, error) {
 	var user User
 	var passwordHash string
-	err := s.pool.QueryRow(ctx, `SELECT id,email,role,refresh_interval_minutes,first_name,last_name,nickname,password_hash FROM users WHERE LOWER(email)=$1`, strings.ToLower(strings.TrimSpace(email))).
-		Scan(&user.ID, &user.Email, &user.Role, &user.RefreshIntervalMinutes, &user.FirstName, &user.LastName, &user.Nickname, &passwordHash)
+	err := s.pool.QueryRow(ctx, `SELECT id,email,role,refresh_interval_minutes,first_name,last_name,nickname,disabled_at,password_hash FROM users WHERE LOWER(email)=$1`, strings.ToLower(strings.TrimSpace(email))).
+		Scan(&user.ID, &user.Email, &user.Role, &user.RefreshIntervalMinutes, &user.FirstName, &user.LastName, &user.Nickname, &user.DisabledAt, &passwordHash)
+	user.Disabled = user.DisabledAt != nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, "", ErrNotFound
 	}
@@ -47,12 +59,12 @@ func (s *Store) CreateSession(ctx context.Context, userID int64, tokenHash strin
 	return err
 }
 
+// UserForSession is on every authenticated request and must stay read-only; expired
+// sessions are rejected by the predicate and removed by the maintenance job. Disabled
+// accounts are rejected too, even though disabling also deletes their sessions.
 func (s *Store) UserForSession(ctx context.Context, tokenHash string) (User, error) {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= NOW()`); err != nil {
-		return User{}, err
-	}
 	var user User
-	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.role,u.refresh_interval_minutes,u.first_name,u.last_name,u.nickname FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>NOW()`, tokenHash).
+	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.role,u.refresh_interval_minutes,u.first_name,u.last_name,u.nickname FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>NOW() AND u.disabled_at IS NULL`, tokenHash).
 		Scan(&user.ID, &user.Email, &user.Role, &user.RefreshIntervalMinutes, &user.FirstName, &user.LastName, &user.Nickname)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -92,7 +104,7 @@ func (s *Store) ChangeUserPassword(ctx context.Context, userID int64, passwordHa
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,email,role,refresh_interval_minutes FROM users ORDER BY LOWER(email),id`)
+	rows, err := s.pool.Query(ctx, `SELECT id,email,role,refresh_interval_minutes,disabled_at FROM users ORDER BY LOWER(email),id`)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +112,10 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	users := make([]User, 0)
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.Email, &user.Role, &user.RefreshIntervalMinutes); err != nil {
+		if err := rows.Scan(&user.ID, &user.Email, &user.Role, &user.RefreshIntervalMinutes, &user.DisabledAt); err != nil {
 			return nil, err
 		}
+		user.Disabled = user.DisabledAt != nil
 		users = append(users, user)
 	}
 	return users, rows.Err()
@@ -121,7 +134,11 @@ func (s *Store) CreateUser(ctx context.Context, email, passwordHash, role string
 	return user, err
 }
 
-func (s *Store) UpdateUserRole(ctx context.Context, userID int64, role string) error {
+// UpdateUserAdmin applies an administrator's account changes. The last active
+// (enabled) Administrator can neither be demoted nor disabled. Changing the role or
+// disabling the account deletes all of that user's sessions in the same transaction,
+// so the new role or the block takes effect on the next request.
+func (s *Store) UpdateUserAdmin(ctx context.Context, userID int64, update UserAdminUpdate, actorID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -131,44 +148,24 @@ func (s *Store) UpdateUserRole(ctx context.Context, userID int64, role string) e
 		return err
 	}
 	var currentRole string
-	if err := tx.QueryRow(ctx, `SELECT role FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&currentRole); errors.Is(err, pgx.ErrNoRows) {
+	var currentlyDisabled bool
+	if err := tx.QueryRow(ctx, `SELECT role,disabled_at IS NOT NULL FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&currentRole, &currentlyDisabled); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
-	if currentRole == "Administrator" && role != "Administrator" {
+	nextRole, nextDisabled := currentRole, currentlyDisabled
+	if update.Role != nil {
+		nextRole = *update.Role
+	}
+	if update.Disabled != nil {
+		nextDisabled = *update.Disabled
+	}
+	wasActiveAdministrator := currentRole == "Administrator" && !currentlyDisabled
+	staysActiveAdministrator := nextRole == "Administrator" && !nextDisabled
+	if wasActiveAdministrator && !staysActiveAdministrator {
 		var administrators int
-		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role='Administrator'`).Scan(&administrators); err != nil {
-			return err
-		}
-		if administrators <= 1 {
-			return ErrLastAdministrator
-		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE users SET role=$2,updated_at=NOW() WHERE id=$1`, userID, role); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *Store) UpdateUserAdmin(ctx context.Context, userID int64, role *string, updateInterval bool, interval *int) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(2026102403)`); err != nil {
-		return err
-	}
-	var currentRole string
-	if err := tx.QueryRow(ctx, `SELECT role FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&currentRole); errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	} else if err != nil {
-		return err
-	}
-	if role != nil && currentRole == "Administrator" && *role != "Administrator" {
-		var administrators int
-		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role='Administrator'`).Scan(&administrators); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role='Administrator' AND disabled_at IS NULL`).Scan(&administrators); err != nil {
 			return err
 		}
 		if administrators <= 1 {
@@ -176,23 +173,39 @@ func (s *Store) UpdateUserAdmin(ctx context.Context, userID int64, role *string,
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE users SET
-		role=COALESCE($2,role),
+		role=$2,
 		refresh_interval_minutes=CASE WHEN $3 THEN $4 ELSE refresh_interval_minutes END,
-		updated_at=NOW() WHERE id=$1`, userID, role, updateInterval, interval); err != nil {
+		disabled_at=CASE WHEN NOT $5 THEN NULL WHEN disabled_at IS NULL THEN NOW() ELSE disabled_at END,
+		disabled_by_user_id=CASE WHEN NOT $5 THEN NULL WHEN disabled_at IS NULL THEN $6 ELSE disabled_by_user_id END,
+		updated_at=NOW() WHERE id=$1`, userID, nextRole, update.UpdateInterval, update.Interval, nextDisabled, actorID); err != nil {
 		return err
+	}
+	if nextRole != currentRole || (nextDisabled && !currentlyDisabled) {
+		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, userID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
 
-func (s *Store) UpdateUserRefreshInterval(ctx context.Context, userID int64, interval *int) error {
-	command, err := s.pool.Exec(ctx, `UPDATE users SET refresh_interval_minutes=$2,updated_at=NOW() WHERE id=$1`, userID, interval)
+// RevokeUserSessions signs a user out everywhere by deleting all of their sessions.
+func (s *Store) RevokeUserSessions(ctx context.Context, userID int64) error {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() == 0 {
+	defer tx.Rollback(ctx)
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1)`, userID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
 		return ErrNotFound
 	}
-	return nil
+	if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) GetAdminSettings(ctx context.Context) (AdminSettings, error) {

@@ -26,11 +26,15 @@ func FindStopWordMatch(text string, terms []string) string {
 	if words == "" {
 		return ""
 	}
+	// Normalized text and terms are words separated by single spaces, so a whole-word
+	// match is a substring match with a space on both sides. The spaces are ASCII, so a
+	// byte match in UTF-8 always starts and ends on rune boundaries.
+	padded := " " + words + " "
 	for _, term := range terms {
 		if term == "" {
 			continue
 		}
-		if containsPhrase(words, term) {
+		if strings.Contains(padded, " "+term+" ") {
 			return term
 		}
 	}
@@ -66,25 +70,4 @@ func normalizeWords(value string) string {
 		}
 	}
 	return strings.TrimSpace(result.String())
-}
-
-func containsPhrase(text, phrase string) bool {
-	textRunes := []rune(" " + text + " ")
-	phraseRunes := []rune(" " + phrase + " ")
-	if len(phraseRunes) > len(textRunes) {
-		return false
-	}
-	for i := 0; i <= len(textRunes)-len(phraseRunes); i++ {
-		match := true
-		for j := range phraseRunes {
-			if textRunes[i+j] != phraseRunes[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import './i18n';
@@ -11,13 +11,12 @@ type ArticleDrawerProps = {
 export function ArticleDrawer({ children, onClose }: ArticleDrawerProps) {
   const { t } = useTranslation();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const previouslyFocused = useRef<HTMLElement | null>(null);
+  // Captured once, during the first render, before the drawer takes focus.
+  const [previouslyFocused] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  if (previouslyFocused.current === null && document.activeElement instanceof HTMLElement) {
-    previouslyFocused.current = document.activeElement;
-  }
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -49,9 +48,9 @@ export function ArticleDrawer({ children, onClose }: ArticleDrawerProps) {
     return () => {
       window.removeEventListener('keydown', handleKeys);
       document.body.style.overflow = previousOverflow;
-      if (previouslyFocused.current?.isConnected) previouslyFocused.current.focus();
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
-  }, []);
+  }, [previouslyFocused]);
 
   return createPortal((
     <div className="article-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>

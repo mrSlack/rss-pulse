@@ -6,26 +6,39 @@ type MockOptions = {
   feedLimitScenario?: boolean;
 };
 
-function articlesBetween(offset: number, limit: number, articleCount: number) {
-  return Array.from({ length: Math.max(0, Math.min(limit, articleCount - offset)) }, (_, index) => {
-    const number = offset + index + 1;
-    return {
-      id: number,
-      feedId: 1,
-      feedTitle: 'The Daily Signal',
-      feedUrl: 'https://example.com/feed.xml',
-      title: `A considered headline for article ${number}`,
-      url: `https://example.com/articles/${number}`,
-      summary: 'A short, stable summary used to keep visual snapshots repeatable.',
-      publishedAt: `2026-04-15T11:${String(59 - index).padStart(2, '0')}:00Z`,
-      isRead: number === 2,
-      isSaved: number === 3,
-    };
-  });
+function mockArticle(number: number, readNumbers: Set<number>) {
+  return {
+    id: number,
+    feedId: 1,
+    feedTitle: 'The Daily Signal',
+    feedUrl: 'https://example.com/feed.xml',
+    title: `A considered headline for article ${number}`,
+    url: `https://example.com/articles/${number}`,
+    summary: 'A short, stable summary used to keep visual snapshots repeatable.',
+    publishedAt: `2026-04-15T11:${String(Math.max(0, 60 - number)).padStart(2, '0')}:00Z`,
+    isRead: readNumbers.has(number),
+    isSaved: number === 3,
+  };
+}
+
+// Mimics the API's keyset paging: articles are ordered newest first (by
+// ascending number here), and `before=c<number>` returns only articles after
+// that one, evaluated against the current server-side read state.
+function articlePage(url: URL, articleCount: number, readNumbers: Set<number>) {
+  const limit = Number(url.searchParams.get('limit') || 20);
+  const before = url.searchParams.get('before');
+  const after = before ? Number(before.slice(1)) : 0;
+  const matching = Array.from({ length: articleCount }, (_, index) => index + 1)
+    .filter((number) => number > after)
+    .filter((number) => url.searchParams.get('filter') !== 'unread' || !readNumbers.has(number));
+  const items = matching.slice(0, limit).map((number) => mockArticle(number, readNumbers));
+  const hasMore = matching.length > limit;
+  return { items, hasMore, nextCursor: hasMore ? `c${items[items.length - 1].id}` : null, latestArticleId: articleCount };
 }
 
 async function prepareReader(page: Page, options: MockOptions = {}) {
   const articleCount = options.articleCount ?? 3;
+  const readNumbers = new Set<number>([2]);
   let feeds: Array<{ id: number; title: string; url: string; folderId: number | null; folderName: string | null; unreadCount: number; lastCheckedAt: string; lastError: string | null }> = options.feedLimitScenario ? [] : [{
     id: 1,
     title: 'The Daily Signal',
@@ -96,11 +109,14 @@ async function prepareReader(page: Page, options: MockOptions = {}) {
         status = 503;
         body = { code: 'test.articles_unavailable', error: 'Articles are temporarily unavailable.' };
       } else {
-        const offset = Number(url.searchParams.get('offset') || 0);
-        const limit = Number(url.searchParams.get('limit') || 20);
-        const items = articlesBetween(offset, limit, articleCount);
-        body = { items, hasMore: offset + items.length < articleCount };
+        body = articlePage(url, articleCount, readNumbers);
       }
+    } else if (/\/articles\/\d+$/.test(path) && route.request().method() === 'PATCH') {
+      const id = Number(path.split('/').pop());
+      const update = route.request().postDataJSON() as { isRead?: boolean };
+      if (update.isRead === true) readNumbers.add(id);
+      if (update.isRead === false) readNumbers.delete(id);
+      body = mockArticle(id, readNumbers);
     } else if (path.endsWith('/refresh')) {
       body = { running: false };
     }
@@ -343,15 +359,146 @@ test('article loading errors match the visible error notification', async ({ pag
 test('scrolling near the end automatically loads the next 20 articles', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await prepareReader(page, { articleCount: 25 });
-  const offsets: string[] = [];
+  const cursors: Array<string | null> = [];
   page.on('request', (request) => {
     if (new URL(request.url()).pathname.endsWith('/articles')) {
-      offsets.push(new URL(request.url()).searchParams.get('offset') || '0');
+      cursors.push(new URL(request.url()).searchParams.get('before'));
     }
   });
   await page.goto('/');
   await expect(page.locator('.article-card')).toHaveCount(20);
   await page.locator('.load-more-wrap').scrollIntoViewIfNeeded();
   await expect(page.locator('.article-card')).toHaveCount(25);
-  expect(offsets).toContain('20');
+  expect(cursors).toEqual([null, 'c20']);
+});
+
+test('the unread view keeps every unread article when some are read between pages', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page, { articleCount: 45 });
+  const articleRequests: URL[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/articles')) articleRequests.push(url);
+  });
+  await page.goto('/');
+  const cards = page.locator('.article-card');
+  await expect(cards).toHaveCount(20);
+  await page.getByRole('region', { name: 'Article list' }).getByRole('button', { name: 'Unread', exact: true }).click();
+  await expect(page.locator('.unread-toggle.checked')).toBeVisible();
+  await expect.poll(() => articleRequests.filter((url) => url.searchParams.get('filter') === 'unread').length).toBe(1);
+  await expect(cards).toHaveCount(20);
+  await expect(cards.nth(1)).toContainText('article 3');
+  await expect(cards.first()).toContainText('article 1');
+
+  for (let index = 0; index < 6; index += 1) {
+    await cards.nth(index).getByRole('button', { name: 'Mark as read' }).click();
+    await expect(cards.nth(index).getByRole('button', { name: 'Mark as unread' })).toBeVisible();
+  }
+  await expect(cards).toHaveCount(20);
+
+  await page.locator('.load-more-wrap').scrollIntoViewIfNeeded();
+  await expect(cards).toHaveCount(40);
+  await page.locator('.load-more-wrap').scrollIntoViewIfNeeded();
+  await expect(cards).toHaveCount(44);
+  await expect(page.locator('.load-more-wrap')).toHaveCount(0);
+
+  const titles = await cards.locator('h2').allTextContents();
+  const numbers = titles.map((title) => Number(title.match(/article (\d+)$/)?.[1]));
+  const expected = Array.from({ length: 45 }, (_, index) => index + 1).filter((number) => number !== 2);
+  expect(numbers).toEqual(expected);
+  const listRequests = articleRequests.filter((url) => url.searchParams.get('filter') === 'unread');
+  expect(listRequests.map((url) => url.searchParams.get('before'))).toEqual([null, 'c21', 'c41']);
+  expect(listRequests.every((url) => !url.searchParams.has('offset'))).toBe(true);
+});
+
+test('mark all as read marks the current view up to the articles that existed when it loaded', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page);
+  let markBody: unknown;
+  await page.route('**/api/articles/mark-read', async (route) => {
+    markBody = route.request().postDataJSON();
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ marked: 2 }) });
+  });
+  const articleRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.endsWith('/articles')) articleRequests.push(request.url());
+  });
+  await page.goto('/');
+  await expect(page.locator('.article-card.unread')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Mark all as read' }).click();
+  await expect(page.locator('.article-card.unread')).toHaveCount(0);
+  await expect(page.locator('.article-card')).toHaveCount(3);
+  expect(markBody).toEqual({ filter: 'all', upToId: 3 });
+  expect(articleRequests).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Mark all as read' })).toBeDisabled();
+});
+
+test('keyboard shortcuts move through articles and open the help dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page);
+  await page.goto('/');
+  await expect(page.locator('.article-card')).toHaveCount(3);
+
+  await page.keyboard.press('j');
+  const reader = page.getByRole('dialog', { name: 'Article' });
+  await expect(reader.getByRole('heading', { name: 'A considered headline for article 1' })).toBeVisible();
+  await page.keyboard.press('j');
+  await expect(reader.getByRole('heading', { name: 'A considered headline for article 2' })).toBeVisible();
+  await page.keyboard.press('k');
+  await expect(reader.getByRole('heading', { name: 'A considered headline for article 1' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(reader).toBeHidden();
+
+  await page.keyboard.press('/');
+  const search = page.getByRole('textbox', { name: 'Search articles' });
+  await expect(search).toBeFocused();
+  await page.keyboard.type('jk');
+  await expect(search).toHaveValue('jk');
+  await expect(reader).toBeHidden();
+  await search.fill('');
+  await search.blur();
+
+  await page.keyboard.press('?');
+  const help = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+  await expect(help).toBeVisible();
+  await expect(help.getByRole('button', { name: 'Close' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(help.getByRole('button', { name: 'Close' })).toBeFocused();
+  await expect(page).toHaveScreenshot('keyboard-shortcuts.png', { fullPage: true });
+  await page.keyboard.press('j');
+  await expect(reader).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect(help).toBeHidden();
+});
+
+test('subscriptions can be exported and imported as OPML', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await prepareReader(page);
+  let importRequest: { contentType: string | undefined; body: string | null } | undefined;
+  await page.route('**/api/opml', async (route) => {
+    importRequest = { contentType: route.request().headers()['content-type'], body: route.request().postData() };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ subscribed: 1, requested: 2, skipped: 1, failed: [{ url: 'not a url', reason: 'feed.url_invalid' }] }),
+    });
+  });
+  await page.goto('/');
+  await page.locator('.profile-menu-topbar > summary').click();
+  const menu = page.locator('.profile-menu-topbar .profile-dropdown');
+  await expect(menu.getByRole('link', { name: 'Export subscriptions' })).toHaveAttribute('href', '/api/opml');
+  await menu.getByRole('button', { name: 'Import subscriptions' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Import subscriptions' });
+  const opmlDocument = '<?xml version="1.0"?><opml version="2.0"><body><outline text="News"><outline text="Feed" xmlUrl="https://example.org/rss"/></outline></body></opml>';
+  await dialog.getByLabel('OPML file').setInputFiles({ name: 'feeds.opml', mimeType: 'text/x-opml', buffer: Buffer.from(opmlDocument) });
+  await dialog.getByRole('button', { name: 'Import' }).click();
+
+  const summary = dialog.getByRole('status');
+  await expect(summary).toContainText('1 feed added to your library.');
+  await expect(summary).toContainText('2 feeds sent for administrator approval.');
+  await expect(summary).toContainText('1 feed skipped');
+  await expect(summary).toContainText('not a url — Enter a valid HTTP or HTTPS feed URL.');
+  expect(importRequest).toEqual({ contentType: 'text/x-opml', body: opmlDocument });
 });

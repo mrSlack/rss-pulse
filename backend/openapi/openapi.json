@@ -1,0 +1,4149 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Pulse API",
+    "version": "1.0.0",
+    "description": "HTTP API of the Pulse RSS reader, served under `/api` behind Nginx. All request and response bodies are JSON. Authentication uses the HttpOnly `pulse_session` cookie set by `POST /api/auth/login`. Requests other than GET, HEAD and OPTIONS must carry an `Origin` (or `Referer`) header of the same host, otherwise they fail with 403 `auth.same_origin`. Request bodies are limited to 1 MiB, must be one JSON object, and must not contain unknown fields. Every response carries an `X-Request-ID` header, which also appears in the access log. Errors use the `Error` object; its `code` is stable and translated by the frontend. Each error response lists its codes in `x-error-codes`. `backend/test/internal/httpapi/openapi_test.go` fails when this file and the routes registered in `httpapi.New` differ."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health"
+    },
+    {
+      "name": "Authentication"
+    },
+    {
+      "name": "Library"
+    },
+    {
+      "name": "Articles"
+    },
+    {
+      "name": "Refresh"
+    },
+    {
+      "name": "Administration"
+    },
+    {
+      "name": "Moderation"
+    }
+  ],
+  "paths": {
+    "/api/health/live": {
+      "get": {
+        "summary": "Liveness probe",
+        "tags": [
+          "Health"
+        ],
+        "description": "Reports that the process is up. Does not contact the database.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/ready": {
+      "get": {
+        "summary": "Readiness probe",
+        "tags": [
+          "Health"
+        ],
+        "description": "Pings the database with a 2-second timeout. Compose health checks use this endpoint.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database did not answer within 2 seconds. Error codes: `system.database_unavailable`.",
+            "x-error-codes": [
+              "system.database_unavailable"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Readiness probe (compatibility alias)",
+        "tags": [
+          "Health"
+        ],
+        "description": "Alias of `GET /api/health/ready`, kept for existing monitors.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database did not answer within 2 seconds. Error codes: `system.database_unavailable`.",
+            "x-error-codes": [
+              "system.database_unavailable"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "summary": "Sign in",
+        "tags": [
+          "Authentication"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in. Sets the `pulse_session` cookie.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "`pulse_session` HttpOnly, SameSite=Strict session cookie (14 days).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `auth.invalid_login_request`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "auth.invalid_login_request"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong email address or password (indistinguishable). Error codes: `auth.invalid_credentials`.",
+            "x-error-codes": [
+              "auth.invalid_credentials"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden. Error codes: `auth.same_origin`, `auth.account_disabled`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.account_disabled"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in attempts for this account or client address. Error codes: `auth.rate_limited`.",
+            "x-error-codes": [
+              "auth.rate_limited"
+            ],
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the next attempt is allowed.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `auth.account_check_failed`, `auth.session_create_failed`.",
+            "x-error-codes": [
+              "auth.account_check_failed",
+              "auth.session_create_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Sign out",
+        "tags": [
+          "Authentication"
+        ],
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "Signed out; the session cookie is cleared."
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The session could not be revoked. Error codes: `auth.sign_out_failed`.",
+            "x-error-codes": [
+              "auth.sign_out_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "summary": "Current user",
+        "tags": [
+          "Authentication"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The signed-in user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `auth.session_check_failed`.",
+            "x-error-codes": [
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/profile": {
+      "put": {
+        "summary": "Update own profile",
+        "tags": [
+          "Authentication"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "firstName": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "lastName": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "nickname": {
+                    "type": "string",
+                    "maxLength": 40
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `profile.fields_too_long`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "profile.fields_too_long"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found. Error codes: `user.not_found`.",
+            "x-error-codes": [
+              "user.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `profile.save_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "profile.save_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/password": {
+      "post": {
+        "summary": "Change own password",
+        "tags": [
+          "Authentication"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "currentPassword",
+                  "newPassword"
+                ],
+                "properties": {
+                  "currentPassword": {
+                    "type": "string"
+                  },
+                  "newPassword": {
+                    "type": "string",
+                    "minLength": 12
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Password changed; every other session of the user is revoked."
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `auth.password_too_short`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "auth.password_too_short"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden. Error codes: `auth.same_origin`, `auth.current_password_incorrect`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.current_password_incorrect"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `auth.password_change_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "auth.password_change_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/folders": {
+      "get": {
+        "summary": "List own folders",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Folders with unread counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Folder"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `folder.load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "folder.load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a folder",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created folder.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Folder"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `folder.name_invalid`, `folder.color_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "folder.name_invalid",
+              "folder.color_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Name already used. Error codes: `folder.name_taken`.",
+            "x-error-codes": [
+              "folder.name_taken"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `folder.create_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "folder.create_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/folders/{id}": {
+      "patch": {
+        "summary": "Rename or recolor a folder",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Folder ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated folder.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Folder"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `folder.id_invalid`, `folder.name_invalid`, `folder.color_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "folder.id_invalid",
+              "folder.name_invalid",
+              "folder.color_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Folder not found or not owned. Error codes: `folder.not_found`.",
+            "x-error-codes": [
+              "folder.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Name already used. Error codes: `folder.name_taken`.",
+            "x-error-codes": [
+              "folder.name_taken"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `folder.update_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "folder.update_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a folder",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Folder ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "delete_sources",
+                      "move_sources"
+                    ],
+                    "description": "`delete_sources` unsubscribes the folder's feeds; `move_sources` moves them to `targetFolderId`."
+                  },
+                  "targetFolderId": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int64",
+                    "description": "Required for `move_sources`; another folder of the user."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Done; no body."
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `folder.id_invalid`, `folder.target_unavailable`, `folder.delete_action_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "folder.id_invalid",
+              "folder.target_unavailable",
+              "folder.delete_action_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Folder not found or not owned. Error codes: `folder.not_found`.",
+            "x-error-codes": [
+              "folder.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `folder.delete_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "folder.delete_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/feeds": {
+      "get": {
+        "summary": "List own subscriptions",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscriptions with unread counts and refresh state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Feed"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `feed.load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "feed.load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Subscribe to a feed or request approval",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048
+                  },
+                  "folderId": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int64"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Subscribed to an already approved source.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Feed"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The URL is not an approved source yet; an Administrator must approve the request first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFeedRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `feed.url_too_long`, `feed.url_required`, `feed.url_invalid`, `folder.unavailable`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "feed.url_too_long",
+              "feed.url_required",
+              "feed.url_invalid",
+              "folder.unavailable"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate or limit reached. Error codes: `feed.already_added`, `feed.limit_reached`, `feed.request_limit_reached`.",
+            "x-error-codes": [
+              "feed.already_added",
+              "feed.limit_reached",
+              "feed.request_limit_reached"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `feed.save_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "feed.save_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/feeds/{id}": {
+      "patch": {
+        "summary": "Rename, move or change the URL of a subscription",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Subscription ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "title",
+                  "url"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048
+                  },
+                  "folderId": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int64"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated subscription. A changed URL is fetched in the background.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Feed"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The URL is not an approved source yet; an Administrator must approve the request first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFeedRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `feed.id_invalid`, `feed.title_invalid`, `feed.url_too_long`, `feed.url_required`, `feed.url_invalid`, `folder.unavailable`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "feed.id_invalid",
+              "feed.title_invalid",
+              "feed.url_too_long",
+              "feed.url_required",
+              "feed.url_invalid",
+              "folder.unavailable"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found or not owned. Error codes: `feed.not_found`.",
+            "x-error-codes": [
+              "feed.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate or request limit reached. Error codes: `feed.already_added`, `feed.request_limit_reached`.",
+            "x-error-codes": [
+              "feed.already_added",
+              "feed.request_limit_reached"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `feed.update_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "feed.update_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/articles": {
+      "get": {
+        "summary": "List articles",
+        "tags": [
+          "Articles"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "unread",
+                "today",
+                "saved"
+              ],
+              "default": "all"
+            }
+          },
+          {
+            "name": "feedId",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "folderId",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive search in title and summary (at most 200 characters).",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only articles published at or after this RFC 3339 time (used by the `today` view).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Opaque cursor from `nextCursor` of the previous page. Cannot be combined with `offset`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Deprecated offset paging; use `before`.",
+            "deprecated": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of articles, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArticlePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filter, search, date or paging parameter. Error codes: `article.filter_invalid`, `feed.id_invalid`, `folder.id_invalid`, `article.search_too_long`, `article.date_invalid`, `article.limit_invalid`, `article.pagination_conflict`, `article.cursor_invalid`, `article.offset_invalid`.",
+            "x-error-codes": [
+              "article.filter_invalid",
+              "feed.id_invalid",
+              "folder.id_invalid",
+              "article.search_too_long",
+              "article.date_invalid",
+              "article.limit_invalid",
+              "article.pagination_conflict",
+              "article.cursor_invalid",
+              "article.offset_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `article.load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "article.load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/articles/{id}": {
+      "patch": {
+        "summary": "Mark an article read/unread or saved/unsaved",
+        "tags": [
+          "Articles"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Article ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "isRead": {
+                    "type": "boolean"
+                  },
+                  "isSaved": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated article.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Article"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `article.id_invalid`, `article.update_missing`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "article.id_invalid",
+              "article.update_missing"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Article not visible to the user. Error codes: `article.not_found`.",
+            "x-error-codes": [
+              "article.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `article.update_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "article.update_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/articles/mark-read": {
+      "post": {
+        "summary": "Mark every article of the current view as read",
+        "description": "Marks read, for the signed-in user, every article that `GET /api/articles` would return for the same `filter`, `feedId`, `folderId`, `q`, and `since`, limited to articles with an ID at or below `upToId` (the `latestArticleId` of the loaded list) and/or published at or before `upTo`, so articles that arrived later stay unread. At least one bound is required.",
+        "tags": [
+          "Articles"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "filter": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "all",
+                      "unread",
+                      "today",
+                      "saved"
+                    ],
+                    "description": "Empty means `all`."
+                  },
+                  "feedId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                  },
+                  "folderId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                  },
+                  "q": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Search text, at most 200 characters after trimming."
+                  },
+                  "since": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Start of the day for the `today` filter."
+                  },
+                  "upTo": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Only articles published at or before this time are marked. Required unless `upToId` is given."
+                  },
+                  "upToId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0,
+                    "description": "Only articles with an ID at or below this value are marked: the `latestArticleId` of the loaded list, so articles ingested later stay unread whatever their publication date. With `upTo`, both bounds apply."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Number of articles that changed from unread to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "marked"
+                  ],
+                  "properties": {
+                    "marked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `article.filter_invalid`, `feed.id_invalid`, `folder.id_invalid`, `article.search_too_long`, `article.date_invalid`, `article.id_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "article.filter_invalid",
+              "feed.id_invalid",
+              "folder.id_invalid",
+              "article.search_too_long",
+              "article.date_invalid",
+              "article.id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `article.mark_read_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "article.mark_read_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/refresh": {
+      "get": {
+        "summary": "Manual refresh status",
+        "tags": [
+          "Refresh"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether the user's manual refresh is queued or running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "running"
+                  ],
+                  "properties": {
+                    "running": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `auth.session_check_failed`.",
+            "x-error-codes": [
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Refresh own subscriptions now",
+        "tags": [
+          "Refresh"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Refresh queued (or already queued).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `auth.session_check_failed`.",
+            "x-error-codes": [
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/opml": {
+      "get": {
+        "summary": "Export the user's subscriptions as OPML 2.0",
+        "description": "Feeds without a folder come first, then one outline group per folder; feeds are sorted by personal title. Each feed outline has `text`/`title` (personal title), `type=\"rss\"`, and `xmlUrl` (source URL).",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OPML document, served as an attachment named `pulse-subscriptions.opml` with `Cache-Control: no-store`.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`attachment; filename=\"pulse-subscriptions.opml\"`"
+              }
+            },
+            "content": {
+              "text/x-opml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `opml.export_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "opml.export_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Import subscriptions from an OPML document",
+        "description": "The raw OPML document is the request body (at most 1 MiB, 1,000 outlines, nesting depth 5). Outlines with `xmlUrl` are feeds; the nearest ancestor outline without `xmlUrl` names the folder (created if missing, matched case-insensitively). Feeds of already approved sources are subscribed directly; unknown URLs become approval requests, subject to the 10 pending requests and 100 subscriptions limits. Feeds the user already follows are skipped.",
+        "tags": [
+          "Library"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/x-opml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "application/xml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/xml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Import summary. `failed` lists at most 100 entries; `reason` is one of `feed.url_invalid`, `feed.url_too_long`, `feed.limit_reached`, `feed.request_limit_reached`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "subscribed",
+                    "requested",
+                    "skipped",
+                    "failed"
+                  ],
+                  "properties": {
+                    "subscribed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "requested": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skipped": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "failed": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "url",
+                          "reason"
+                        ],
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a valid OPML subscription list (malformed XML, root other than `<opml>`, more than 1,000 outlines, or nesting deeper than 5). Error codes: `opml.invalid`.",
+            "x-error-codes": [
+              "opml.invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request. Error codes: `auth.same_origin`.",
+            "x-error-codes": [
+              "auth.same_origin"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The document is larger than 1 MiB. Error codes: `opml.too_large`.",
+            "x-error-codes": [
+              "opml.too_large"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Content-Type; use `text/x-opml`, `application/xml`, or `text/xml`. Error codes: `opml.content_type_invalid`.",
+            "x-error-codes": [
+              "opml.content_type_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `opml.import_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "opml.import_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "summary": "List users",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an Administrator. Error codes: `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.users_load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.users_load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a user",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "email",
+                  "password",
+                  "role"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12
+                  },
+                  "role": {
+                    "$ref": "#/components/schemas/Role"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `admin.user_input_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "admin.user_input_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already used. Error codes: `admin.email_already_exists`.",
+            "x-error-codes": [
+              "admin.email_already_exists"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.user_create_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.user_create_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{id}": {
+      "patch": {
+        "summary": "Change role, refresh interval or disabled state",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "User ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "role": {
+                    "$ref": "#/components/schemas/Role"
+                  },
+                  "refreshIntervalMinutes": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 5,
+                    "maximum": 1440,
+                    "description": "`null` inherits the global interval."
+                  },
+                  "disabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated user. Role changes and disabling revoke the user's sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `admin.user_id_invalid`, `admin.role_invalid`, `admin.user_interval_invalid`, `admin.disabled_invalid`, `admin.user_field_unknown`, `admin.user_update_missing`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "admin.user_id_invalid",
+              "admin.role_invalid",
+              "admin.user_interval_invalid",
+              "admin.disabled_invalid",
+              "admin.user_field_unknown",
+              "admin.user_update_missing"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found. Error codes: `user.not_found`.",
+            "x-error-codes": [
+              "user.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would lock out the actor or remove the last active Administrator. Error codes: `admin.cannot_disable_self`, `admin.cannot_change_own_role`, `admin.last_administrator`.",
+            "x-error-codes": [
+              "admin.cannot_disable_self",
+              "admin.cannot_change_own_role",
+              "admin.last_administrator"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.user_save_failed`, `admin.user_load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.user_save_failed",
+              "admin.user_load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{id}/sign-out": {
+      "post": {
+        "summary": "Sign a user out everywhere",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "User ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "All sessions revoked. Signing yourself out also clears your cookie."
+          },
+          "400": {
+            "description": "Invalid ID. Error codes: `admin.user_id_invalid`.",
+            "x-error-codes": [
+              "admin.user_id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found. Error codes: `user.not_found`.",
+            "x-error-codes": [
+              "user.not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.user_sign_out_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.user_sign_out_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/settings": {
+      "get": {
+        "summary": "Read global settings",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Global intervals and the user list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdminSettings"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "users"
+                      ],
+                      "properties": {
+                        "users": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/User"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an Administrator. Error codes: `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.settings_load_failed`, `admin.users_load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.settings_load_failed",
+              "admin.users_load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Change global settings",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `admin.intervals_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "admin.intervals_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.settings_save_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.settings_save_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/feed-requests": {
+      "get": {
+        "summary": "List pending feed requests",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of pending requests to skip (oldest first).",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of pending requests, oldest first, and the total number of pending requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requests",
+                    "total"
+                  ],
+                  "properties": {
+                    "requests": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/FeedRequest"
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of pending requests, independent of limit and offset."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or offset. Error codes: `feed.requests_limit_invalid`, `feed.requests_offset_invalid`.",
+            "x-error-codes": [
+              "feed.requests_limit_invalid",
+              "feed.requests_offset_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an Administrator. Error codes: `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `feed.requests_load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "feed.requests_load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/feed-requests/{id}/approve": {
+      "post": {
+        "summary": "Approve a feed request",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Feed request ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Approved; the source is created and every requester is subscribed where possible."
+          },
+          "400": {
+            "description": "Invalid ID. Error codes: `feed.request_id_invalid`.",
+            "x-error-codes": [
+              "feed.request_id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request not found. Error codes: `feed.request_not_found`.",
+            "x-error-codes": [
+              "feed.request_not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `feed.request_approve_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "feed.request_approve_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/feed-requests/{id}": {
+      "delete": {
+        "summary": "Reject a feed request",
+        "tags": [
+          "Administration"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Feed request ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Rejected for all requesters."
+          },
+          "400": {
+            "description": "Invalid ID. Error codes: `feed.request_id_invalid`.",
+            "x-error-codes": [
+              "feed.request_id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request not found. Error codes: `feed.request_not_found`.",
+            "x-error-codes": [
+              "feed.request_not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `feed.request_reject_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "feed.request_reject_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/stop-words": {
+      "get": {
+        "summary": "List stop words",
+        "tags": [
+          "Moderation"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stop-word dictionary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StopWord"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an Administrator. Error codes: `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.stop_words_load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.stop_words_load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a stop word or phrase",
+        "tags": [
+          "Moderation"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "term"
+                ],
+                "properties": {
+                  "term": {
+                    "type": "string",
+                    "description": "1 to 80 letters or digits after normalization."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Added stop word.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopWord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `admin.stop_word_invalid`.",
+            "x-error-codes": [
+              "request.invalid_json",
+              "request.multiple_json_values",
+              "admin.stop_word_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already in the dictionary. Error codes: `admin.stop_word_exists`.",
+            "x-error-codes": [
+              "admin.stop_word_exists"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.stop_word_add_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.stop_word_add_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/stop-words/{id}": {
+      "delete": {
+        "summary": "Delete a stop word",
+        "tags": [
+          "Moderation"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Stop word ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done; no body."
+          },
+          "400": {
+            "description": "Invalid ID. Error codes: `admin.stop_word_id_invalid`.",
+            "x-error-codes": [
+              "admin.stop_word_id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found. Error codes: `admin.stop_word_not_found`.",
+            "x-error-codes": [
+              "admin.stop_word_not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.stop_word_delete_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.stop_word_delete_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/blocked-articles": {
+      "get": {
+        "summary": "List blocked (quarantined) articles",
+        "tags": [
+          "Moderation"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Blocked-article log, pending first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BlockedFeedArticle"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit. Error codes: `admin.blocked_articles_limit_invalid`.",
+            "x-error-codes": [
+              "admin.blocked_articles_limit_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an Administrator. Error codes: `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.blocked_articles_load_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.blocked_articles_load_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/blocked-articles/{id}/allow": {
+      "post": {
+        "summary": "Allow a quarantined article",
+        "tags": [
+          "Moderation"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Blocked article ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Allowed; the article is published to subscribers."
+          },
+          "400": {
+            "description": "Invalid ID. Error codes: `admin.blocked_article_id_invalid`.",
+            "x-error-codes": [
+              "admin.blocked_article_id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found or not eligible for moderation. Error codes: `admin.blocked_article_not_found`.",
+            "x-error-codes": [
+              "admin.blocked_article_not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.blocked_article_moderate_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.blocked_article_moderate_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/blocked-articles/{id}/reject": {
+      "post": {
+        "summary": "Reject a quarantined article",
+        "tags": [
+          "Moderation"
+        ],
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Blocked article ID.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Rejected; the article stays hidden."
+          },
+          "400": {
+            "description": "Invalid ID. Error codes: `admin.blocked_article_id_invalid`.",
+            "x-error-codes": [
+              "admin.blocked_article_id_invalid"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in or the session expired. Error codes: `auth.sign_in_required`, `auth.session_expired`.",
+            "x-error-codes": [
+              "auth.sign_in_required",
+              "auth.session_expired"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: cross-site request or not an Administrator. Error codes: `auth.same_origin`, `auth.administrator_required`.",
+            "x-error-codes": [
+              "auth.same_origin",
+              "auth.administrator_required"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found or not eligible for moderation. Error codes: `admin.blocked_article_not_found`.",
+            "x-error-codes": [
+              "admin.blocked_article_not_found"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server or database error. Error codes: `admin.blocked_article_moderate_failed`, `auth.session_check_failed`.",
+            "x-error-codes": [
+              "admin.blocked_article_moderate_failed",
+              "auth.session_check_failed"
+            ],
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "pulse_session",
+        "description": "Opaque session token, valid for 14 days. Only its hash is stored."
+      }
+    },
+    "headers": {
+      "X-Request-ID": {
+        "description": "Request ID: a well-formed incoming `X-Request-ID` (at most 64 characters of `[A-Za-z0-9._:-]`, starting with a letter or digit) or a generated 32-character hex value.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "AdminSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refreshIntervalMinutes",
+          "sharedFeedTTLMinutes"
+        ],
+        "properties": {
+          "refreshIntervalMinutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1440
+          },
+          "sharedFeedTTLMinutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1440
+          }
+        }
+      },
+      "Article": {
+        "type": "object",
+        "required": [
+          "id",
+          "feedId",
+          "feedTitle",
+          "feedUrl",
+          "title",
+          "url",
+          "summary",
+          "publishedAt",
+          "isRead",
+          "isSaved"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "feedId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The user's subscription ID."
+          },
+          "feedTitle": {
+            "type": "string"
+          },
+          "feedUrl": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "publishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isRead": {
+            "type": "boolean"
+          },
+          "isSaved": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ArticlePage": {
+        "type": "object",
+        "required": [
+          "items",
+          "hasMore",
+          "nextCursor",
+          "latestArticleId"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Article"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` to load the next page."
+          },
+          "latestArticleId": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Highest article ID that existed when the page was listed (0 when there are none). Pass the value of the first page as `upToId` to `POST /api/articles/mark-read` so articles ingested later stay unread, even with an old publication date."
+          }
+        }
+      },
+      "BlockedFeedArticle": {
+        "type": "object",
+        "required": [
+          "id",
+          "articleGuid",
+          "articleTitle",
+          "articleUrl",
+          "summary",
+          "publishedAt",
+          "feedTitle",
+          "feedUrl",
+          "addedBy",
+          "matchedTerm",
+          "firstBlockedAt",
+          "lastBlockedAt",
+          "status",
+          "decidedAt",
+          "canModerate"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "articleGuid": {
+            "type": "string"
+          },
+          "articleTitle": {
+            "type": "string"
+          },
+          "articleUrl": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "publishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "feedTitle": {
+            "type": "string"
+          },
+          "feedUrl": {
+            "type": "string"
+          },
+          "addedBy": {
+            "type": "string"
+          },
+          "matchedTerm": {
+            "type": "string"
+          },
+          "firstBlockedAt": {
+            "type": "string"
+          },
+          "lastBlockedAt": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "rejected",
+              "allowed"
+            ]
+          },
+          "decidedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "canModerate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "code",
+          "error"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable dotted error code; the frontend translates it (`apiErrors.<code>`).",
+            "examples": [
+              "feed.already_added"
+            ]
+          },
+          "error": {
+            "type": "string",
+            "description": "English fallback message."
+          }
+        }
+      },
+      "Feed": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "url",
+          "folderId",
+          "folderName",
+          "unreadCount",
+          "lastCheckedAt",
+          "lastError"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Subscription ID."
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "folderId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "folderName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unreadCount": {
+            "type": "integer"
+          },
+          "lastCheckedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "FeedRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "url",
+          "requestedBy",
+          "requesters",
+          "folderId",
+          "folderName",
+          "title",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "url": {
+            "type": "string"
+          },
+          "requestedBy": {
+            "type": "string",
+            "description": "First requester's email address."
+          },
+          "requesters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every requester's email address in request order."
+          },
+          "folderId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "folderName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        }
+      },
+      "Folder": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "color",
+          "unreadCount"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "color": {
+            "$ref": "#/components/schemas/FolderColor"
+          },
+          "unreadCount": {
+            "type": "integer"
+          }
+        }
+      },
+      "FolderColor": {
+        "type": "string",
+        "description": "A preset name or a six-digit hexadecimal color.",
+        "pattern": "^(amber|blue|green|rose|violet|teal|#[0-9a-fA-F]{6})$"
+      },
+      "FolderInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "color": {
+            "$ref": "#/components/schemas/FolderColor"
+          }
+        }
+      },
+      "PendingFeedRequest": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "status"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string",
+            "const": "pending"
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "Administrator",
+          "Reader"
+        ]
+      },
+      "Status": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          }
+        }
+      },
+      "StopWord": {
+        "type": "object",
+        "required": [
+          "id",
+          "term",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "term": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "role",
+          "refreshIntervalMinutes",
+          "firstName",
+          "lastName",
+          "nickname",
+          "disabled",
+          "disabledAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "refreshIntervalMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Personal refresh interval; `null` inherits the global one."
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "nickname": {
+            "type": "string"
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "disabledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}

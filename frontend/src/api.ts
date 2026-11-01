@@ -45,7 +45,17 @@ export type Article = {
 export type ArticlePage = {
   items: Article[];
   hasMore: boolean;
+  /** Opaque keyset cursor for the next page; sent back as `before`. */
+  nextCursor: string | null;
+  /**
+   * Highest article ID when the page was listed; sent back as the mark-read
+   * bound so articles ingested later stay unread. Missing from older servers.
+   */
+  latestArticleId?: number;
 };
+
+/** Upper bound of a bulk mark-read: ingestion position and/or publication time. */
+export type MarkReadBound = { upToId: number } | { upTo: string };
 
 export type UserRole = 'Administrator' | 'Reader';
 
@@ -57,6 +67,9 @@ export type SessionUser = {
   firstName?: string;
   lastName?: string;
   nickname?: string;
+  /** Present in administrator user listings; disabled accounts cannot sign in. */
+  disabled?: boolean;
+  disabledAt?: string | null;
 };
 
 export type AdminSettings = {
@@ -68,11 +81,20 @@ export type AdminSettings = {
 export type FeedRequest = {
   id: number;
   url: string;
+  /** First requester; kept for compatibility with older responses. */
   requestedBy: string;
+  /** Every requester's e-mail address in request order. */
+  requesters?: string[];
   folderId: number | null;
   folderName: string | null;
   title: string;
   createdAt: string;
+};
+
+export type FeedRequestPage = {
+  requests: FeedRequest[];
+  /** Number of pending requests on the server, independent of the page size. */
+  total: number;
 };
 
 export type FeedRequestResult = { requestId: number; status: 'pending' };
@@ -98,6 +120,40 @@ export type BlockedFeedArticle = {
 };
 
 
+/** An API request that failed with an HTTP error status or a network error (status 0). */
+export class ApiError extends Error {
+  readonly status: number;
+  /** Stable dotted error code from the server, or `network` for connection failures. */
+  readonly code: string | undefined;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** Reports whether a request failed because its AbortSignal was aborted. */
+export function isAbortError(reason: unknown): boolean {
+  return reason instanceof DOMException && reason.name === 'AbortError';
+}
+
+/** Returns the message to show for a failed request, or `fallback` for unknown failures. */
+export function errorMessage(reason: unknown, fallback: string): string {
+  return reason instanceof Error ? reason.message : fallback;
+}
+
+let unauthorizedHandler: (() => void) | null = null;
+
+/**
+ * Registers the callback run when an authenticated request returns 401 (the
+ * session expired or was revoked). The session probe and sign-in are exempt.
+ */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
 function parseApiError(value: unknown): { code?: string; error?: string } {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
   const body = value as Record<string, unknown>;
@@ -107,19 +163,26 @@ function parseApiError(value: unknown): { code?: string; error?: string } {
   };
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+type RequestOptions = RequestInit & {
+  /** Skip the expired-session handler (session probe and sign-in). */
+  anonymous?: boolean;
+};
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { anonymous, ...init } = options;
   let response: Response;
   try {
     response = await fetch(`/api${path}`, {
-      ...options,
+      ...init,
       credentials: 'same-origin',
       headers: {
-        ...(options?.body ? { 'Content-Type': 'application/json' } : {}),
-        ...options?.headers,
+        ...(typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
       },
     });
-  } catch {
-    throw new Error(i18n.t('apiErrors.network'));
+  } catch (reason) {
+    if (isAbortError(reason)) throw reason;
+    throw new ApiError(i18n.t('apiErrors.network'), 0, 'network');
   }
 
   if (!response.ok) {
@@ -128,17 +191,36 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const message = body.code
       ? i18n.t(`apiErrors.${body.code}`, { defaultValue: fallback, status: response.status })
       : fallback;
-    throw new Error(message);
+    if (response.status === 401 && !anonymous) unauthorizedHandler?.();
+    throw new ApiError(message, response.status, body.code);
   }
 
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
+/** The view the article list shows; also the scope of "mark all as read". */
+export type ArticleQuery = {
+  filter: 'all' | 'unread' | 'today' | 'saved';
+  feedId: number | null;
+  folderId: number | null;
+  q: string;
+  /** Start of the Today filter (local midnight), RFC 3339. */
+  since: string | null;
+};
+
+export type OpmlImportResult = {
+  subscribed: number;
+  requested: number;
+  skipped: number;
+  failed: Array<{ url: string; reason: string }>;
+};
+
 export const api = {
-  currentUser: () => request<SessionUser>('/auth/me'),
+  currentUser: (signal?: AbortSignal) => request<SessionUser>('/auth/me', { anonymous: true, signal }),
   login: (email: string, password: string) => request<SessionUser>('/auth/login', {
     method: 'POST',
+    anonymous: true,
     body: JSON.stringify({ email, password }),
   }),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
@@ -150,9 +232,27 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify(profile),
   }),
-  getFolders: () => request<Folder[]>('/folders'),
-  getFeeds: () => request<Feed[]>('/feeds'),
-  getArticles: (params: URLSearchParams) => request<ArticlePage>(`/articles?${params}`),
+  getFolders: (signal?: AbortSignal) => request<Folder[]>('/folders', { signal }),
+  getFeeds: (signal?: AbortSignal) => request<Feed[]>('/feeds', { signal }),
+  getArticles: (params: URLSearchParams, signal?: AbortSignal) => request<ArticlePage>(`/articles?${params}`, { signal }),
+  markArticlesRead: (query: ArticleQuery, bound: MarkReadBound, signal?: AbortSignal) => request<{ marked: number }>('/articles/mark-read', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({
+      filter: query.filter,
+      ...(query.feedId !== null ? { feedId: query.feedId } : {}),
+      ...(query.folderId !== null ? { folderId: query.folderId } : {}),
+      ...(query.q ? { q: query.q } : {}),
+      ...(query.since ? { since: query.since } : {}),
+      ...bound,
+    }),
+  }),
+  importOpml: (document: Blob | string, signal?: AbortSignal) => request<OpmlImportResult>('/opml', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'text/x-opml' },
+    body: document,
+  }),
   createFeed: (url: string, folderId: number | null) =>
     request<Feed | FeedRequestResult>('/feeds', {
       method: 'POST',
@@ -184,8 +284,8 @@ export const api = {
       body: JSON.stringify(update),
     }),
   refresh: () => request<{ message: string }>('/refresh', { method: 'POST' }),
-  refreshStatus: () => request<{ running: boolean }>('/refresh'),
-  getAdminSettings: () => request<AdminSettings>('/admin/settings'),
+  refreshStatus: (signal?: AbortSignal) => request<{ running: boolean }>('/refresh', { signal }),
+  getAdminSettings: (signal?: AbortSignal) => request<AdminSettings>('/admin/settings', { signal }),
   updateAdminSettings: (settings: Pick<AdminSettings, 'refreshIntervalMinutes' | 'sharedFeedTTLMinutes'>) =>
     request<Pick<AdminSettings, 'refreshIntervalMinutes' | 'sharedFeedTTLMinutes'>>('/admin/settings', {
       method: 'PUT',
@@ -195,18 +295,21 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(user),
   }),
-  updateUser: (id: number, update: { role?: UserRole; refreshIntervalMinutes?: number | null }) =>
+  updateUser: (id: number, update: { role?: UserRole; refreshIntervalMinutes?: number | null; disabled?: boolean }) =>
     request<SessionUser>(`/admin/users/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(update),
     }),
-  getFeedRequests: () => request<FeedRequest[]>('/admin/feed-requests'),
+  signOutUser: (id: number) => request<void>(`/admin/users/${id}/sign-out`, { method: 'POST' }),
+  /** One page of pending requests, oldest first, starting after `offset`, with the total pending count. */
+  getFeedRequests: (signal?: AbortSignal, offset = 0) =>
+    request<FeedRequestPage>(offset > 0 ? `/admin/feed-requests?offset=${offset}` : '/admin/feed-requests', { signal }),
   approveFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
   rejectFeedRequest: (id: number) => request<void>(`/admin/feed-requests/${id}`, { method: 'DELETE' }),
-  getStopWords: () => request<StopWord[]>('/admin/stop-words'),
+  getStopWords: (signal?: AbortSignal) => request<StopWord[]>('/admin/stop-words', { signal }),
   addStopWord: (term: string) => request<StopWord>('/admin/stop-words', { method: 'POST', body: JSON.stringify({ term }) }),
   deleteStopWord: (id: number) => request<void>(`/admin/stop-words/${id}`, { method: 'DELETE' }),
-  getBlockedFeedArticles: () => request<BlockedFeedArticle[]>('/admin/blocked-articles?limit=100'),
+  getBlockedFeedArticles: (signal?: AbortSignal) => request<BlockedFeedArticle[]>('/admin/blocked-articles?limit=100', { signal }),
   allowBlockedFeedArticle: (id: number) => request<void>(`/admin/blocked-articles/${id}/allow`, { method: 'POST' }),
   rejectBlockedFeedArticle: (id: number) => request<void>(`/admin/blocked-articles/${id}/reject`, { method: 'POST' }),
 };

@@ -44,6 +44,8 @@ type rssChannel struct {
 }
 
 type rssItem struct {
+	// About is the RSS 1.0 (RDF) item identifier, used as GUID fallback before the link.
+	About          string `xml:"http://www.w3.org/1999/02/22-rdf-syntax-ns# about,attr"`
 	GUID           string `xml:"guid"`
 	Title          string `xml:"title"`
 	Link           string `xml:"link"`
@@ -61,11 +63,68 @@ type atomLink struct {
 type atomEntry struct {
 	ID        string     `xml:"id"`
 	Title     string     `xml:"title"`
-	Summary   string     `xml:"summary"`
-	Content   string     `xml:"content"`
+	Summary   atomText   `xml:"summary"`
+	Content   atomText   `xml:"content"`
 	Published string     `xml:"published"`
 	Updated   string     `xml:"updated"`
 	Links     []atomLink `xml:"link"`
+}
+
+// atomText is an Atom text construct. type="text" and type="html" carry escaped
+// character data that is decoded once; type="xhtml" carries inline XHTML markup,
+// which is kept as markup.
+type atomText struct {
+	Type  string `xml:"type,attr"`
+	Text  string `xml:",chardata"`
+	Inner string `xml:",innerxml"`
+}
+
+func (t atomText) String() string {
+	if strings.EqualFold(strings.TrimSpace(t.Type), "xhtml") {
+		return unwrapXHTMLDiv(strings.TrimSpace(t.Inner))
+	}
+	return t.Text
+}
+
+// unwrapXHTMLDiv removes the single wrapping <div> that RFC 4287 requires around
+// XHTML content, but only when it is a plain unprefixed div whose attributes are
+// namespace declarations and that encloses the entire value.
+func unwrapXHTMLDiv(inner string) string {
+	decoder := xml.NewDecoder(strings.NewReader(inner))
+	token, err := decoder.Token()
+	if err != nil {
+		return inner
+	}
+	start, ok := token.(xml.StartElement)
+	if !ok || start.Name.Local != "div" || !strings.HasPrefix(inner, "<div") {
+		return inner
+	}
+	for _, attribute := range start.Attr {
+		if attribute.Name.Space != "xmlns" && !(attribute.Name.Space == "" && attribute.Name.Local == "xmlns") {
+			return inner
+		}
+	}
+	contentStart := decoder.InputOffset()
+	for depth := 1; depth > 0; {
+		token, err := decoder.Token()
+		if err != nil {
+			return inner
+		}
+		switch token.(type) {
+		case xml.StartElement:
+			depth++
+		case xml.EndElement:
+			depth--
+		}
+	}
+	if decoder.InputOffset() != int64(len(inner)) || !strings.HasSuffix(inner, "</div>") {
+		return inner
+	}
+	contentEnd := int64(len(inner) - len("</div>"))
+	if contentEnd < contentStart {
+		return ""
+	}
+	return strings.TrimSpace(inner[contentStart:contentEnd])
 }
 
 func Parse(data []byte, base *url.URL) (Document, error) {
@@ -114,7 +173,7 @@ func Parse(data []byte, base *url.URL) (Document, error) {
 			return Document{}, errors.New("the RSS feed is missing a channel title")
 		}
 		for _, rawItem := range raw.RDFItems {
-			document.Items = appendItem(document.Items, rawItem.GUID, rawItem.Title, rawItem.Link, firstNonEmpty(rawItem.ContentEncoded, rawItem.Description), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
+			document.Items = appendItem(document.Items, firstNonEmpty(rawItem.GUID, rawItem.About), rawItem.Title, rawItem.Link, firstNonEmpty(rawItem.ContentEncoded, rawItem.Description), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
 		}
 	case "feed":
 		if strings.TrimSpace(raw.Title) == "" {
@@ -128,7 +187,7 @@ func Parse(data []byte, base *url.URL) (Document, error) {
 					break
 				}
 			}
-			document.Items = appendItem(document.Items, rawItem.ID, rawItem.Title, link, firstNonEmpty(rawItem.Summary, rawItem.Content), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
+			document.Items = appendItem(document.Items, rawItem.ID, rawItem.Title, link, firstNonEmpty(rawItem.Summary.String(), rawItem.Content.String()), firstNonEmpty(rawItem.Published, rawItem.Updated), base)
 		}
 	default:
 		return Document{}, errors.New("the source does not contain an RSS or Atom feed")
@@ -181,19 +240,52 @@ func resolve(base *url.URL, raw string) string {
 	return resolved.String()
 }
 
+// rfc822Zones maps the zone names allowed by RFC 822 to numeric offsets. Go's
+// time package only knows the offset of a named zone when it is the local zone,
+// so these names are rewritten before parsing.
+var rfc822Zones = map[string]string{
+	"UT": "+0000", "UTC": "+0000", "GMT": "+0000", "Z": "+0000",
+	"EST": "-0500", "EDT": "-0400",
+	"CST": "-0600", "CDT": "-0500",
+	"MST": "-0700", "MDT": "-0600",
+	"PST": "-0800", "PDT": "-0700",
+}
+
+// dateLayouts covers RFC 3339/ISO 8601 and RFC 822/1123 dates as they appear in
+// real feeds: one- or two-digit days, optional weekday and seconds, two- or
+// four-digit years, and numeric offsets with or without a colon. Layouts
+// without a zone are interpreted as UTC.
+var dateLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05Z07:00",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+	"Mon, 2 Jan 2006 15:04:05 -0700",
+	"Mon, 2 Jan 2006 15:04:05 -07:00",
+	"Mon, 2 Jan 2006 15:04 -0700",
+	"Mon, 2 Jan 06 15:04:05 -0700",
+	"Mon, 2 Jan 06 15:04 -0700",
+	"2 Jan 2006 15:04:05 -0700",
+	"2 Jan 2006 15:04 -0700",
+	"2 Jan 06 15:04:05 -0700",
+	"2 Jan 06 15:04 -0700",
+	"Mon, 2 Jan 2006 15:04:05 MST",
+	"2 Jan 2006 15:04:05 MST",
+	"2 Jan 06 15:04 MST",
+	"Monday, 02-Jan-06 15:04:05 MST",
+}
+
 func parseDate(value string) (time.Time, bool) {
-	value = strings.TrimSpace(value)
-	layouts := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		time.RFC1123Z,
-		time.RFC1123,
-		time.RFC822Z,
-		time.RFC822,
-		"Mon, 02 Jan 2006 15:04:05 -0700",
-		"2006-01-02 15:04:05",
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return time.Time{}, false
 	}
-	for _, layout := range layouts {
+	if offset, ok := rfc822Zones[strings.ToUpper(fields[len(fields)-1])]; ok && len(fields) > 1 {
+		fields[len(fields)-1] = offset
+	}
+	value = strings.Join(fields, " ")
+	for _, layout := range dateLayouts {
 		if parsed, err := time.Parse(layout, value); err == nil {
 			return parsed, true
 		}

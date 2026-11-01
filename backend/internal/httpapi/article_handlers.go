@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,6 +54,21 @@ func (h *Handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
+	_, hasOffset := query["offset"]
+	_, hasBefore := query["before"]
+	if hasOffset && hasBefore {
+		writeError(w, http.StatusBadRequest, "article.pagination_conflict", "Use either a page cursor or an offset, not both.")
+		return
+	}
+	var before *store.ArticleCursor
+	if hasBefore {
+		cursor, err := store.DecodeArticleCursor(query.Get("before"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "article.cursor_invalid", "The page cursor is invalid.")
+			return
+		}
+		before = &cursor
+	}
 	offset := 0
 	if rawOffset := query.Get("offset"); rawOffset != "" {
 		parsed, err := strconv.Atoi(rawOffset)
@@ -65,16 +79,27 @@ func (h *Handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		offset = parsed
 	}
 	user, _ := currentUser(r)
-	articles, err := h.store.ListArticlesForUser(r.Context(), user.ID, filter, feedID, folderID, search, since, limit, offset)
+	// Read before the list so the bound never covers an article the list could
+	// not show; one ingested in between is listed but stays outside the bound.
+	latestID, err := h.store.LatestArticleID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "article.load_failed", "Articles could not be loaded.")
+		return
+	}
+	articles, err := h.store.ListArticlesForUser(r.Context(), user.ID, filter, feedID, folderID, search, since, limit, offset, before)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "article.load_failed", "Articles could not be loaded.")
 		return
 	}
 	hasMore := len(articles) > limit
+	var nextCursor *string
 	if hasMore {
 		articles = articles[:limit]
+		last := articles[len(articles)-1]
+		encoded := store.EncodeArticleCursor(store.ArticleCursor{PublishedAt: last.PublishedAt, ID: last.ID})
+		nextCursor = &encoded
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": articles, "hasMore": hasMore})
+	writeJSON(w, http.StatusOK, map[string]any{"items": articles, "hasMore": hasMore, "nextCursor": nextCursor, "latestArticleId": latestID})
 }
 
 func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {
@@ -96,12 +121,9 @@ func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	article, err := h.store.UpdateArticleForUser(r.Context(), user.ID, id, update.IsRead, update.IsSaved)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "article.not_found", "The article was not found.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "article.update_failed", "The article could not be updated.")
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, apiError{http.StatusNotFound, "article.not_found", "The article was not found."}}},
+			apiError{http.StatusInternalServerError, "article.update_failed", "The article could not be updated."})
 		return
 	}
 	writeJSON(w, http.StatusOK, article)
@@ -109,13 +131,12 @@ func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) refreshFeeds(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r)
-	if !h.control.RequestUser(user.ID) {
-		writeError(w, http.StatusConflict, "feed.refresh_busy", "A feed refresh is already running or queued.")
-		return
-	}
+	// A user who is already queued or refreshing is covered by that request.
+	h.control.RequestUser(user.ID)
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Feed refresh started."})
 }
 
-func (h *Handler) refreshStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"running": h.control.IsRunning()})
+func (h *Handler) refreshStatus(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r)
+	writeJSON(w, http.StatusOK, map[string]bool{"running": h.control.IsUserRefreshing(user.ID)})
 }

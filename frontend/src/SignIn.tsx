@@ -11,9 +11,11 @@ type SignInProps = {
   busy?: boolean;
   theme?: Theme;
   onToggleTheme?: () => void;
+  /** Explains why the sign-in screen appeared, such as an expired session. */
+  notice?: string;
 };
 
-export function SignIn({ onLogin, busy = false, theme, onToggleTheme }: SignInProps) {
+export function SignIn({ onLogin, busy = false, theme, onToggleTheme, notice = '' }: SignInProps) {
   const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -49,6 +51,7 @@ export function SignIn({ onLogin, busy = false, theme, onToggleTheme }: SignInPr
         <p className="signin-kicker">{t('signin.kicker')}</p>
         <h1 id="signin-title">{t('signin.title')}</h1>
         <p className="signin-copy">{t('signin.description')}</p>
+        {notice && <p className="signin-notice" role="status">{notice}</p>}
         <form className="signin-form" onSubmit={(event) => void submit(event)}>
           <label htmlFor="signin-email">{t('signin.email')}</label>
           <input id="signin-email" type="email" autoComplete="username" autoFocus required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />

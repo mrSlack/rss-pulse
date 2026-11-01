@@ -135,33 +135,75 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 	if strings.TrimSpace(currentTitle) != "" {
 		feedTitle = strings.TrimSpace(currentTitle)
 	}
+	statuses, err := quarantineStatuses(ctx, tx, sourceID, items)
+	if err != nil {
+		return nil, err
+	}
 	allowed := make([]feeds.Item, 0, len(items))
+	batch := &pgx.Batch{}
 	for _, item := range items {
-		var status string
-		err := tx.QueryRow(ctx, `SELECT status FROM blocked_feed_articles WHERE feed_source_id=$1 AND article_guid=$2`, sourceID, item.GUID).Scan(&status)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, err
-		}
+		status := statuses[item.GUID]
 		matchedTerm := feeds.FindStopWordMatch(item.Title+" "+item.Summary, terms)
 		if matchedTerm == "" && status == "" {
 			allowed = append(allowed, item)
 			continue
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO blocked_feed_articles
+		if status == "" {
+			// The insert below creates a pending record; a repeated GUID later in the
+			// same feed sees it, as it would in a sequential lookup.
+			statuses[item.GUID] = "pending"
+		}
+		batch.Queue(`INSERT INTO blocked_feed_articles
 			(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,added_by_user_id,matched_term,summary,published_at,moderation_eligible)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TRUE)
 			ON CONFLICT (feed_source_id,article_guid) DO UPDATE SET article_title=EXCLUDED.article_title,
 				article_url=EXCLUDED.article_url,feed_title=EXCLUDED.feed_title,feed_url=EXCLUDED.feed_url,
 				added_by_user_id=COALESCE(blocked_feed_articles.added_by_user_id,EXCLUDED.added_by_user_id),
 				matched_term=CASE WHEN EXCLUDED.matched_term<>'' THEN EXCLUDED.matched_term ELSE blocked_feed_articles.matched_term END,summary=EXCLUDED.summary,published_at=CASE WHEN $11 THEN EXCLUDED.published_at ELSE blocked_feed_articles.published_at END,last_blocked_at=NOW()`,
-			sourceID, item.GUID, item.Title, item.URL, feedTitle, feedURL, addedByUserID, matchedTerm, item.Summary, item.PublishedAt, item.HasPublishedAt); err != nil {
-			return nil, err
-		}
+			sourceID, item.GUID, item.Title, item.URL, feedTitle, feedURL, addedByUserID, matchedTerm, item.Summary, item.PublishedAt, item.HasPublishedAt)
 		if status == "allowed" {
 			allowed = append(allowed, item)
 		}
 	}
+	if batch.Len() > 0 {
+		results := tx.SendBatch(ctx, batch)
+		for range batch.Len() {
+			if _, err := results.Exec(); err != nil {
+				results.Close()
+				return nil, err
+			}
+		}
+		if err := results.Close(); err != nil {
+			return nil, err
+		}
+	}
 	return allowed, nil
+}
+
+// quarantineStatuses returns the moderation status of every item GUID that already has
+// a quarantine record for the source, in one query.
+func quarantineStatuses(ctx context.Context, tx pgx.Tx, sourceID int64, items []feeds.Item) (map[string]string, error) {
+	statuses := make(map[string]string)
+	if len(items) == 0 {
+		return statuses, nil
+	}
+	guids := make([]string, len(items))
+	for i, item := range items {
+		guids[i] = item.GUID
+	}
+	rows, err := tx.Query(ctx, `SELECT article_guid, status FROM blocked_feed_articles WHERE feed_source_id=$1 AND article_guid = ANY($2::text[])`, sourceID, guids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var guid, status string
+		if err := rows.Scan(&guid, &status); err != nil {
+			return nil, err
+		}
+		statuses[guid] = status
+	}
+	return statuses, rows.Err()
 }
 
 func normalizeStopWordInput(raw string) (string, error) {

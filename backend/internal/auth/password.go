@@ -7,8 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -21,12 +23,28 @@ const (
 	saltLength          = 16
 )
 
+// argonSlots bounds concurrent Argon2id computations. Each one allocates up to
+// argonMemory KiB (64 MiB), so unbounded parallel sign-ins could exhaust API
+// memory. Callers block until a slot is free; the wait is not cancellable by
+// a request context, which is acceptable because each computation is short and
+// sign-in attempts are rate limited before they reach this point.
+var argonSlots = make(chan struct{}, max(1, runtime.GOMAXPROCS(0)))
+
+// argonKey is the raw key derivation, replaceable in tests.
+var argonKey = argon2.IDKey
+
+func boundedArgon2ID(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+	argonSlots <- struct{}{}
+	defer func() { <-argonSlots }()
+	return argonKey(password, salt, iterations, memory, threads, keyLen)
+}
+
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, saltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("generate password salt: %w", err)
 	}
-	hash := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	hash := boundedArgon2ID([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	encodedSalt := base64.RawStdEncoding.EncodeToString(salt)
 	encodedHash := base64.RawStdEncoding.EncodeToString(hash)
 	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", argonMemory, argonTime, argonThreads, encodedSalt, encodedHash), nil
@@ -75,8 +93,33 @@ func VerifyPassword(encoded, password string) bool {
 	if err != nil || len(expected) < 16 || len(expected) > 64 {
 		return false
 	}
-	actual := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expected)))
+	actual := boundedArgon2ID([]byte(password), salt, iterations, memory, parallelism, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1
+}
+
+const dummyPassword = "pulse-missing-account-timing-equalizer"
+
+var dummy struct {
+	once sync.Once
+	hash string
+}
+
+// dummyHash returns a valid Argon2id hash with production parameters, computed
+// once per process.
+func dummyHash() string {
+	dummy.once.Do(func() {
+		if hash, err := HashPassword(dummyPassword); err == nil {
+			dummy.hash = hash
+		}
+	})
+	return dummy.hash
+}
+
+// SimulatePasswordVerification performs the same Argon2id work as
+// VerifyPassword for a sign-in attempt whose account does not exist, so the
+// response time does not reveal whether an e-mail address is registered.
+func SimulatePasswordVerification(password string) {
+	VerifyPassword(dummyHash(), password)
 }
 
 func NewSessionToken() (string, error) {

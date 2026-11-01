@@ -17,6 +17,7 @@ const apiMock = vi.hoisted(() => ({
   updateAdminSettings: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
+  signOutUser: vi.fn(),
 }));
 
 vi.mock('../../src/api', async (importOriginal) => ({
@@ -34,7 +35,7 @@ beforeEach(() => {
       { id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null },
     ],
   });
-  apiMock.getFeedRequests.mockResolvedValue([]);
+  apiMock.getFeedRequests.mockResolvedValue({ requests: [], total: 0 });
   apiMock.approveFeedRequest.mockResolvedValue(undefined);
   apiMock.rejectFeedRequest.mockResolvedValue(undefined);
   apiMock.getStopWords.mockResolvedValue([]);
@@ -49,11 +50,12 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('AdminPanel', () => {
-  it('labels saved schedule values as inactive and shared TTL as active', async () => {
+  it('labels the scheduler interval and the shared TTL as active', async () => {
     render(<AdminPanel />);
     expect(await screen.findByRole('heading', { name: 'Administration' })).toBeTruthy();
-    expect(screen.getByText('Not active yet')).toBeTruthy();
-    expect(screen.getByText(/Applies to shared sources/i)).toBeTruthy();
+    expect(screen.queryByText('Not active yet')).toBeNull();
+    expect(screen.getAllByText('Active now')).toHaveLength(2);
+    expect(screen.getByText(/Minimum time between refreshes of a shared source/i)).toBeTruthy();
     expect(screen.getByLabelText('Scheduler interval, minutes')).toBeTruthy();
     expect(screen.getByLabelText('Shared source TTL, minutes')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Users' })).toBeNull();
@@ -82,7 +84,7 @@ describe('AdminPanel', () => {
 
   it('allows administrators to approve pending feed URLs', async () => {
     const user = userEvent.setup();
-    apiMock.getFeedRequests.mockResolvedValueOnce([{
+    apiMock.getFeedRequests.mockResolvedValueOnce({ total: 1, requests: [{
       id: 12,
       url: 'https://example.test/rss',
       requestedBy: 'reader@example.com',
@@ -90,7 +92,7 @@ describe('AdminPanel', () => {
       folderName: null,
       title: '',
       createdAt: '2026-10-26T09:00:00Z',
-    }]);
+    }] });
     render(<AdminPanel />);
     await user.click(await screen.findByRole('button', { name: 'Feed requests' }));
     expect(await screen.findByText('https://example.test/rss')).toBeTruthy();
@@ -210,5 +212,103 @@ describe('AdminPanel', () => {
     expect(originalWordRow).toBeTruthy();
     await user.click(within(originalWordRow!).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(apiMock.deleteStopWord).toHaveBeenCalledWith(4));
+  });
+  it('disables and re-enables another account after confirmation', async () => {
+    const user = userEvent.setup();
+    apiMock.updateUser.mockResolvedValueOnce({ id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null, disabled: true, disabledAt: '2026-11-01T09:00:00Z' })
+      .mockResolvedValueOnce({ id: 2, email: 'reader@example.com', role: 'Reader', refreshIntervalMinutes: null, disabled: false, disabledAt: null });
+    render(<AdminPanel currentUserId={1} />);
+    await user.click(await screen.findByRole('button', { name: 'Users' }));
+
+    const ownRow = screen.getByText('admin@example.com').closest('tr')!;
+    expect(within(ownRow).getByText('This is you')).toBeTruthy();
+    expect(within(ownRow).queryByRole('button', { name: /^Disable/ })).toBeNull();
+    expect((screen.getByLabelText('Role for admin@example.com') as HTMLSelectElement).disabled).toBe(true);
+
+    const readerRow = screen.getByText('reader@example.com').closest('tr')!;
+    expect(within(readerRow).getByText('Active')).toBeTruthy();
+    await user.click(within(readerRow).getByRole('button', { name: 'Disable reader@example.com' }));
+    expect(apiMock.updateUser).not.toHaveBeenCalled();
+    expect(within(readerRow).getByText(/Disable reader@example.com\? They are signed out immediately/)).toBeTruthy();
+    await user.click(within(readerRow).getByRole('button', { name: 'Cancel' }));
+    expect(apiMock.updateUser).not.toHaveBeenCalled();
+
+    await user.click(within(readerRow).getByRole('button', { name: 'Disable reader@example.com' }));
+    await user.click(within(readerRow).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(apiMock.updateUser).toHaveBeenCalledWith(2, { disabled: true }));
+    expect(await screen.findByText('Account disabled and signed out.')).toBeTruthy();
+    expect(within(readerRow).getByText('Disabled')).toBeTruthy();
+    expect(readerRow.className).toContain('admin-user-disabled');
+    expect(within(readerRow).queryByRole('button', { name: /Sign out/ })).toBeNull();
+
+    await user.click(within(readerRow).getByRole('button', { name: 'Enable reader@example.com' }));
+    await waitFor(() => expect(apiMock.updateUser).toHaveBeenLastCalledWith(2, { disabled: false }));
+    expect(await screen.findByText('Account enabled.')).toBeTruthy();
+    expect(within(readerRow).getByText('Active')).toBeTruthy();
+  });
+
+  it('signs a user out everywhere and returns to sign-in after signing yourself out', async () => {
+    const user = userEvent.setup();
+    const onSignedOut = vi.fn();
+    apiMock.signOutUser.mockResolvedValue(undefined);
+    render(<AdminPanel currentUserId={1} onSignedOut={onSignedOut} />);
+    await user.click(await screen.findByRole('button', { name: 'Users' }));
+
+    await user.click(screen.getByRole('button', { name: 'Sign out reader@example.com everywhere' }));
+    expect(screen.getByText('Sign reader@example.com out on every device?')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(apiMock.signOutUser).toHaveBeenCalledWith(2));
+    expect(await screen.findByText('User signed out on every device.')).toBeTruthy();
+    expect(onSignedOut).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Sign out admin@example.com everywhere' }));
+    expect(screen.getByText('Sign yourself out on every device, including this one?')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(apiMock.signOutUser).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(onSignedOut).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows the total number of pending requests and loads further pages', async () => {
+    const user = userEvent.setup();
+    const pendingRequest = (id: number) => ({
+      id, url: `https://pending.example/${id}.xml`, requestedBy: 'reader@example.com', requesters: ['reader@example.com'],
+      folderId: null, folderName: null, title: '', createdAt: '2026-10-26T09:00:00Z',
+    });
+    apiMock.getFeedRequests
+      .mockResolvedValueOnce({ total: 3, requests: [pendingRequest(1), pendingRequest(2)] })
+      .mockResolvedValueOnce({ total: 3, requests: [pendingRequest(2), pendingRequest(3)] });
+    render(<AdminPanel />);
+    const navButton = await screen.findByRole('button', { name: 'Feed requests' });
+    await waitFor(() => expect(navButton.textContent).toContain('3'));
+    await user.click(navButton);
+    expect(await screen.findByText('Showing 2 of 3 pending requests.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(apiMock.getFeedRequests).toHaveBeenLastCalledWith(undefined, 2));
+    expect(await screen.findByText('https://pending.example/3.xml')).toBeTruthy();
+    // A request already shown is not duplicated when pages overlap.
+    expect(screen.getAllByText('https://pending.example/2.xml')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
+    expect(screen.queryByText(/^Showing /)).toBeNull();
+
+    await user.click(within(screen.getByText('https://pending.example/1.xml').closest('tr')!).getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(navButton.textContent).toContain('2'));
+  });
+
+  it('lists every requester of a shared feed request', async () => {
+    const user = userEvent.setup();
+    apiMock.getFeedRequests.mockResolvedValueOnce({ total: 1, requests: [{
+      id: 14,
+      url: 'https://shared.example/rss',
+      requestedBy: 'reader@example.com',
+      requesters: ['reader@example.com', 'second@example.com'],
+      folderId: null,
+      folderName: null,
+      title: '',
+      createdAt: '2026-10-26T09:00:00Z',
+    }] });
+    render(<AdminPanel />);
+    await user.click(await screen.findByRole('button', { name: 'Feed requests' }));
+    const row = (await screen.findByText('https://shared.example/rss')).closest('tr')!;
+    expect(within(row).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['reader@example.com', 'second@example.com']);
   });
 });

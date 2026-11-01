@@ -2,7 +2,9 @@ package syncer
 
 import (
 	"context"
-	"log"
+	"errors"
+	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -14,92 +16,169 @@ import (
 	"github.com/pulse-reader/app/internal/store"
 )
 
-type Syncer struct {
-	store       RefreshRepository
-	control     *Control
-	concurrency int
-}
-
 // RefreshRepository is the part of the store API used by the scheduler.
 type RefreshRepository interface {
 	DueSources(context.Context) ([]store.FeedTarget, error)
 	SourcesForUser(context.Context, int64) ([]store.FeedTarget, error)
 	ClaimSource(context.Context, int64, *int64) (store.SourceLease, bool, error)
 	ReleaseSourceLease(context.Context, store.SourceLease, string) error
+	AbandonSourceLease(context.Context, store.SourceLease) error
 	CommitSourceRefresh(context.Context, store.SourceLease, feeds.Document) error
+	CommitSourceNotModified(context.Context, store.SourceLease) error
 }
+
+// FetchFunc downloads one feed. Production uses feeds.Fetch.
+type FetchFunc func(context.Context, string, feeds.Validators) (feeds.Result, error)
 
 const (
 	DefaultConcurrency = 4
 	maxConcurrency     = 32
+
+	// DefaultInitialDelay is the wait before the first scheduled cycle after start-up.
+	DefaultInitialDelay = 10 * time.Second
+	// DefaultInterval is the scheduling resolution: how often due sources are checked.
+	DefaultInterval = time.Minute
+
+	fetchTimeout        = 15 * time.Second
+	leaseCleanupTimeout = 5 * time.Second
 )
 
+// Control queues refresh work for the Syncer. Scheduled cycles are coalesced
+// into one pending cycle; manual requests are queued per user, at most once per
+// user while that user is queued or being processed.
 type Control struct {
-	trigger chan RefreshRequest
-	state   atomic.Uint32
-}
-
-type RefreshRequest struct {
-	Force  bool
-	UserID int64
+	mu             sync.Mutex
+	cycleRequested bool
+	userQueue      []int64
+	activeUsers    map[int64]struct{}
+	cycleWake      chan struct{}
+	userWake       chan struct{}
 }
 
 func NewControl() *Control {
-	return &Control{trigger: make(chan RefreshRequest, 1)}
+	return &Control{
+		activeUsers: make(map[int64]struct{}),
+		cycleWake:   make(chan struct{}, 1),
+		userWake:    make(chan struct{}, 1),
+	}
 }
 
-func (c *Control) Request(force bool) bool {
-	return c.enqueue(RefreshRequest{Force: force}, force)
+// RequestCycle asks for a scheduled cycle over all due sources as soon as
+// possible. It returns false when a cycle is already pending.
+func (c *Control) RequestCycle() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cycleRequested {
+		return false
+	}
+	c.cycleRequested = true
+	signal(c.cycleWake)
+	return true
 }
 
+// RequestUser queues a refresh of the user's subscriptions. It returns false
+// when the user is already queued or being processed; the existing request
+// covers the new one.
 func (c *Control) RequestUser(userID int64) bool {
-	return c.enqueue(RefreshRequest{UserID: userID}, true)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, active := c.activeUsers[userID]; active {
+		return false
+	}
+	c.activeUsers[userID] = struct{}{}
+	c.userQueue = append(c.userQueue, userID)
+	signal(c.userWake)
+	return true
 }
 
-func (c *Control) enqueue(request RefreshRequest, allowPending bool) bool {
-	for {
-		state := c.state.Load()
-		switch state {
-		case 0:
-			if !c.state.CompareAndSwap(0, 1) {
-				continue
-			}
-		case 2:
-			if !allowPending || !c.state.CompareAndSwap(2, 3) {
-				if allowPending && c.state.Load() != 2 {
-					continue
-				}
-				return false
-			}
-		default:
-			return false
-		}
-		select {
-		case c.trigger <- request:
-			return true
-		default:
-			if allowPending && state == 2 {
-				c.state.CompareAndSwap(3, 2)
-			} else {
-				c.state.CompareAndSwap(1, 0)
-			}
-			return false
-		}
+// IsUserRefreshing reports whether the user's manual refresh is queued or running.
+func (c *Control) IsUserRefreshing(userID int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, active := c.activeUsers[userID]
+	return active
+}
+
+func (c *Control) beginCycle() {
+	c.mu.Lock()
+	c.cycleRequested = false
+	c.mu.Unlock()
+}
+
+func (c *Control) nextUser() (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.userQueue) == 0 {
+		return 0, false
+	}
+	userID := c.userQueue[0]
+	c.userQueue = c.userQueue[1:]
+	return userID, true
+}
+
+func (c *Control) finishUser(userID int64) {
+	c.mu.Lock()
+	delete(c.activeUsers, userID)
+	c.mu.Unlock()
+}
+
+func signal(wake chan struct{}) {
+	select {
+	case wake <- struct{}{}:
+	default:
 	}
 }
 
-func (c *Control) finishRefresh() {
-	if !c.state.CompareAndSwap(3, 1) {
-		c.state.CompareAndSwap(2, 0)
+type Syncer struct {
+	store        RefreshRepository
+	control      *Control
+	concurrency  int
+	slots        chan struct{}
+	fetch        FetchFunc
+	initialDelay time.Duration
+	interval     time.Duration
+	logger       *slog.Logger
+}
+
+// Option customizes a Syncer created by New.
+type Option func(*Syncer)
+
+// WithSchedule sets the delay before the first scheduled cycle and the
+// interval between later cycles (for tests).
+func WithSchedule(initialDelay, interval time.Duration) Option {
+	return func(s *Syncer) {
+		s.initialDelay = initialDelay
+		s.interval = interval
 	}
 }
 
-func (c *Control) IsRunning() bool {
-	return c.state.Load() != 0
+// WithLogger sets the logger for refresh errors and cycle summaries. Without
+// this option slog.Default() is used.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Syncer) { s.logger = logger }
 }
 
-func New(repository RefreshRepository, control *Control, concurrency int) *Syncer {
-	return &Syncer{store: repository, control: control, concurrency: normalizeConcurrency(concurrency)}
+// WithFetcher replaces the feed fetcher (for tests).
+func WithFetcher(fetch FetchFunc) Option {
+	return func(s *Syncer) { s.fetch = fetch }
+}
+
+func New(repository RefreshRepository, control *Control, concurrency int, options ...Option) *Syncer {
+	concurrency = normalizeConcurrency(concurrency)
+	s := &Syncer{
+		store:        repository,
+		control:      control,
+		concurrency:  concurrency,
+		slots:        make(chan struct{}, concurrency),
+		fetch:        feeds.Fetch,
+		initialDelay: DefaultInitialDelay,
+		interval:     DefaultInterval,
+		logger:       slog.Default(),
+	}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 func ConcurrencyFromEnv() int {
@@ -124,46 +203,144 @@ func normalizeConcurrency(concurrency int) int {
 	return concurrency
 }
 
+// Start runs the syncer in a goroutine and returns a channel that is closed
+// once Run has returned after ctx is cancelled.
+func (s *Syncer) Start(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Run(ctx)
+	}()
+	return done
+}
+
+// Run processes scheduled cycles and manual user requests until ctx is
+// cancelled, and returns after all in-flight source work has stopped.
 func (s *Syncer) Run(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Minute)
-	defer ticker.Stop()
+	var loops sync.WaitGroup
+	loops.Go(func() { s.runSchedule(ctx) })
+	loops.Go(func() { s.runUserRequests(ctx) })
+	loops.Wait()
+}
+
+func (s *Syncer) runSchedule(ctx context.Context) {
+	timer := time.NewTimer(s.initialDelay)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if s.control.state.CompareAndSwap(0, 2) {
-				s.refresh(ctx, RefreshRequest{})
-				s.control.finishRefresh()
-			}
-		case request := <-s.control.trigger:
-			s.control.state.Store(2)
-			s.refresh(ctx, request)
-			s.control.finishRefresh()
+		case <-timer.C:
+			timer.Reset(s.interval)
+		case <-s.control.cycleWake:
 		}
+		if ctx.Err() != nil {
+			return
+		}
+		s.control.beginCycle()
+		s.refresh(ctx, 0)
 	}
 }
 
-func (s *Syncer) refresh(ctx context.Context, request RefreshRequest) {
+func (s *Syncer) runUserRequests(ctx context.Context) {
+	for {
+		userID, ok := s.control.nextUser()
+		if !ok {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.control.userWake:
+			}
+			continue
+		}
+		if ctx.Err() == nil {
+			s.refresh(ctx, userID)
+		}
+		s.control.finishUser(userID)
+	}
+}
+
+// refreshOutcome is the result of one source within a refresh run.
+type refreshOutcome int
+
+const (
+	outcomeSkipped     refreshOutcome = iota // not claimed (another worker or not due) or cancelled
+	outcomeRefreshed                         // new content committed
+	outcomeNotModified                       // HTTP 304 committed
+	outcomeFailed                            // fetch, claim or commit failed
+)
+
+type refreshCounts struct {
+	refreshed, notModified, failed, skipped atomic.Int64
+}
+
+func (c *refreshCounts) add(outcome refreshOutcome) {
+	switch outcome {
+	case outcomeRefreshed:
+		c.refreshed.Add(1)
+	case outcomeNotModified:
+		c.notModified.Add(1)
+	case outcomeFailed:
+		c.failed.Add(1)
+	default:
+		c.skipped.Add(1)
+	}
+}
+
+func (s *Syncer) refresh(ctx context.Context, userID int64) {
+	started := time.Now()
 	var targets []store.FeedTarget
 	var err error
-	if request.UserID != 0 {
-		targets, err = s.store.SourcesForUser(ctx, request.UserID)
+	if userID != 0 {
+		targets, err = s.store.SourcesForUser(ctx, userID)
 	} else {
 		targets, err = s.store.DueSources(ctx)
 	}
 	if err != nil {
-		log.Printf("rss refresh: list due feeds: %v", err)
+		if ctx.Err() == nil {
+			s.logger.Error("rss refresh: list feeds failed", slog.String("error", err.Error()), slog.Int64("user_id", userID))
+		}
 		return
 	}
+	var counts refreshCounts
 	processTargets(ctx, targets, s.concurrency, func(ctx context.Context, target store.FeedTarget) {
-		s.refreshSource(ctx, target, request.UserID)
+		counts.add(s.refreshSource(ctx, target, userID))
 	})
+	s.logSummary(ctx, userID, len(targets), &counts, time.Since(started))
 }
 
-func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, userID int64) {
+// logSummary writes one record per scheduled cycle or manual refresh. Cycles
+// without due sources run every minute and are logged at debug level only.
+func (s *Syncer) logSummary(ctx context.Context, userID int64, targets int, counts *refreshCounts, duration time.Duration) {
+	level := slog.LevelInfo
+	if targets == 0 {
+		level = slog.LevelDebug
+	}
+	attributes := []slog.Attr{slog.String("trigger", "schedule")}
+	if userID != 0 {
+		attributes = []slog.Attr{slog.String("trigger", "user"), slog.Int64("user_id", userID)}
+	}
+	attributes = append(attributes,
+		slog.Int("targets", targets),
+		slog.Int64("refreshed", counts.refreshed.Load()),
+		slog.Int64("not_modified", counts.notModified.Load()),
+		slog.Int64("failed", counts.failed.Load()),
+		slog.Int64("skipped", counts.skipped.Load()),
+		slog.Float64("duration_ms", math.Round(float64(duration.Microseconds()))/1000),
+	)
+	s.logger.LogAttrs(context.WithoutCancel(ctx), level, "rss refresh cycle finished", attributes...)
+}
+
+func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, userID int64) refreshOutcome {
+	// Scheduled cycles and user requests share one budget of concurrent sources.
+	select {
+	case s.slots <- struct{}{}:
+	case <-ctx.Done():
+		return outcomeSkipped
+	}
+	defer func() { <-s.slots }()
 	if ctx.Err() != nil {
-		return
+		return outcomeSkipped
 	}
 	var requester *int64
 	if userID != 0 {
@@ -171,28 +348,58 @@ func (s *Syncer) refreshSource(ctx context.Context, target store.FeedTarget, use
 	}
 	lease, claimed, err := s.store.ClaimSource(ctx, target.ID, requester)
 	if err != nil {
-		log.Printf("rss refresh: claim source %d: %v", target.ID, err)
-		return
+		if ctx.Err() != nil {
+			return outcomeSkipped
+		}
+		s.logger.Error("rss refresh: claim source failed", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
+		return outcomeFailed
 	}
 	if !claimed {
-		return
+		return outcomeSkipped
 	}
-	feedContext, cancel := context.WithTimeout(ctx, 15*time.Second)
-	document, fetchErr := feeds.Fetch(feedContext, lease.URL)
+	feedContext, cancel := context.WithTimeout(ctx, fetchTimeout)
+	result, fetchErr := s.fetch(feedContext, lease.URL, lease.Validators)
 	cancel()
-	if fetchErr != nil {
-		if ctx.Err() != nil {
-			_ = s.store.ReleaseSourceLease(context.Background(), lease, "")
-			return
-		}
-		message := strings.TrimSpace(fetchErr.Error())
-		if err := s.store.ReleaseSourceLease(ctx, lease, message); err != nil {
-			log.Printf("rss refresh: release failed source %d: %v", target.ID, err)
-		}
-		return
+	if ctx.Err() != nil {
+		s.abandon(ctx, lease)
+		return outcomeSkipped
 	}
-	if err := s.store.CommitSourceRefresh(ctx, lease, document); err != nil {
-		log.Printf("rss refresh: commit source %d: %v", target.ID, err)
+	if fetchErr != nil {
+		message := strings.TrimSpace(fetchErr.Error())
+		// Fetch failures are expected for broken feeds and shown per feed in the
+		// UI, so they are logged at debug level; the cycle summary counts them.
+		s.logger.Debug("rss refresh: fetch failed", slog.Int64("source_id", target.ID), slog.String("error", message))
+		if err := s.store.ReleaseSourceLease(ctx, lease, message); err != nil {
+			s.logger.Error("rss refresh: release failed source", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
+		}
+		return outcomeFailed
+	}
+	lease.Validators = result.Validators
+	outcome := outcomeRefreshed
+	if result.NotModified {
+		outcome = outcomeNotModified
+		err = s.store.CommitSourceNotModified(ctx, lease)
+	} else {
+		err = s.store.CommitSourceRefresh(ctx, lease, result.Document)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			s.abandon(ctx, lease)
+			return outcomeSkipped
+		}
+		s.logger.Error("rss refresh: commit source failed", slog.Int64("source_id", target.ID), slog.String("error", err.Error()))
+		return outcomeFailed
+	}
+	return outcome
+}
+
+// abandon gives up a lease after cancellation without recording an attempt.
+// It uses a short cleanup context because ctx is already cancelled.
+func (s *Syncer) abandon(ctx context.Context, lease store.SourceLease) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), leaseCleanupTimeout)
+	defer cancel()
+	if err := s.store.AbandonSourceLease(cleanup, lease); err != nil && !errors.Is(err, store.ErrLeaseLost) {
+		s.logger.Warn("rss refresh: abandon lease failed", slog.Int64("source_id", lease.ID), slog.String("error", err.Error()))
 	}
 }
 

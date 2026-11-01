@@ -59,6 +59,7 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "auth.session_check_failed", "The session could not be verified.")
 			return
 		}
+		setLoggedUser(r, user.ID)
 		ctx := context.WithValue(r.Context(), sessionUserKey{}, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -93,13 +94,34 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "auth.invalid_login_request", "Enter a valid email address and password.")
 		return
 	}
+	// Check the limits before any Argon2id work so throttled requests are cheap.
+	attempt, wait, allowed := h.loginLimiter.begin(clientIP(r, h.trustedProxies), request.Email)
+	if !allowed {
+		w.Header().Set("Retry-After", retryAfterSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, "auth.rate_limited", "Too many sign-in attempts. Please wait and try again later.")
+		return
+	}
 	user, passwordHash, err := h.store.UserCredentialByEmail(r.Context(), request.Email)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !auth.VerifyPassword(passwordHash, request.Password)) {
+	if errors.Is(err, store.ErrNotFound) {
+		// Spend the same Argon2id work as for an existing account so response
+		// timing does not reveal which e-mail addresses are registered.
+		auth.SimulatePasswordVerification(request.Password)
 		writeError(w, http.StatusUnauthorized, "auth.invalid_credentials", "The email address or password is incorrect.")
 		return
 	}
 	if err != nil {
+		h.loginLimiter.cancel(attempt)
 		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
+		return
+	}
+	if !auth.VerifyPassword(passwordHash, request.Password) {
+		writeError(w, http.StatusUnauthorized, "auth.invalid_credentials", "The email address or password is incorrect.")
+		return
+	}
+	h.loginLimiter.succeed(attempt)
+	// Only reveal the disabled state after a correct password, and never create a session.
+	if user.Disabled {
+		writeError(w, http.StatusForbidden, "auth.account_disabled", "This account has been disabled. Contact an administrator.")
 		return
 	}
 	token, err := auth.NewSessionToken()
@@ -123,8 +145,12 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	h.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
@@ -150,12 +176,9 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := currentUser(r)
 	updated, err := h.store.UpdateUserProfile(r.Context(), user.ID, request.FirstName, request.LastName, request.Nickname)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "profile.save_failed", "The profile could not be saved.")
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, errUserNotFound}},
+			apiError{http.StatusInternalServerError, "profile.save_failed", "The profile could not be saved."})
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)

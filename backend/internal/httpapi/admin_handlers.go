@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,12 +41,9 @@ func (h *Handler) createAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := h.store.CreateUser(r.Context(), request.Email, passwordHash, request.Role)
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "admin.email_already_exists", "A user with this email address already exists.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "admin.user_create_failed", "The user could not be created.")
+		writeStoreError(w, err, []storeError{{store.ErrDuplicate, apiError{http.StatusConflict, "admin.email_already_exists", "A user with this email address already exists."}}},
+			apiError{http.StatusInternalServerError, "admin.user_create_failed", "The user could not be created."})
 		return
 	}
 	writeJSON(w, http.StatusCreated, user)
@@ -84,25 +81,44 @@ func (h *Handler) updateAdminUser(w http.ResponseWriter, r *http.Request) {
 			interval = &value
 		}
 	}
+	var disabled *bool
+	if rawDisabled, exists := request["disabled"]; exists {
+		var value bool
+		if err := json.Unmarshal(rawDisabled, &value); err != nil || string(rawDisabled) == "null" {
+			writeError(w, http.StatusBadRequest, "admin.disabled_invalid", "The disabled flag must be true or false.")
+			return
+		}
+		disabled = &value
+	}
 	for key := range request {
-		if key != "role" && key != "refreshIntervalMinutes" {
+		if key != "role" && key != "refreshIntervalMinutes" && key != "disabled" {
 			writeError(w, http.StatusBadRequest, "admin.user_field_unknown", "The user field is not recognized.")
 			return
 		}
 	}
-	if role == nil && !updateInterval {
-		writeError(w, http.StatusBadRequest, "admin.user_update_missing", "Specify a role or refresh interval.")
+	if role == nil && !updateInterval && disabled == nil {
+		writeError(w, http.StatusBadRequest, "admin.user_update_missing", "Specify a role, refresh interval, or account status.")
 		return
 	}
-	if err := h.store.UpdateUserAdmin(r.Context(), userID, role, updateInterval, interval); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
-		return
-	} else if err != nil {
-		if errors.Is(err, store.ErrLastAdministrator) {
-			writeError(w, http.StatusConflict, "admin.last_administrator", "The last Administrator cannot be demoted. The system must always have at least one Administrator.")
-		} else {
-			writeError(w, http.StatusInternalServerError, "admin.user_save_failed", "The user could not be saved.")
+	actor, _ := currentUser(r)
+	if actor.ID == userID {
+		// Administrators cannot lock themselves out: disabling or changing their own role
+		// would revoke the session they are using. Another Administrator must do it.
+		if disabled != nil && *disabled {
+			writeError(w, http.StatusConflict, "admin.cannot_disable_self", "You cannot disable your own account.")
+			return
 		}
+		if role != nil && *role != actor.Role {
+			writeError(w, http.StatusConflict, "admin.cannot_change_own_role", "You cannot change your own role.")
+			return
+		}
+	}
+	update := store.UserAdminUpdate{Role: role, UpdateInterval: updateInterval, Interval: interval, Disabled: disabled}
+	if err := h.store.UpdateUserAdmin(r.Context(), userID, update, actor.ID); err != nil {
+		writeStoreError(w, err, []storeError{
+			{store.ErrNotFound, errUserNotFound},
+			{store.ErrLastAdministrator, apiError{http.StatusConflict, "admin.last_administrator", "The last active Administrator cannot be demoted or disabled. The system must always have at least one active Administrator."}},
+		}, apiError{http.StatusInternalServerError, "admin.user_save_failed", "The user could not be saved."})
 		return
 	}
 	users, err := h.store.ListUsers(r.Context())
@@ -116,7 +132,26 @@ func (h *Handler) updateAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
+	errUserNotFound.write(w)
+}
+
+// signOutAdminUser revokes every session of a user. Signing yourself out everywhere
+// also clears your own session cookie.
+func (h *Handler) signOutAdminUser(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || userID < 1 {
+		writeError(w, http.StatusBadRequest, "admin.user_id_invalid", "The user ID is invalid.")
+		return
+	}
+	if err := h.store.RevokeUserSessions(r.Context(), userID); err != nil {
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, errUserNotFound}},
+			apiError{http.StatusInternalServerError, "admin.user_sign_out_failed", "The user could not be signed out."})
+		return
+	}
+	if actor, _ := currentUser(r); actor.ID == userID {
+		h.clearSessionCookie(w)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) getAdminSettings(w http.ResponseWriter, r *http.Request) {
@@ -154,12 +189,30 @@ func (h *Handler) updateAdminSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listFeedRequests(w http.ResponseWriter, r *http.Request) {
-	requests, err := h.store.ListPendingFeedRequests(r.Context())
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "feed.requests_limit_invalid", "The feed request limit must be between 1 and 200.")
+			return
+		}
+		limit = parsed
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "feed.requests_offset_invalid", "The feed request offset must be zero or a positive whole number.")
+			return
+		}
+		offset = parsed
+	}
+	requests, total, err := h.store.ListPendingFeedRequests(r.Context(), limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "feed.requests_load_failed", "Feed requests could not be loaded.")
 		return
 	}
-	writeJSON(w, http.StatusOK, requests)
+	writeJSON(w, http.StatusOK, map[string]any{"requests": requests, "total": total})
 }
 
 func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {
@@ -168,18 +221,19 @@ func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "feed.request_id_invalid", "The feed request ID is invalid.")
 		return
 	}
-	if _, err := h.store.ApproveFeedRequest(r.Context(), *requestID); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "feed.request_not_found", "The feed request could not be found.")
-		return
-	} else if errors.Is(err, store.ErrFeedLimitReached) {
-		writeError(w, http.StatusConflict, "feed.limit_reached", "The requester has reached the maximum of 100 feeds.")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "feed.request_approve_failed", "The feed request could not be approved.")
+	result, err := h.store.ApproveFeedRequest(r.Context(), *requestID)
+	if err != nil {
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, errFeedRequestNotFound}},
+			apiError{http.StatusInternalServerError, "feed.request_approve_failed", "The feed request could not be approved."})
 		return
 	}
+	for _, skipped := range result.Skipped {
+		h.logger.InfoContext(r.Context(), "feed request approved: requester skipped",
+			slog.Int64("feed_request_id", *requestID), slog.Int64("source_id", result.SourceID),
+			slog.Int64("skipped_user_id", skipped.UserID), slog.String("reason", skipped.Reason))
+	}
 	if h.control != nil {
-		h.control.Request(true)
+		h.control.RequestCycle()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -190,11 +244,9 @@ func (h *Handler) rejectFeedRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "feed.request_id_invalid", "The feed request ID is invalid.")
 		return
 	}
-	if err := h.store.RejectFeedRequest(r.Context(), *requestID); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "feed.request_not_found", "The feed request could not be found.")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "feed.request_reject_failed", "The feed request could not be rejected.")
+	if err := h.store.RejectFeedRequest(r.Context(), *requestID); err != nil {
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, errFeedRequestNotFound}},
+			apiError{http.StatusInternalServerError, "feed.request_reject_failed", "The feed request could not be rejected."})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -217,16 +269,11 @@ func (h *Handler) addFeedStopWord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	word, err := h.store.AddStopWord(r.Context(), request.Term)
-	if errors.Is(err, store.ErrInvalidStopWord) {
-		writeError(w, http.StatusBadRequest, "admin.stop_word_invalid", "A stop word or phrase must contain 1 to 80 letters or digits.")
-		return
-	}
-	if errors.Is(err, store.ErrDuplicate) {
-		writeError(w, http.StatusConflict, "admin.stop_word_exists", "That stop word or phrase is already in the dictionary.")
-		return
-	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "admin.stop_word_add_failed", "The stop word could not be added.")
+		writeStoreError(w, err, []storeError{
+			{store.ErrInvalidStopWord, apiError{http.StatusBadRequest, "admin.stop_word_invalid", "A stop word or phrase must contain 1 to 80 letters or digits."}},
+			{store.ErrDuplicate, apiError{http.StatusConflict, "admin.stop_word_exists", "That stop word or phrase is already in the dictionary."}},
+		}, apiError{http.StatusInternalServerError, "admin.stop_word_add_failed", "The stop word could not be added."})
 		return
 	}
 	writeJSON(w, http.StatusCreated, word)
@@ -238,11 +285,9 @@ func (h *Handler) deleteFeedStopWord(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "admin.stop_word_id_invalid", "The stop-word ID is invalid.")
 		return
 	}
-	if err := h.store.DeleteStopWord(r.Context(), *id); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "admin.stop_word_not_found", "The stop word was not found.")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "admin.stop_word_delete_failed", "The stop word could not be deleted.")
+	if err := h.store.DeleteStopWord(r.Context(), *id); err != nil {
+		writeStoreError(w, err, []storeError{{store.ErrNotFound, apiError{http.StatusNotFound, "admin.stop_word_not_found", "The stop word was not found."}}},
+			apiError{http.StatusInternalServerError, "admin.stop_word_delete_failed", "The stop word could not be deleted."})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -281,13 +326,11 @@ func (h *Handler) moderateBlockedFeedArticle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	user, _ := currentUser(r)
-	err := h.store.ModerateBlockedFeedArticle(r.Context(), *id, allow, user.ID)
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrQuarantineUnavailable) {
-		writeError(w, http.StatusNotFound, "admin.blocked_article_not_found", "The blocked article was not found or is unavailable for moderation.")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "admin.blocked_article_moderate_failed", "The blocked article could not be moderated.")
+	if err := h.store.ModerateBlockedFeedArticle(r.Context(), *id, allow, user.ID); err != nil {
+		writeStoreError(w, err, []storeError{
+			{store.ErrNotFound, errBlockedArticleUnavailable},
+			{store.ErrQuarantineUnavailable, errBlockedArticleUnavailable},
+		}, apiError{http.StatusInternalServerError, "admin.blocked_article_moderate_failed", "The blocked article could not be moderated."})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
