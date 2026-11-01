@@ -31,11 +31,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid retention configuration: %v", err)
 	}
+	poolMaxConns, err := poolMaxConnsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("invalid database pool configuration: %v", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := connectDatabase(ctx, connectionString)
+	pool, err := connectDatabase(ctx, connectionString, poolMaxConns)
 	if err != nil {
 		log.Fatalf("database connection failed: %v", err)
 	}
@@ -131,12 +135,12 @@ func databaseURL() string {
 	return connection.String()
 }
 
-func connectDatabase(ctx context.Context, connectionString string) (*pgxpool.Pool, error) {
+func connectDatabase(ctx context.Context, connectionString string, maxConns int32) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(connectionString)
 	if err != nil {
 		return nil, err
 	}
-	config.MaxConns = 12
+	config.MaxConns = maxConns
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err

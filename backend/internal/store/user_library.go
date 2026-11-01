@@ -36,16 +36,47 @@ func NormalizeFeedURL(raw string) (string, error) {
 	return parsed.String(), nil
 }
 
+// unreadCountsCTE continues a WITH clause whose first CTE, subs(id,
+// feed_source_id, folder_id), selects user_feeds rows of the user given by the
+// SQL parameter userParam (such as "$1"). It defines
+// unread(feed_id, folder_id, n): a subscription's unread count is the number of
+// its source's articles minus the number the user has marked read, which equals
+// counting articles without a read state. Both counts use index-only scans of
+// articles_source_published_id_idx and user_article_states_read_idx instead of
+// joining every article with its state.
+//
+// The user id is repeated as a parameter (not joined from subs) so the planner
+// can use the partial index for that user, and subs must be declared NOT
+// MATERIALIZED: a materialized CTE hides the user_feeds statistics, and the
+// resulting row estimate of 1 led to a nested loop that re-aggregated the read
+// counts once per subscription (80 ms instead of 25 ms on the seeded data).
+func unreadCountsCTE(userParam string) string {
+	return `
+		read_counts AS (
+			SELECT a.feed_source_id, COUNT(*) AS n
+			FROM subs
+			JOIN articles a ON a.feed_source_id = subs.feed_source_id
+			JOIN user_article_states state ON state.user_id = ` + userParam + ` AND state.article_id = a.id
+			WHERE state.is_read
+			GROUP BY a.feed_source_id
+		),
+		unread AS (
+			SELECT subs.id AS feed_id, subs.folder_id,
+			       (SELECT COUNT(*) FROM articles a WHERE a.feed_source_id = subs.feed_source_id) - COALESCE(read_counts.n, 0) AS n
+			FROM subs LEFT JOIN read_counts ON read_counts.feed_source_id = subs.feed_source_id
+		)`
+}
+
 func (s *Store) ListFoldersForUser(ctx context.Context, userID int64) ([]Folder, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT d.id, d.name, d.color, COUNT(a.id) FILTER (WHERE COALESCE(state.is_read, FALSE) = FALSE)::int
+		WITH subs AS NOT MATERIALIZED (
+			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf
+			WHERE uf.user_id = $1 AND uf.folder_id IS NOT NULL
+		),`+unreadCountsCTE("$1")+`
+		SELECT d.id, d.name, d.color, COALESCE(folder_unread.n, 0)::int
 		FROM folders d
-		LEFT JOIN user_feeds uf ON uf.folder_id = d.id AND uf.user_id = $1
-		LEFT JOIN feed_sources fs ON fs.id = uf.feed_source_id
-		LEFT JOIN articles a ON a.feed_source_id = fs.id
-		LEFT JOIN user_article_states state ON state.user_id = $1 AND state.article_id = a.id
+		LEFT JOIN (SELECT folder_id, SUM(n) AS n FROM unread GROUP BY folder_id) folder_unread ON folder_unread.folder_id = d.id
 		WHERE d.owner_user_id = $1
-		GROUP BY d.id
 		ORDER BY LOWER(d.name), d.id`, userID)
 	if err != nil {
 		return nil, err
@@ -78,15 +109,14 @@ func (s *Store) UpdateFolderForUser(ctx context.Context, userID, folderID int64,
 			UPDATE folders SET name=$3, color=$4
 			WHERE id=$1 AND owner_user_id=$2
 			RETURNING id, name, color
-		)
+		),
+		subs AS NOT MATERIALIZED (
+			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf
+			WHERE uf.user_id = $2 AND uf.folder_id = $1
+		),`+unreadCountsCTE("$2")+`
 		SELECT updated_folder.id, updated_folder.name, updated_folder.color,
-		       COUNT(a.id) FILTER (WHERE COALESCE(state.is_read, FALSE) = FALSE)::int
-		FROM updated_folder
-		LEFT JOIN user_feeds uf ON uf.folder_id = updated_folder.id AND uf.user_id = $2
-		LEFT JOIN feed_sources fs ON fs.id = uf.feed_source_id
-		LEFT JOIN articles a ON a.feed_source_id = fs.id
-		LEFT JOIN user_article_states state ON state.user_id = $2 AND state.article_id = a.id
-		GROUP BY updated_folder.id, updated_folder.name, updated_folder.color`, folderID, userID, name, color).Scan(&folder.ID, &folder.Name, &folder.Color, &folder.UnreadCount)
+		       COALESCE((SELECT SUM(unread.n) FROM unread), 0)::int
+		FROM updated_folder`, folderID, userID, name, color).Scan(&folder.ID, &folder.Name, &folder.Color, &folder.UnreadCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Folder{}, ErrNotFound
 	}
@@ -153,16 +183,16 @@ func (s *Store) DeleteFolderForUser(ctx context.Context, userID, folderID int64,
 
 func (s *Store) ListFeedsForUser(ctx context.Context, userID int64) ([]Feed, error) {
 	rows, err := s.pool.Query(ctx, `
+		WITH subs AS NOT MATERIALIZED (
+			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf WHERE uf.user_id = $1
+		),`+unreadCountsCTE("$1")+`
 		SELECT uf.id, COALESCE(uf.title_override, fs.title), fs.url, uf.folder_id, d.name,
-		       COUNT(a.id) FILTER (WHERE COALESCE(state.is_read, FALSE) = FALSE)::int,
-		       fs.last_checked_at, fs.last_error
+		       unread.n::int, fs.last_checked_at, fs.last_error
 		FROM user_feeds uf
+		JOIN unread ON unread.feed_id = uf.id
 		JOIN feed_sources fs ON fs.id = uf.feed_source_id
 		LEFT JOIN folders d ON d.id = uf.folder_id AND d.owner_user_id = uf.user_id
-		LEFT JOIN articles a ON a.feed_source_id = fs.id
-		LEFT JOIN user_article_states state ON state.user_id = uf.user_id AND state.article_id = a.id
 		WHERE uf.user_id = $1
-		GROUP BY uf.id, fs.id, d.name
 		ORDER BY uf.created_at DESC, uf.id DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -379,8 +409,10 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	if folderID != nil {
 		conditions = append(conditions, "uf.folder_id = "+add(*folderID))
 	}
-	if query != "" {
-		conditions = append(conditions, "STRPOS(LOWER(a.title || ' ' || a.summary), LOWER("+add(query)+")) > 0")
+	searching := false
+	if condition := searchCondition(query, add); condition != "" {
+		conditions = append(conditions, condition)
+		searching = true
 	}
 	if before != nil {
 		conditions = append(conditions, "(a.published_at, a.id) < ("+add(before.PublishedAt)+"::timestamptz, "+add(before.ID)+"::bigint)")
@@ -394,6 +426,12 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	}
 	limitArg := add(limit + 1)
 	offsetArg := add(offset)
+	if searching {
+		// Plan every search with its actual pattern. A cached prepared statement may
+		// switch to a generic plan that always reads the trigram index, which takes
+		// seconds for patterns that occur in most articles.
+		args = append([]any{pgx.QueryExecModeCacheDescribe}, args...)
+	}
 	rows, err := s.pool.Query(ctx, `SELECT a.id, uf.id, COALESCE(uf.title_override, fs.title), fs.url, a.title, a.url, a.summary, a.published_at,
 		COALESCE(state.is_read, FALSE), COALESCE(state.is_saved, FALSE)
 		FROM articles a JOIN user_feeds uf ON uf.feed_source_id = a.feed_source_id
@@ -446,51 +484,4 @@ func (s *Store) GetArticleForUser(ctx context.Context, userID, articleID int64) 
 		return Article{}, ErrNotFound
 	}
 	return article, err
-}
-
-func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []feeds.Item) error {
-	for _, item := range items {
-		var existingID int64
-		err := tx.QueryRow(ctx, `UPDATE articles SET title=$3,url=$4,summary=$5,
-			published_at=CASE WHEN $7 THEN $6 ELSE published_at END
-			WHERE feed_source_id=$1 AND guid=$2 RETURNING id`,
-			sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt, item.HasPublishedAt).Scan(&existingID)
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-
-		// The GUID is unknown, so look for the same article republished under
-		// a new GUID within 30 minutes. Only strong evidence counts: an equal
-		// non-empty URL, or both an equal non-empty title and an equal
-		// non-empty summary. Repeated titles ("Daily digest") or boilerplate
-		// summaries alone must not merge distinct articles and their state.
-		err = tx.QueryRow(ctx, `SELECT id FROM articles
-			WHERE feed_source_id=$1
-			AND published_at BETWEEN $5::timestamptz - INTERVAL '30 minutes' AND $5::timestamptz + INTERVAL '30 minutes'
-			AND (($3 <> '' AND url=$3) OR ($2 <> '' AND $4 <> '' AND title=$2 AND summary=$4))
-			ORDER BY CASE WHEN $3 <> '' AND url=$3 THEN 0 ELSE 1 END,
-				ABS(EXTRACT(EPOCH FROM (published_at - $5)))
-			LIMIT 1 FOR UPDATE`, sourceID, item.Title, item.URL, item.Summary, item.PublishedAt).Scan(&existingID)
-		if err == nil {
-			_, err = tx.Exec(ctx, `UPDATE articles SET guid=$2,title=$3,url=$4,summary=$5,
-				published_at=CASE WHEN $7 THEN $6 ELSE published_at END WHERE id=$1`,
-				existingID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt, item.HasPublishedAt)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-
-		if _, err := tx.Exec(ctx, `INSERT INTO articles (feed_source_id, guid, title, url, summary, published_at)
-			VALUES ($1, $2, $3, $4, $5, $6)`, sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt); err != nil {
-			return err
-		}
-	}
-	return nil
 }

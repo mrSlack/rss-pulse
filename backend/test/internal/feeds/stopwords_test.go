@@ -18,6 +18,13 @@ func TestFindStopWordMatchUsesWholeWordsAndNormalizedPhrases(t *testing.T) {
 		{name: "word boundary avoids substring", text: "A classic assessment", terms: []string{"ass"}},
 		{name: "HTML entity decodes", text: "adult&nbsp;content", terms: []string{"adult content"}, want: "adult content"},
 		{name: "no configured terms", text: "ordinary news", terms: nil},
+		{name: "term is the whole text", text: "Spam", terms: []string{"spam"}, want: "spam"},
+		{name: "term at the end", text: "this is spam", terms: []string{"spam"}, want: "spam"},
+		{name: "first configured term wins", text: "casino and lottery", terms: []string{"lottery", "casino"}, want: "lottery"},
+		{name: "term longer than text", text: "hi", terms: []string{"hi there"}},
+		{name: "Cyrillic phrase across punctuation", text: "Новое секс-видео", terms: []string{"секс видео"}, want: "секс видео"},
+		{name: "Cyrillic word boundary", text: "сексуальность и сексология", terms: []string{"секс"}},
+		{name: "empty term is ignored", text: "ordinary news", terms: []string{"", "news"}, want: "news"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
