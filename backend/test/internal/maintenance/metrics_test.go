@@ -18,7 +18,7 @@ func TestJobRunOnceRecordsMetrics(t *testing.T) {
 	}
 	for kind, want := range map[string]float64{
 		metrics.MaintenanceArticles: 3, metrics.MaintenanceQuarantine: 2, metrics.MaintenanceUnsubscribedSources: 1,
-		metrics.MaintenanceUnsubscribedSourceArticles: 4, metrics.MaintenanceSessions: 1,
+		metrics.MaintenanceUnsubscribedSourceArticles: 4, metrics.MaintenanceSessions: 1, metrics.MaintenanceLoginAttempts: 5,
 	} {
 		if got := metricstest.Value(t, m.Registry(), "pulse_maintenance_deleted_rows_total", map[string]string{"kind": kind}); got != want {
 			t.Errorf("deleted %s = %v, want %v", kind, got, want)

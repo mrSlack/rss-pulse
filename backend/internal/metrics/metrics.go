@@ -43,6 +43,7 @@ const (
 	MaintenanceUnsubscribedSources        = "unsubscribed_sources"
 	MaintenanceUnsubscribedSourceArticles = "unsubscribed_source_articles"
 	MaintenanceSessions                   = "sessions"
+	MaintenanceLoginAttempts              = "login_attempts"
 )
 
 // UnmatchedRoute is the route label of requests that matched no API route.
@@ -151,7 +152,7 @@ func New() *Metrics {
 	for _, outcome := range []string{"success", "failure"} {
 		m.maintenanceRuns.WithLabelValues(outcome)
 	}
-	for _, kind := range []string{MaintenanceArticles, MaintenanceQuarantine, MaintenanceUnsubscribedSources, MaintenanceUnsubscribedSourceArticles, MaintenanceSessions} {
+	for _, kind := range []string{MaintenanceArticles, MaintenanceQuarantine, MaintenanceUnsubscribedSources, MaintenanceUnsubscribedSourceArticles, MaintenanceSessions, MaintenanceLoginAttempts} {
 		m.maintenanceDeleted.WithLabelValues(kind)
 	}
 	m.registry.MustRegister(

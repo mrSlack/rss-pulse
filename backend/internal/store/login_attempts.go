@@ -29,6 +29,17 @@ type LoginThrottle struct {
 	IPAttemptWindow      time.Duration
 }
 
+// DefaultLoginThrottle is the installation's sign-in limit: 10 failed attempts
+// per account within 15 minutes and 30 attempts per client IP within a minute.
+// The sign-in limiter checks against it and the maintenance job deletes the
+// attempts that have left its windows.
+var DefaultLoginThrottle = LoginThrottle{
+	AccountFailureLimit:  10,
+	AccountFailureWindow: 15 * time.Minute,
+	IPAttemptLimit:       30,
+	IPAttemptWindow:      time.Minute,
+}
+
 // LoginAttempt identifies the provisional account failure recorded by
 // BeginLoginAttempt.
 type LoginAttempt struct {

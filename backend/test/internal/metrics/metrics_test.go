@@ -96,7 +96,7 @@ func TestOutcomeAndKindLabelsArePreinitialized(t *testing.T) {
 	for _, outcome := range []string{metrics.SignInSuccess, metrics.SignInFailure, metrics.SignInRateLimited, metrics.SignInError} {
 		metricstest.Value(t, m.Registry(), "pulse_signin_attempts_total", map[string]string{"outcome": outcome})
 	}
-	for _, kind := range []string{metrics.MaintenanceArticles, metrics.MaintenanceQuarantine, metrics.MaintenanceUnsubscribedSources, metrics.MaintenanceUnsubscribedSourceArticles, metrics.MaintenanceSessions} {
+	for _, kind := range []string{metrics.MaintenanceArticles, metrics.MaintenanceQuarantine, metrics.MaintenanceUnsubscribedSources, metrics.MaintenanceUnsubscribedSourceArticles, metrics.MaintenanceSessions, metrics.MaintenanceLoginAttempts} {
 		metricstest.Value(t, m.Registry(), "pulse_maintenance_deleted_rows_total", map[string]string{"kind": kind})
 	}
 }

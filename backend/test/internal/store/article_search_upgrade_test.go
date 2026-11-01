@@ -164,6 +164,16 @@ func TestArticleSearchUpgradeBackfillsAndBuildsIndex(t *testing.T) {
 	assertSearch(t, f, "größere umleitung", "de")
 	assertSearch(t, f, "link text", "markup")
 	assertSearchUsesIndex(t, f)
+	// The backfill rewrote every row; the upgrade vacuums the table so the old row
+	// versions become reusable and index-only scans work again without waiting
+	// for autovacuum.
+	var vacuumed, analyzed bool
+	if err := f.pool.QueryRow(ctx, `SELECT last_vacuum IS NOT NULL, last_analyze IS NOT NULL FROM pg_stat_user_tables WHERE relid = 'articles'::regclass`).Scan(&vacuumed, &analyzed); err != nil {
+		t.Fatal(err)
+	}
+	if !vacuumed || !analyzed {
+		t.Fatalf("articles vacuumed=%v analyzed=%v after the upgrade, want both", vacuumed, analyzed)
+	}
 
 	// A completed upgrade is recorded and later runs return without touching rows.
 	if _, err := f.pool.Exec(ctx, `UPDATE articles SET search_key = NULL WHERE guid = 'ru'`); err != nil {

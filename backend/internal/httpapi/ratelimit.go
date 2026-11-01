@@ -15,24 +15,14 @@ import (
 	"github.com/pulse-reader/app/internal/store"
 )
 
-// Sign-in throttling limits. The state lives in PostgreSQL (login_attempts), so
-// it survives restarts and is shared by every API instance.
-const (
-	accountFailureLimit  = 10
-	accountFailureWindow = 15 * time.Minute
-	ipAttemptLimit       = 30
-	ipAttemptWindow      = time.Minute
-	// limiterSweepInterval is how often each API instance deletes attempts
-	// that have left their window.
-	limiterSweepInterval = time.Minute
-)
+// limiterSweepInterval is how often each API instance deletes attempts that
+// have left their window while sign-ins arrive. The periodic maintenance job
+// also deletes them, so rows do not linger once sign-ins stop.
+const limiterSweepInterval = time.Minute
 
-var loginThrottle = store.LoginThrottle{
-	AccountFailureLimit:  accountFailureLimit,
-	AccountFailureWindow: accountFailureWindow,
-	IPAttemptLimit:       ipAttemptLimit,
-	IPAttemptWindow:      ipAttemptWindow,
-}
+// loginThrottle holds the sign-in limits. The state lives in PostgreSQL
+// (login_attempts), so it survives restarts and is shared by every API instance.
+var loginThrottle = store.DefaultLoginThrottle
 
 // DefaultTrustedProxyCIDRs covers loopback, RFC 1918 and IPv6 unique local
 // addresses, which includes the Docker networks between Nginx and the API.
@@ -151,8 +141,11 @@ func (l *loginLimiter) cancel(ctx context.Context, attempt store.LoginAttempt) {
 }
 
 // sweep deletes expired attempts at most once per limiterSweepInterval on
-// this instance. Rows therefore live at most accountFailureWindow plus one
-// sweep interval, and every row belongs to an attempt the per-IP limit allowed.
+// this instance. Under sign-in traffic, such as guessing from many addresses,
+// rows therefore live at most the account window plus one sweep interval, which
+// keeps the table and the limit checks small between the hours-apart
+// maintenance runs. Every row belongs to an attempt the per-IP limit allowed.
+// Once sign-ins stop, the maintenance job removes the rest.
 func (l *loginLimiter) sweep(ctx context.Context, now time.Time) {
 	l.mu.Lock()
 	if now.Sub(l.lastSweep) < limiterSweepInterval {
