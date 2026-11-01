@@ -350,7 +350,11 @@ func (s *Store) SubscribeFeed(ctx context.Context, userID int64, rawURL string, 
 	return Feed{}, ErrNotFound
 }
 
-func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter string, feedID, folderID *int64, query string, since *time.Time, limit, offset int) ([]Article, error) {
+// ListArticlesForUser returns up to limit+1 articles in (published_at DESC,
+// id DESC) order so callers can detect another page. With a non-nil before
+// cursor (keyset paging) only articles strictly after that position are
+// returned and offset is ignored; offset paging is kept for older clients.
+func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter string, feedID, folderID *int64, query string, since *time.Time, limit, offset int, before *ArticleCursor) ([]Article, error) {
 	conditions := []string{"uf.user_id = $1"}
 	args := []any{userID}
 	add := func(value any) string {
@@ -377,6 +381,10 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	}
 	if query != "" {
 		conditions = append(conditions, "STRPOS(LOWER(a.title || ' ' || a.summary), LOWER("+add(query)+")) > 0")
+	}
+	if before != nil {
+		conditions = append(conditions, "(a.published_at, a.id) < ("+add(before.PublishedAt)+"::timestamptz, "+add(before.ID)+"::bigint)")
+		offset = 0
 	}
 	if limit < 1 || limit > 200 {
 		limit = 20

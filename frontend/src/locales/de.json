@@ -333,6 +333,8 @@
   "apiErrors.article.date_invalid": "Das Filterdatum ist ungültig.",
   "apiErrors.article.limit_invalid": "Das Artikellimit muss zwischen 1 und 200 liegen.",
   "apiErrors.article.offset_invalid": "Der Artikeloffset ist ungültig.",
+  "apiErrors.article.cursor_invalid": "Die Seitenmarke ist ungültig.",
+  "apiErrors.article.pagination_conflict": "Verwenden Sie entweder eine Seitenmarke oder einen Offset, nicht beides.",
   "apiErrors.article.load_failed": "Artikel konnten nicht geladen werden.",
   "apiErrors.article.id_invalid": "Die Artikel-ID ist ungültig.",
   "apiErrors.article.update_missing": "Geben Sie einen zu aktualisierenden Artikelstatus an.",

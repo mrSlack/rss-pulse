@@ -333,6 +333,8 @@
   "apiErrors.article.date_invalid": "The filter date is invalid.",
   "apiErrors.article.limit_invalid": "The article limit must be between 1 and 200.",
   "apiErrors.article.offset_invalid": "The article offset is invalid.",
+  "apiErrors.article.cursor_invalid": "The page cursor is invalid.",
+  "apiErrors.article.pagination_conflict": "Use either a page cursor or an offset, not both.",
   "apiErrors.article.load_failed": "Articles could not be loaded.",
   "apiErrors.article.id_invalid": "The article ID is invalid.",
   "apiErrors.article.update_missing": "Specify an article status to update.",

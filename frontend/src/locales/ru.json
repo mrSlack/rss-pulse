@@ -337,6 +337,8 @@
   "apiErrors.article.date_invalid": "Некорректная дата фильтра.",
   "apiErrors.article.limit_invalid": "Лимит статей должен быть от 1 до 200.",
   "apiErrors.article.offset_invalid": "Некорректное смещение списка статей.",
+  "apiErrors.article.cursor_invalid": "Некорректный указатель страницы.",
+  "apiErrors.article.pagination_conflict": "Используйте либо указатель страницы, либо смещение, но не оба сразу.",
   "apiErrors.article.load_failed": "Не удалось загрузить статьи.",
   "apiErrors.article.id_invalid": "Некорректный ID статьи.",
   "apiErrors.article.update_missing": "Укажите статус статьи для обновления.",

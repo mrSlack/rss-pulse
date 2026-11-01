@@ -55,6 +55,21 @@ func (h *Handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
+	_, hasOffset := query["offset"]
+	_, hasBefore := query["before"]
+	if hasOffset && hasBefore {
+		writeError(w, http.StatusBadRequest, "article.pagination_conflict", "Use either a page cursor or an offset, not both.")
+		return
+	}
+	var before *store.ArticleCursor
+	if hasBefore {
+		cursor, err := store.DecodeArticleCursor(query.Get("before"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "article.cursor_invalid", "The page cursor is invalid.")
+			return
+		}
+		before = &cursor
+	}
 	offset := 0
 	if rawOffset := query.Get("offset"); rawOffset != "" {
 		parsed, err := strconv.Atoi(rawOffset)
@@ -65,16 +80,20 @@ func (h *Handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		offset = parsed
 	}
 	user, _ := currentUser(r)
-	articles, err := h.store.ListArticlesForUser(r.Context(), user.ID, filter, feedID, folderID, search, since, limit, offset)
+	articles, err := h.store.ListArticlesForUser(r.Context(), user.ID, filter, feedID, folderID, search, since, limit, offset, before)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "article.load_failed", "Articles could not be loaded.")
 		return
 	}
 	hasMore := len(articles) > limit
+	var nextCursor *string
 	if hasMore {
 		articles = articles[:limit]
+		last := articles[len(articles)-1]
+		encoded := store.EncodeArticleCursor(store.ArticleCursor{PublishedAt: last.PublishedAt, ID: last.ID})
+		nextCursor = &encoded
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": articles, "hasMore": hasMore})
+	writeJSON(w, http.StatusOK, map[string]any{"items": articles, "hasMore": hasMore, "nextCursor": nextCursor})
 }
 
 func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {

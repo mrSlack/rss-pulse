@@ -388,7 +388,7 @@ func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.
 	if len(adminFolders) == 0 || adminFolders[0].ID == readerFolder.ID {
 		t.Fatalf("admin folders include reader's folder: %#v", adminFolders)
 	}
-	readerArticles, err := store.New(pool).ListArticlesForUser(ctx, readerID, "all", nil, nil, "", nil, 20, 0)
+	readerArticles, err := store.New(pool).ListArticlesForUser(ctx, readerID, "all", nil, nil, "", nil, 20, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.
 	if _, err := store.New(pool).UpdateArticleForUser(ctx, readerID, readerArticles[0].ID, &read, nil); err != nil {
 		t.Fatal(err)
 	}
-	adminArticle, err := store.New(pool).ListArticlesForUser(ctx, adminID, "all", nil, nil, "", nil, 20, 0)
+	adminArticle, err := store.New(pool).ListArticlesForUser(ctx, adminID, "all", nil, nil, "", nil, 20, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
