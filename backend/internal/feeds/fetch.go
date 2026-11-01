@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -176,9 +177,65 @@ func lookupPublicIPs(ctx context.Context, host string) ([]net.IP, error) {
 	return ips, nil
 }
 
+// blockedPrefixes lists special-purpose ranges (IANA IPv4/IPv6 special-purpose
+// registries) that must never be reachable from a feed fetch, in addition to
+// the private, loopback, link-local, and multicast checks below.
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),   // carrier-grade NAT
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // documentation (TEST-NET-1)
+	netip.MustParsePrefix("192.88.99.0/24"),  // deprecated 6to4 relay anycast
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // documentation (TEST-NET-2)
+	netip.MustParsePrefix("203.0.113.0/24"),  // documentation (TEST-NET-3)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved and limited broadcast
+	netip.MustParsePrefix("64:ff9b:1::/48"),  // local-use NAT64
+	netip.MustParsePrefix("100::/64"),        // discard-only
+	netip.MustParsePrefix("2001::/23"),       // IETF protocol assignments, incl. Teredo
+	netip.MustParsePrefix("2001:db8::/32"),   // documentation
+	netip.MustParsePrefix("3fff::/20"),       // documentation
+	netip.MustParsePrefix("fec0::/10"),       // deprecated site-local
+}
+
+var (
+	globalUnicastIPv6 = netip.MustParsePrefix("2000::/3")
+	nat64Prefix       = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFourPrefix   = netip.MustParsePrefix("2002::/16")
+)
+
 func isPublicIP(ip net.IP) bool {
-	if ipv4 := ip.To4(); ipv4 != nil {
-		ip = ipv4
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
 	}
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified()
+	return isPublicAddr(address.Unmap())
+}
+
+func isPublicAddr(address netip.Addr) bool {
+	if !address.IsValid() || address.Zone() != "" {
+		return false
+	}
+	// Translation prefixes embed an IPv4 address; the embedded address decides.
+	if nat64Prefix.Contains(address) {
+		bytes := address.As16()
+		return isPublicAddr(netip.AddrFrom4([4]byte(bytes[12:16])))
+	}
+	if sixToFourPrefix.Contains(address) {
+		bytes := address.As16()
+		return isPublicAddr(netip.AddrFrom4([4]byte(bytes[2:6])))
+	}
+	if !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() ||
+		address.IsLinkLocalUnicast() || address.IsMulticast() || address.IsUnspecified() {
+		return false
+	}
+	if address.Is6() && !globalUnicastIPv6.Contains(address) {
+		return false
+	}
+	for _, prefix := range blockedPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	return true
 }
