@@ -13,6 +13,7 @@ import (
 
 	"github.com/pulse-reader/app/internal/metrics"
 	"github.com/pulse-reader/app/internal/metrics/metricstest"
+	"github.com/pulse-reader/app/internal/store"
 )
 
 // allowedLabels are the only label names Pulse metrics may use. Each has a small,
@@ -30,8 +31,8 @@ func recordEverything(m *metrics.Metrics) {
 	m.SetSearchUpgradeDone()
 	m.AddSearchKeysBackfilled(7)
 	m.RegisterManualRefreshQueue(func() int { return 2 })
-	m.RegisterOperationalStats(func(context.Context) (metrics.OperationalStats, error) {
-		return metrics.OperationalStats{SourcesDue: 4, SourcesOverdue: 1, OldestOverdue: 90 * time.Second, ActiveLeases: 2, PendingFeedRequests: 3, PendingQuarantine: 6}, nil
+	m.RegisterOperationalStats(func(context.Context) (store.OperationalStats, error) {
+		return store.OperationalStats{SourcesDue: 4, SourcesOverdue: 1, OldestOverdue: 90 * time.Second, ActiveLeases: 2, PendingFeedRequests: 3, PendingQuarantine: 6}, nil
 	}, time.Minute)
 }
 
@@ -143,12 +144,12 @@ func TestOperationalStatsAreCachedBetweenScrapes(t *testing.T) {
 	m := metrics.New()
 	var calls atomic.Int32
 	fail := atomic.Bool{}
-	m.RegisterOperationalStats(func(context.Context) (metrics.OperationalStats, error) {
+	m.RegisterOperationalStats(func(context.Context) (store.OperationalStats, error) {
 		calls.Add(1)
 		if fail.Load() {
-			return metrics.OperationalStats{}, errors.New("database down")
+			return store.OperationalStats{}, errors.New("database down")
 		}
-		return metrics.OperationalStats{SourcesDue: 4, OldestOverdue: 90 * time.Second, PendingQuarantine: 6}, nil
+		return store.OperationalStats{SourcesDue: 4, OldestOverdue: 90 * time.Second, PendingQuarantine: 6}, nil
 	}, time.Hour)
 	for range 3 {
 		if got := metricstest.Value(t, m.Registry(), "pulse_feed_sources_due", nil); got != 4 {
@@ -163,29 +164,52 @@ func TestOperationalStatsAreCachedBetweenScrapes(t *testing.T) {
 	}
 }
 
-func TestOperationalStatsFailureKeepsLastValuesAndCountsError(t *testing.T) {
+func TestOperationalStatsFailureWithoutCachingDropsGaugesAndCountsError(t *testing.T) {
 	m := metrics.New()
 	var fail atomic.Bool
-	m.RegisterOperationalStats(func(context.Context) (metrics.OperationalStats, error) {
+	m.RegisterOperationalStats(func(context.Context) (store.OperationalStats, error) {
 		if fail.Load() {
-			return metrics.OperationalStats{}, errors.New("database down")
+			return store.OperationalStats{}, errors.New("database down")
 		}
-		return metrics.OperationalStats{PendingFeedRequests: 3}, nil
-	}, 0) // no caching: every scrape queries
+		return store.OperationalStats{PendingFeedRequests: 3}, nil
+	}, 0) // no caching: every scrape queries, and stale values are never reported
 	metricstest.Value(t, m.Registry(), "pulse_feed_requests_pending", nil)
 	fail.Store(true)
-	if got := metricstest.Value(t, m.Registry(), "pulse_feed_requests_pending", nil); got != 3 {
-		t.Fatalf("pending feed requests after a failed query = %v, want last value 3", got)
+	if got, ok := metricstest.Lookup(t, m.Registry(), "pulse_feed_requests_pending", nil); ok {
+		t.Fatalf("pending feed requests after a failed query = %v, want no sample", got)
+	}
+	if got := metricstest.Value(t, m.Registry(), "pulse_operational_stats_up", nil); got != 0 {
+		t.Fatalf("operational stats up = %v, want 0", got)
 	}
 	if got := metricstest.Value(t, m.Registry(), "pulse_operational_stats_errors_total", nil); got < 1 {
 		t.Fatalf("operational stats errors = %v, want >= 1", got)
 	}
 }
 
+func TestOverdueHelpTextNamesTheTolerance(t *testing.T) {
+	m := metrics.New()
+	m.RegisterOperationalStats(func(context.Context) (store.OperationalStats, error) {
+		return store.OperationalStats{}, nil
+	}, 0)
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() == "pulse_feed_sources_overdue" {
+			if !strings.Contains(family.GetHelp(), metrics.OverdueTolerance.String()) {
+				t.Fatalf("help %q does not name the tolerance %v", family.GetHelp(), metrics.OverdueTolerance)
+			}
+			return
+		}
+	}
+	t.Fatal("pulse_feed_sources_overdue is not exported")
+}
+
 func TestOperationalStatsBeforeFirstSuccessAreOmitted(t *testing.T) {
 	m := metrics.New()
-	m.RegisterOperationalStats(func(context.Context) (metrics.OperationalStats, error) {
-		return metrics.OperationalStats{}, errors.New("database down")
+	m.RegisterOperationalStats(func(context.Context) (store.OperationalStats, error) {
+		return store.OperationalStats{}, errors.New("database down")
 	}, 0)
 	if _, ok := metricstest.Lookup(t, m.Registry(), "pulse_feed_sources_due", nil); ok {
 		t.Fatal("sources due is reported although no query has succeeded")

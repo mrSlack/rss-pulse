@@ -150,7 +150,6 @@ func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, docu
 	if err != nil {
 		return RefreshCounts{}, err
 	}
-	var counts RefreshCounts
 	allowedItems, quarantined, err := filterAndLogBlockedItems(ctx, tx, lease.ID, document.Title, items)
 	if err != nil {
 		return RefreshCounts{}, err
@@ -171,8 +170,7 @@ func (s *Store) CommitSourceRefresh(ctx context.Context, lease SourceLease, docu
 	if err := tx.Commit(ctx); err != nil {
 		return RefreshCounts{}, err
 	}
-	counts.Inserted, counts.Quarantined = inserted, quarantined
-	return counts, nil
+	return RefreshCounts{Inserted: inserted, Quarantined: quarantined}, nil
 }
 
 // CommitSourceNotModified records a successful 304 response: the source counts

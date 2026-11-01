@@ -24,7 +24,7 @@ The frontend is a static React build. The backend owns authentication, authoriza
 
 The API logs through Go's `log/slog`; `cmd/api` builds the logger from `LOG_FORMAT` (`text` by default, `json` in `compose.production.yml`) and `LOG_LEVEL` (`debug`, `info` by default, `warn`, `error`), rejects invalid values at startup, and installs it as the default logger, so the syncer, the maintenance job, and `net/http` server errors write through the same handler.
 
-The router's middleware chain is `requestID`, `accessLog`, `instrument` (request metrics, only when metrics are enabled), chi's `Recoverer`, and `sameOrigin`. `requestID` reuses an incoming `X-Request-ID` only when it matches `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` and otherwise generates 16 random bytes in hex; it stores the ID where chi's `middleware.GetReqID` finds it and returns it in the `X-Request-ID` response header. `accessLog` writes one `http request` record per request with `method`, `path` (`r.URL.Path`; the query string is never logged because it can contain search terms), `status`, `bytes`, `duration_ms`, `request_id`, and `user_id`. The user is only known inside `authenticate`, which runs later in route-specific middleware, so `accessLog` places a mutable per-request holder in the context and `authenticate` records the user ID in it. `Recoverer` runs inside `accessLog` and `instrument`, so a recovered panic is logged and counted with status 500. Requests under `/api/health` are logged at debug level. The bundled Nginx forwards its own `$request_id` as `X-Request-ID` and writes it to its access log (`request_id=`), so proxy and API log lines can be matched; like the API, its log format records the path without the query string.
+The router's middleware chain is `requestID`, `accessLog`, `instrument` (request metrics, only when metrics are enabled; it reuses the response writer wrapper of `accessLog`), chi's `Recoverer`, `sameOrigin`, and `markRouted`, which marks a request as having reached the router so `instrument` can tell requests rejected by `sameOrigin` from unknown routes. `requestID` reuses an incoming `X-Request-ID` only when it matches `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` and otherwise generates 16 random bytes in hex; it stores the ID where chi's `middleware.GetReqID` finds it and returns it in the `X-Request-ID` response header. `accessLog` writes one `http request` record per request with `method`, `path` (`r.URL.Path`; the query string is never logged because it can contain search terms), `status`, `bytes`, `duration_ms`, `request_id`, and `user_id`. The user is only known inside `authenticate`, which runs later in route-specific middleware, so `accessLog` places a mutable per-request holder in the context and `authenticate` records the user ID in it. `Recoverer` runs inside `accessLog` and `instrument`, so a recovered panic is logged and counted with status 500. Requests under `/api/health` are logged at debug level. The bundled Nginx forwards its own `$request_id` as `X-Request-ID` and writes it to its access log (`request_id=`), so proxy and API log lines can be matched; like the API, its log format records the path without the query string.
 
 The syncer logs one `rss refresh cycle finished` record per scheduled cycle (`trigger=schedule`) or manual refresh (`trigger=user`, `user_id`) with `targets`, `refreshed`, `not_modified`, `failed`, `skipped` (not claimed or cancelled), and `duration_ms`; cycles without targets are logged at debug level. Individual fetch failures are logged at debug level because they are expected and shown per feed in the UI; claim, commit, and lease errors are logged as errors. The maintenance job logs its deletion counts.
 
@@ -36,24 +36,26 @@ The API exports Prometheus metrics when `METRICS_ADDR` is set (empty by default:
 
 The implementation in `internal/metrics` uses `github.com/prometheus/client_golang` (pinned in `go.mod`). It adds seven small modules (client_model, common, procfs, perks, xxhash, goautoneg, protobuf) and brings the standard Go runtime and process collectors, correct histogram and text-format encoding, and `promhttp`; a hand-written exposition would have had to reimplement those. All methods of a nil `*metrics.Metrics` do nothing, so the syncer, the maintenance job, and the router run unchanged without metrics.
 
-Every label has a small fixed set of values: `route` is the chi route pattern (for example `/api/feeds/{id}`; requests that match no route are `unmatched`), `method` is a standard HTTP method or `OTHER`, `status_class` is `2xx`…`5xx`, and `outcome` and `kind` are the values listed below. User IDs, e-mail addresses, URLs, and feed IDs are never labels; a test fails when a `pulse_` metric gains any other label name.
+Every label has a small fixed set of values: `route` is the chi route pattern (for example `/api/feeds/{id}`; requests that reach the router but match no route, 404 or 405, are `unmatched`, and requests rejected before routing, such as cross-site writes refused by the same-origin check with 403, are `rejected`), `method` is a standard HTTP method or `OTHER`, `status_class` is `2xx`…`5xx`, and `outcome` and `kind` are the values listed below. User IDs, e-mail addresses, URLs, and feed IDs are never labels; a test fails when a `pulse_` metric gains any other label name.
 
 | Metric | Type | Meaning |
 | --- | --- | --- |
 | `pulse_http_requests_total{route,method,status_class}` | counter | API requests. |
 | `pulse_http_request_duration_seconds{route,method,status_class}` | histogram | API request duration (default Prometheus buckets, 5 ms–10 s). |
-| `pulse_feed_refresh_attempts_total{outcome}` | counter | Refreshes of a claimed source: `ok` (new content committed), `not_modified` (HTTP 304), `error` (fetch, claim, or commit failed). Sources claimed by another worker or not yet due, and refreshes canceled by shutdown, are not counted. |
+| `pulse_feed_refresh_attempts_total{outcome}` | counter | Refreshes of a claimed source: `ok` (new content committed), `not_modified` (HTTP 304), `error` (fetch or commit failed). Sources claimed by another worker or not yet due, database errors while claiming (see `pulse_feed_claim_errors_total`), and refreshes canceled by shutdown are not counted. |
+| `pulse_feed_claim_errors_total` | counter | Database errors while claiming a source for refresh. Nothing was fetched, so they are not refresh attempts; a rising value means the database is failing. |
 | `pulse_feed_fetch_duration_seconds` | histogram | Feed download duration, successful or not (buckets 0.1–15 s; the fetch timeout is 15 s). |
 | `pulse_feed_articles_inserted_total` | counter | New articles stored by refreshes (updates and merged duplicates are not counted). |
 | `pulse_feed_articles_quarantined_total` | counter | Items newly held in quarantine by the stop-word filter; items already in quarantine are not counted again. Quarantine is per article, so it is not a refresh outcome. |
 | `pulse_feed_sources_due` | gauge | Sources with an enabled subscriber whose refresh interval has elapsed (what the next scheduler cycle would pick up). Briefly non-zero between cycles is normal. |
-| `pulse_feed_sources_overdue` | gauge | Due sources that have been due for more than 5 minutes: the scheduler is not keeping up. |
+| `pulse_feed_sources_overdue` | gauge | Due sources that have been due for more than 5 minutes (`metrics.OverdueTolerance`): the scheduler is not keeping up. |
 | `pulse_feed_oldest_overdue_seconds` | gauge | How long the longest-waiting due source has been due; a never-fetched source counts from its creation. 0 without due sources. |
 | `pulse_feed_active_leases` | gauge | Sources being refreshed right now (unexpired lease). |
 | `pulse_feed_manual_refresh_queue_length` | gauge | Manual "refresh now" requests waiting for the worker (the one being processed is not included). |
 | `pulse_feed_requests_pending` | gauge | Feed requests waiting for an administrator (same count as the administration screen). |
 | `pulse_quarantine_pending` | gauge | Quarantined articles without a decision. |
-| `pulse_operational_stats_errors_total` | counter | Failed queries for the five database-derived gauges above. After a failure the last successful values are reported; before the first success the gauges are absent. |
+| `pulse_operational_stats_errors_total` | counter | Failed queries for the six database-derived gauges above. |
+| `pulse_operational_stats_up` | gauge | 1 if the latest query for the database-derived gauges succeeded, else 0. After a failure the last successful values stay exported for up to three cache periods (45 seconds), then the gauges are dropped until a query succeeds again, so an outage cannot freeze them at a harmless value; before the first success they are absent. Alert on this gauge, because rules on absent gauges do not fire. |
 | `pulse_signin_attempts_total{outcome}` | counter | `POST /api/auth/login` by outcome: `success` (session created), `failure` (malformed request, wrong credentials, or a disabled account), `rate_limited` (HTTP 429), `error` (database or session failure). |
 | `pulse_maintenance_runs_total{outcome}` | counter | Retention maintenance runs, `success` or `failure` (any step failed). |
 | `pulse_maintenance_last_run_duration_seconds` | gauge | Duration of the latest run. |
@@ -67,7 +69,7 @@ Every label has a small fixed set of values: `route` is the chi route pattern (f
 | `pulse_db_pool_canceled_acquires_total` | counter | Acquisitions canceled while waiting. |
 | `go_*`, `process_*`, `promhttp_metric_handler_*` | | Standard Go runtime, process, and scrape-handler collectors. |
 
-The pool, queue-length, and database-derived gauges are read during a scrape. The database-derived ones (`sources_due` … `quarantine_pending`) come from one statement, `store.OperationalStats`, whose due-source part reuses the scheduler's `DueSources` policy and costs about as much as one scheduler cycle; the result is cached for 15 seconds, and concurrent scrapes share one query (3-second timeout), so frequent or parallel scrapes do not load the database.
+The pool, queue-length, and database-derived gauges are read during a scrape. The database-derived ones (`sources_due` … `quarantine_pending`) come from one statement, `store.OperationalStats`, whose due-source part reuses the scheduler's `DueSources` policy and costs about as much as one scheduler cycle; the result is cached for 15 seconds, and concurrent scrapes share one query (3-second timeout), so frequent or parallel scrapes do not load the database. A failed query is retried on the next scrape.
 
 Example Prometheus scrape configuration for a Prometheus container on the same Docker network:
 
@@ -97,6 +99,11 @@ groups:
         for: 15m
         annotations:
           summary: A feed source has waited more than 30 minutes past its schedule
+      - alert: PulseOperationalStatsFailing
+        expr: pulse_operational_stats_up == 0 or rate(pulse_feed_claim_errors_total[5m]) > 0
+        for: 5m
+        annotations:
+          summary: Backlog and queue gauges or source claims fail (database problem?); the backlog alert cannot fire meanwhile
       - alert: PulseMaintenanceStale
         expr: |
           time() - pulse_maintenance_last_success_timestamp_seconds > 86400

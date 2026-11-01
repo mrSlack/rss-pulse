@@ -66,8 +66,9 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool, op
 	handler.loginLimiter = newLoginLimiter(repository, handler.now, handler.logger)
 	router := chi.NewRouter()
 	// accessLog and instrument wrap Recoverer so a recovered panic is logged and
-	// counted with status 500.
-	router.Use(requestID, handler.accessLog, handler.instrument, middleware.Recoverer, handler.sameOrigin)
+	// counted with status 500. markRouted must stay last: it marks requests that
+	// no middleware rejected before routing.
+	router.Use(requestID, handler.accessLog, handler.instrument, middleware.Recoverer, handler.sameOrigin, markRouted)
 	router.Get("/api/health/live", handler.healthLive)
 	router.Get("/api/health/ready", handler.healthReady)
 	router.Get("/api/health", handler.healthReady) // compatibility alias of /api/health/ready
