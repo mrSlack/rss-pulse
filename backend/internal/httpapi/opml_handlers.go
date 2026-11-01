@@ -21,12 +21,12 @@ const maxOPMLBytes = 1 << 20
 // folder (in folder list order); feeds are sorted by their personal title.
 func (h *Handler) exportOPML(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r)
-	folders, err := h.store.ListFoldersForUser(r.Context(), user.ID)
+	folders, err := h.store.ListFolderNamesForUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "opml.export_failed", "The subscriptions could not be exported.")
 		return
 	}
-	feeds, err := h.store.ListFeedsForUser(r.Context(), user.ID)
+	feeds, err := h.store.ListSubscriptionsForUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "opml.export_failed", "The subscriptions could not be exported.")
 		return

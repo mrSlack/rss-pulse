@@ -48,6 +48,40 @@ func TestParseMapsNestedOutlinesToFolders(t *testing.T) {
 	}
 }
 
+func TestParseKeepsFoldersInSyncAcrossWrapperElements(t *testing.T) {
+	document := `<opml version="2.0"><body><div><outline text="News"><outline text="a" xmlUrl="https://a.example/rss"/></outline></div><outline text="b" xmlUrl="https://b.example/rss"/><div><outline text="Tech"><span><outline text="c" xmlUrl="https://c.example/rss"/></span></outline></div><outline text="d" xmlUrl="https://d.example/rss"/></body></opml>`
+	feeds, err := opml.Parse(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []opml.Feed{
+		{URL: "https://a.example/rss", Title: "a", Folder: "News"},
+		{URL: "https://b.example/rss", Title: "b"},
+		{URL: "https://c.example/rss", Title: "c", Folder: "Tech"},
+		{URL: "https://d.example/rss", Title: "d"},
+	}
+	if !reflect.DeepEqual(feeds, want) {
+		t.Fatalf("Parse() = %+v\nwant %+v", feeds, want)
+	}
+}
+
+func TestParseDoesNotAccumulateDepthAcrossWrappedGroups(t *testing.T) {
+	group := `<outline text="g"><div><outline text="f" xmlUrl="https://example.com/rss"/></div></outline>`
+	document := `<opml version="2.0"><body>` + strings.Repeat(group, opml.MaxDepth+2) + `</body></opml>`
+	feeds, err := opml.Parse(strings.NewReader(document))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(feeds) != opml.MaxDepth+2 {
+		t.Fatalf("len(feeds) = %d, want %d", len(feeds), opml.MaxDepth+2)
+	}
+	for _, feed := range feeds {
+		if feed.Folder != "g" {
+			t.Fatalf("Folder = %q, want g", feed.Folder)
+		}
+	}
+}
+
 func nested(depth int) string {
 	return strings.Repeat(`<outline text="g">`, depth-1) + `<outline text="f" xmlUrl="https://example.com/rss"/>` + strings.Repeat(`</outline>`, depth-1)
 }

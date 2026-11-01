@@ -51,7 +51,7 @@ func (s *Store) ImportSubscriptions(ctx context.Context, userID int64, feeds []S
 	if err != nil {
 		return SubscriptionImportResult{}, err
 	}
-	folders, err := s.ListFoldersForUser(ctx, userID)
+	folders, err := s.ListFolderNamesForUser(ctx, userID)
 	if err != nil {
 		return SubscriptionImportResult{}, err
 	}
@@ -141,6 +141,63 @@ func (s *Store) subscribedNormalizedURLs(ctx context.Context, userID int64) (map
 			return nil, err
 		}
 		result[url] = true
+	}
+	return result, rows.Err()
+}
+
+// FolderName is a folder's ID and name, without unread counts.
+type FolderName struct {
+	ID   int64
+	Name string
+}
+
+// ListFolderNamesForUser returns the user's folders in folder list order
+// (case-insensitive name, then ID). Unlike ListFoldersForUser it does not
+// count unread articles.
+func (s *Store) ListFolderNamesForUser(ctx context.Context, userID int64) ([]FolderName, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, name FROM folders WHERE owner_user_id=$1 ORDER BY LOWER(name), id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]FolderName, 0)
+	for rows.Next() {
+		var folder FolderName
+		if err := rows.Scan(&folder.ID, &folder.Name); err != nil {
+			return nil, err
+		}
+		result = append(result, folder)
+	}
+	return result, rows.Err()
+}
+
+// SubscriptionSummary is a subscription's personal title, feed URL, and
+// folder, without unread counts or refresh status.
+type SubscriptionSummary struct {
+	Title    string
+	URL      string
+	FolderID *int64
+}
+
+// ListSubscriptionsForUser returns the user's subscriptions, newest first
+// like ListFeedsForUser, without counting unread articles.
+func (s *Store) ListSubscriptionsForUser(ctx context.Context, userID int64) ([]SubscriptionSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(uf.title_override, fs.title), fs.url, uf.folder_id
+		FROM user_feeds uf JOIN feed_sources fs ON fs.id = uf.feed_source_id
+		WHERE uf.user_id = $1
+		ORDER BY uf.created_at DESC, uf.id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]SubscriptionSummary, 0)
+	for rows.Next() {
+		var subscription SubscriptionSummary
+		if err := rows.Scan(&subscription.Title, &subscription.URL, &subscription.FolderID); err != nil {
+			return nil, err
+		}
+		result = append(result, subscription)
 	}
 	return result, rows.Err()
 }
