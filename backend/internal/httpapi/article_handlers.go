@@ -79,6 +79,13 @@ func (h *Handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		offset = parsed
 	}
 	user, _ := currentUser(r)
+	// Read before the list so the bound never covers an article the list could
+	// not show; one ingested in between is listed but stays outside the bound.
+	latestID, err := h.store.LatestArticleID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "article.load_failed", "Articles could not be loaded.")
+		return
+	}
 	articles, err := h.store.ListArticlesForUser(r.Context(), user.ID, filter, feedID, folderID, search, since, limit, offset, before)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "article.load_failed", "Articles could not be loaded.")
@@ -92,7 +99,7 @@ func (h *Handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		encoded := store.EncodeArticleCursor(store.ArticleCursor{PublishedAt: last.PublishedAt, ID: last.ID})
 		nextCursor = &encoded
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": articles, "hasMore": hasMore, "nextCursor": nextCursor})
+	writeJSON(w, http.StatusOK, map[string]any{"items": articles, "hasMore": hasMore, "nextCursor": nextCursor, "latestArticleId": latestID})
 }
 
 func (h *Handler) updateArticle(w http.ResponseWriter, r *http.Request) {

@@ -10,8 +10,9 @@ import (
 )
 
 // markArticlesRead handles POST /api/articles/mark-read. It accepts the same
-// filter as GET /api/articles plus a required upTo bound and marks every
-// matching article published at or before upTo as read.
+// filter as GET /api/articles plus at least one bound, upTo (publication
+// time) or upToId (the latestArticleId of the loaded list), and marks every
+// matching article within the bounds as read.
 func (h *Handler) markArticlesRead(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Filter   string `json:"filter"`
@@ -20,6 +21,7 @@ func (h *Handler) markArticlesRead(w http.ResponseWriter, r *http.Request) {
 		Query    string `json:"q"`
 		Since    string `json:"since"`
 		UpTo     string `json:"upTo"`
+		UpToID   *int64 `json:"upToId"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
@@ -53,15 +55,24 @@ func (h *Handler) markArticlesRead(w http.ResponseWriter, r *http.Request) {
 		}
 		since = &parsed
 	}
-	upTo, err := time.Parse(time.RFC3339, request.UpTo)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "article.date_invalid", "The filter date is invalid.")
+	if request.UpToID != nil && *request.UpToID < 0 {
+		writeError(w, http.StatusBadRequest, "article.id_invalid", "The article ID is invalid.")
 		return
+	}
+	bound := store.MarkReadBound{ArticleID: request.UpToID}
+	// Older clients send only upTo; it stays required unless upToId is given.
+	if request.UpTo != "" || request.UpToID == nil {
+		upTo, err := time.Parse(time.RFC3339, request.UpTo)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "article.date_invalid", "The filter date is invalid.")
+			return
+		}
+		bound.PublishedAt = &upTo
 	}
 	user, _ := currentUser(r)
 	marked, err := h.store.MarkArticlesReadForUser(r.Context(), user.ID, store.ArticleFilter{
 		Filter: request.Filter, FeedID: request.FeedID, FolderID: request.FolderID, Query: search, Since: since,
-	}, upTo)
+	}, bound)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "article.mark_read_failed", "The articles could not be marked as read.")
 		return
