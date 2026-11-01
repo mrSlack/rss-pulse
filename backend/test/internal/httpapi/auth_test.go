@@ -500,6 +500,9 @@ func isolatedAPIDatabase(t *testing.T) (*pgxpool.Pool, int64, int64) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if dsn == "" {
+		if os.Getenv("REQUIRE_INTEGRATION") != "" {
+			t.Fatal("REQUIRE_INTEGRATION is set but TEST_DATABASE_URL is empty")
+		}
 		t.Skip("TEST_DATABASE_URL is required for isolated PostgreSQL integration tests")
 	}
 	ctx := context.Background()

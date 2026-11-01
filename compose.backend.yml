@@ -6,7 +6,7 @@ services:
       context: ./backend
     restart: unless-stopped
     working_dir: /workspace/backend
-    command: ["sh", "-c", "go mod tidy && go run ./cmd/api"]
+    command: ["go", "run", "./cmd/api"]
     environment:
       DB_HOST: db
       DB_PORT: "5432"

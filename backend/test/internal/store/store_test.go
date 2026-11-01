@@ -59,6 +59,9 @@ func isolatedPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if dsn == "" {
+		if os.Getenv("REQUIRE_INTEGRATION") != "" {
+			t.Fatal("REQUIRE_INTEGRATION is set but TEST_DATABASE_URL is empty")
+		}
 		t.Skip("TEST_DATABASE_URL is required for isolated PostgreSQL integration tests")
 	}
 	admin, err := pgxpool.New(context.Background(), dsn)
