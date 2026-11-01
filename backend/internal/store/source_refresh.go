@@ -249,11 +249,6 @@ func (s *Store) SubscribeSource(ctx context.Context, userID, sourceID int64, fol
 	return Feed{}, ErrNotFound
 }
 
-func (s *Store) DiscardEmptySource(ctx context.Context, sourceID int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM feed_sources fs WHERE fs.id=$1 AND fs.last_success_at IS NULL AND NOT EXISTS (SELECT 1 FROM user_feeds uf WHERE uf.feed_source_id=fs.id)`, sourceID)
-	return err
-}
-
 func limitError(message string) string {
 	message = strings.TrimSpace(message)
 	if len(message) > 500 {

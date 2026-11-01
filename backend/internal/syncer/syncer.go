@@ -49,7 +49,6 @@ const (
 type Control struct {
 	mu             sync.Mutex
 	cycleRequested bool
-	cycleRunning   bool
 	userQueue      []int64
 	activeUsers    map[int64]struct{}
 	cycleWake      chan struct{}
@@ -100,23 +99,9 @@ func (c *Control) IsUserRefreshing(userID int64) bool {
 	return active
 }
 
-// IsRunning reports whether any refresh work is queued or running.
-func (c *Control) IsRunning() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cycleRequested || c.cycleRunning || len(c.activeUsers) > 0
-}
-
 func (c *Control) beginCycle() {
 	c.mu.Lock()
 	c.cycleRequested = false
-	c.cycleRunning = true
-	c.mu.Unlock()
-}
-
-func (c *Control) finishCycle() {
-	c.mu.Lock()
-	c.cycleRunning = false
 	c.mu.Unlock()
 }
 
@@ -254,7 +239,6 @@ func (s *Syncer) runSchedule(ctx context.Context) {
 		}
 		s.control.beginCycle()
 		s.refresh(ctx, 0)
-		s.control.finishCycle()
 	}
 }
 
