@@ -33,7 +33,7 @@ function articlePage(url: URL, articleCount: number, readNumbers: Set<number>) {
     .filter((number) => url.searchParams.get('filter') !== 'unread' || !readNumbers.has(number));
   const items = matching.slice(0, limit).map((number) => mockArticle(number, readNumbers));
   const hasMore = matching.length > limit;
-  return { items, hasMore, nextCursor: hasMore ? `c${items[items.length - 1].id}` : null };
+  return { items, hasMore, nextCursor: hasMore ? `c${items[items.length - 1].id}` : null, latestArticleId: articleCount };
 }
 
 async function prepareReader(page: Page, options: MockOptions = {}) {
@@ -411,7 +411,7 @@ test('the unread view keeps every unread article when some are read between page
   expect(listRequests.every((url) => !url.searchParams.has('offset'))).toBe(true);
 });
 
-test('mark all as read marks the current view up to the newest loaded article', async ({ page }) => {
+test('mark all as read marks the current view up to the articles that existed when it loaded', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await prepareReader(page);
   let markBody: unknown;
@@ -429,7 +429,7 @@ test('mark all as read marks the current view up to the newest loaded article', 
   await page.getByRole('button', { name: 'Mark all as read' }).click();
   await expect(page.locator('.article-card.unread')).toHaveCount(0);
   await expect(page.locator('.article-card')).toHaveCount(3);
-  expect(markBody).toEqual({ filter: 'all', upTo: '2026-04-15T11:59:00Z' });
+  expect(markBody).toEqual({ filter: 'all', upToId: 3 });
   expect(articleRequests).toHaveLength(1);
   await expect(page.getByRole('button', { name: 'Mark all as read' })).toBeDisabled();
 });

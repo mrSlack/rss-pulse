@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, errorMessage, isAbortError, type Article, type ArticleQuery } from '../api';
+import { api, errorMessage, isAbortError, type Article, type ArticleQuery, type MarkReadBound } from '../api';
 import type { Filter } from '../LibrarySidebar';
 
 export const articlePageSize = 20;
@@ -57,13 +57,20 @@ export function useArticleFeed({ filter, feedId, folderId, search }: ArticleView
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadedQuery, setLoadedQuery] = useState<ArticleQuery | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [latestArticleId, setLatestArticleId] = useState<number | null>(null);
   const [version, setVersion] = useState(0);
   const loadMoreRef = useRef<AbortController | null>(null);
+  // Every view change or reload starts a new generation. The cursor and query
+  // belong to the generation whose first page was loaded; until the new one
+  // has loaded (during the search debounce, say) they must not be paged.
+  const generationRef = useRef(0);
+  const loadedGenerationRef = useRef(-1);
 
   const reportLoadError = useEffectEvent((reason: unknown) => onError(errorMessage(reason, t('errors.articlesLoad'))));
 
   useEffect(() => {
     const controller = new AbortController();
+    const generation = ++generationRef.current;
     const timer = window.setTimeout(() => {
       setLoading(true);
       const query = queryFor({ filter, feedId, folderId, search });
@@ -73,6 +80,8 @@ export function useArticleFeed({ filter, feedId, folderId, search }: ArticleView
           setArticles(page.items);
           setNextCursor(page.hasMore && page.nextCursor ? page.nextCursor : null);
           setLoadedQuery(query);
+          setLatestArticleId(page.latestArticleId ?? null);
+          loadedGenerationRef.current = generation;
           setLoadMoreFailed(false);
           setSelectedId((current) => page.items.some((item) => item.id === current) ? current : null);
           onError('');
@@ -94,14 +103,15 @@ export function useArticleFeed({ filter, feedId, folderId, search }: ArticleView
   }, [filter, feedId, folderId, search, version, onError]);
 
   const loadMore = useCallback(async () => {
-    if (loadMoreRef.current || !nextCursor || !loadedQuery) return;
+    const generation = generationRef.current;
+    if (loadMoreRef.current || !nextCursor || !loadedQuery || loadedGenerationRef.current !== generation) return;
     const controller = new AbortController();
     loadMoreRef.current = controller;
     setLoadingMore(true);
     setLoadMoreFailed(false);
     try {
       const page = await api.getArticles(articleParams(loadedQuery, nextCursor), controller.signal);
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || generation !== generationRef.current) return;
       setArticles((current) => {
         const loaded = new Set(current.map((item) => item.id));
         return [...current, ...page.items.filter((item) => !loaded.has(item.id))];
@@ -161,20 +171,32 @@ export function useArticleFeed({ filter, feedId, folderId, search }: ArticleView
 
   /**
    * Marks every article of the loaded view as read on the server, bounded by
-   * the newest loaded article so articles that arrived since stay unread, and
+   * the articles that existed when the list was loaded so articles that
+   * arrived since stay unread (even with an older publication date), and
    * updates the loaded pages and counters without reloading the list.
    */
   const markAllRead = useCallback(async () => {
     if (!loadedQuery) return 0;
-    // Send the server's own timestamp: it keeps sub-millisecond precision.
-    const newest = articles.reduce<string | null>((best, item) => best === null || Date.parse(item.publishedAt) > Date.parse(best) ? item.publishedAt : best, null);
-    const upTo = newest ?? new Date().toISOString();
-    const { marked } = await api.markArticlesRead(loadedQuery, upTo);
-    const bound = Date.parse(upTo);
-    setArticles((current) => current.map((item) => !item.isRead && Date.parse(item.publishedAt) <= bound ? { ...item, isRead: true } : item));
+    let covers: (item: Article) => boolean;
+    let bound: MarkReadBound;
+    if (latestArticleId !== null) {
+      const upToId = latestArticleId;
+      bound = { upToId };
+      covers = (item) => item.id <= upToId;
+    } else {
+      // Older servers: bound by the newest loaded publication time. Send the
+      // server's own timestamp: it keeps sub-millisecond precision.
+      const newest = articles.reduce<string | null>((best, item) => best === null || Date.parse(item.publishedAt) > Date.parse(best) ? item.publishedAt : best, null);
+      const upTo = newest ?? new Date().toISOString();
+      const limit = Date.parse(upTo);
+      bound = { upTo };
+      covers = (item) => Date.parse(item.publishedAt) <= limit;
+    }
+    const { marked } = await api.markArticlesRead(loadedQuery, bound);
+    setArticles((current) => current.map((item) => !item.isRead && covers(item) ? { ...item, isRead: true } : item));
     await onCountsChanged();
     return marked;
-  }, [articles, loadedQuery, onCountsChanged]);
+  }, [articles, latestArticleId, loadedQuery, onCountsChanged]);
 
   /** Opens the next (delta 1) or previous (delta -1) article of the list. */
   const selectRelative = useCallback((delta: 1 | -1) => {

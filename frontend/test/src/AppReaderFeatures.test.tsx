@@ -69,8 +69,9 @@ afterEach(() => {
 });
 
 describe('mark all as read', () => {
-  it('marks the loaded view up to its newest article and updates the list without reloading it', async () => {
+  it('marks the loaded view up to its ingestion bound and updates the list without reloading it', async () => {
     const user = userEvent.setup();
+    apiMock.getArticles.mockResolvedValue({ items: [article(1), article(2, { isRead: true }), article(3)], hasMore: false, nextCursor: null, latestArticleId: 3 });
     render(<App />);
     await waitFor(() => expect(cards()).toHaveLength(3));
     const feedsCalls = apiMock.getFeeds.mock.calls.length;
@@ -80,7 +81,7 @@ describe('mark all as read', () => {
     await waitFor(() => expect(apiMock.markArticlesRead).toHaveBeenCalledOnce());
     expect(apiMock.markArticlesRead).toHaveBeenCalledWith(
       { filter: 'all', feedId: null, folderId: null, q: '', since: null },
-      article(1).publishedAt,
+      { upToId: 3 },
     );
     await waitFor(() => expect(document.querySelectorAll('.article-card.unread')).toHaveLength(0));
     await waitFor(() => expect(apiMock.getFeeds.mock.calls.length).toBe(feedsCalls + 1));
