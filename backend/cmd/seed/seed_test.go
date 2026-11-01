@@ -95,7 +95,7 @@ func TestSeedFillsEmptyDatabaseAndCanBeRepeated(t *testing.T) {
 	if err != nil || user.ID != userID {
 		t.Fatalf("seed session lookup = %+v, %v", user, err)
 	}
-	articles, err := repository.ListArticlesForUser(ctx, userID, "all", nil, nil, "", nil, 20, 0)
+	articles, err := repository.ListArticlesForUser(ctx, userID, "all", nil, nil, "", nil, 20, 0, nil)
 	if err != nil || len(articles) == 0 {
 		t.Fatalf("ListArticlesForUser() = %d articles, %v", len(articles), err)
 	}
