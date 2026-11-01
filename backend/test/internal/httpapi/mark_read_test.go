@@ -258,3 +258,58 @@ func TestMarkReadValidatesLikeArticleList(t *testing.T) {
 		t.Fatalf("anonymous mark-read = %d, want 401", response.Code)
 	}
 }
+
+// latestArticleID lists the administrator's articles and returns the
+// latestArticleId bound the response reports.
+func (f markReadFixture) latestArticleID(t *testing.T) int64 {
+	t.Helper()
+	response := authenticatedRequest(t, f.handler, http.MethodGet, "/api/articles?filter=all", "", f.adminCookie)
+	var decoded struct {
+		LatestArticleID *int64 `json:"latestArticleId"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil || response.Code != http.StatusOK || decoded.LatestArticleID == nil {
+		t.Fatalf("GET /api/articles = %d %s, want 200 with latestArticleId", response.Code, response.Body.String())
+	}
+	return *decoded.LatestArticleID
+}
+
+func TestMarkReadUpToIDLeavesArticlesIngestedLaterUnread(t *testing.T) {
+	f := newMarkReadFixture(t)
+	latest := f.latestArticleID(t)
+	var maxID int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT MAX(id) FROM articles`).Scan(&maxID); err != nil || latest != maxID {
+		t.Fatalf("latestArticleId = %d, want %d (%v)", latest, maxID, err)
+	}
+	var sharedSourceID int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT feed_source_id FROM user_feeds WHERE id=$1`, f.sharedFeedID).Scan(&sharedSourceID); err != nil {
+		t.Fatal(err)
+	}
+	// Arrives after the list was loaded but carries an old publication date, so
+	// a publication-time bound alone would mark it read unseen.
+	backdated := insertMarkReadArticles(t, f.pool, sharedSourceID, "backdated", f.now.Add(-48*time.Hour), 1)
+
+	status, code, marked := f.markRead(t, `{"filter":"all","upToId":`+intString(latest)+`}`)
+	if status != http.StatusOK || marked != 8 {
+		t.Fatalf("mark-read = %d %s marked=%d, want 200 marked=8", status, code, marked)
+	}
+	expectRead(t, readIDs(t, f.pool, f.adminID), f.shared, f.unfiled, []int64{f.preexisting})
+	if readIDs(t, f.pool, f.adminID)[backdated[0]] {
+		t.Fatal("backdated article ingested after loading was marked read")
+	}
+}
+
+func TestMarkReadAppliesBothBounds(t *testing.T) {
+	// With both bounds, an article must satisfy both.
+	f := newMarkReadFixture(t)
+	latest := f.latestArticleID(t)
+	status, code, marked := f.markRead(t, `{"filter":"all","upTo":"`+rfc3339(f.now.Add(-2*time.Hour))+`","upToId":`+intString(latest)+`}`)
+	if status != http.StatusOK || marked != 6 {
+		t.Fatalf("mark-read with both bounds = %d %s marked=%d, want 200 marked=6", status, code, marked)
+	}
+	expectRead(t, readIDs(t, f.pool, f.adminID), f.shared[1:], f.unfiled[1:], []int64{f.preexisting})
+
+	status, code, _ = f.markRead(t, `{"filter":"all","upToId":-1}`)
+	if status != http.StatusBadRequest || code != "article.id_invalid" {
+		t.Fatalf("mark-read with negative upToId = %d %s, want 400 article.id_invalid", status, code)
+	}
+}

@@ -47,7 +47,15 @@ export type ArticlePage = {
   hasMore: boolean;
   /** Opaque keyset cursor for the next page; sent back as `before`. */
   nextCursor: string | null;
+  /**
+   * Highest article ID when the page was listed; sent back as the mark-read
+   * bound so articles ingested later stay unread. Missing from older servers.
+   */
+  latestArticleId?: number;
 };
+
+/** Upper bound of a bulk mark-read: ingestion position and/or publication time. */
+export type MarkReadBound = { upToId: number } | { upTo: string };
 
 export type UserRole = 'Administrator' | 'Reader';
 
@@ -221,7 +229,7 @@ export const api = {
   getFolders: (signal?: AbortSignal) => request<Folder[]>('/folders', { signal }),
   getFeeds: (signal?: AbortSignal) => request<Feed[]>('/feeds', { signal }),
   getArticles: (params: URLSearchParams, signal?: AbortSignal) => request<ArticlePage>(`/articles?${params}`, { signal }),
-  markArticlesRead: (query: ArticleQuery, upTo: string, signal?: AbortSignal) => request<{ marked: number }>('/articles/mark-read', {
+  markArticlesRead: (query: ArticleQuery, bound: MarkReadBound, signal?: AbortSignal) => request<{ marked: number }>('/articles/mark-read', {
     method: 'POST',
     signal,
     body: JSON.stringify({
@@ -230,7 +238,7 @@ export const api = {
       ...(query.folderId !== null ? { folderId: query.folderId } : {}),
       ...(query.q ? { q: query.q } : {}),
       ...(query.since ? { since: query.since } : {}),
-      upTo,
+      ...bound,
     }),
   }),
   importOpml: (document: Blob | string, signal?: AbortSignal) => request<OpmlImportResult>('/opml', {

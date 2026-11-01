@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -64,13 +65,43 @@ func newArticleQuery(userID int64, filter ArticleFilter) *articleQuery {
 	return q
 }
 
+// MarkReadBound limits a bulk mark-read to what the caller has seen. At least
+// one field must be set; with both, an article must satisfy both.
+type MarkReadBound struct {
+	// PublishedAt keeps articles published after it unread.
+	PublishedAt *time.Time
+	// ArticleID keeps articles ingested after the caller loaded its list (a
+	// higher ID) unread, including ones with an old publication date.
+	ArticleID *int64
+}
+
+// ErrMarkReadUnbounded reports a bulk mark-read without any bound.
+var ErrMarkReadUnbounded = errors.New("mark-read needs an upper bound")
+
+// LatestArticleID returns the highest article ID that exists, or 0. Clients
+// pass it back as the ArticleID bound of a bulk mark-read.
+func (s *Store) LatestArticleID(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM articles`).Scan(&id)
+	return id, err
+}
+
 // MarkArticlesReadForUser marks every unread article of the user's
-// subscriptions that matches filter and was published at or before upTo as
-// read, in one statement, and returns how many articles changed. The bound
-// keeps articles that arrived after the caller loaded its list unread.
-func (s *Store) MarkArticlesReadForUser(ctx context.Context, userID int64, filter ArticleFilter, upTo time.Time) (int64, error) {
+// subscriptions that matches filter and lies within bound as read, in one
+// statement, and returns how many articles changed. The bound keeps articles
+// that arrived after the caller loaded its list unread.
+func (s *Store) MarkArticlesReadForUser(ctx context.Context, userID int64, filter ArticleFilter, bound MarkReadBound) (int64, error) {
+	if bound.PublishedAt == nil && bound.ArticleID == nil {
+		return 0, ErrMarkReadUnbounded
+	}
 	q := newArticleQuery(userID, filter)
-	q.conditions = append(q.conditions, "a.published_at <= "+q.add(upTo), "COALESCE(state.is_read, FALSE) = FALSE")
+	if bound.PublishedAt != nil {
+		q.conditions = append(q.conditions, "a.published_at <= "+q.add(*bound.PublishedAt))
+	}
+	if bound.ArticleID != nil {
+		q.conditions = append(q.conditions, "a.id <= "+q.add(*bound.ArticleID))
+	}
+	q.conditions = append(q.conditions, "COALESCE(state.is_read, FALSE) = FALSE")
 	args := q.args
 	if q.searching {
 		args = append([]any{pgx.QueryExecModeCacheDescribe}, args...)

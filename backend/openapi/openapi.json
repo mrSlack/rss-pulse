@@ -1637,7 +1637,7 @@
     "/api/articles/mark-read": {
       "post": {
         "summary": "Mark every article of the current view as read",
-        "description": "Marks read, for the signed-in user, every article that `GET /api/articles` would return for the same `filter`, `feedId`, `folderId`, `q`, and `since`, limited to articles published at or before `upTo` (normally the newest article the reader has loaded), so articles that arrived later stay unread.",
+        "description": "Marks read, for the signed-in user, every article that `GET /api/articles` would return for the same `filter`, `feedId`, `folderId`, `q`, and `since`, limited to articles with an ID at or below `upToId` (the `latestArticleId` of the loaded list) and/or published at or before `upTo`, so articles that arrived later stay unread. At least one bound is required.",
         "tags": [
           "Articles"
         ],
@@ -1653,9 +1653,6 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": [
-                  "upTo"
-                ],
                 "properties": {
                   "filter": {
                     "type": "string",
@@ -1691,7 +1688,13 @@
                   "upTo": {
                     "type": "string",
                     "format": "date-time",
-                    "description": "Only articles published at or before this time are marked."
+                    "description": "Only articles published at or before this time are marked. Required unless `upToId` is given."
+                  },
+                  "upToId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0,
+                    "description": "Only articles with an ID at or below this value are marked: the `latestArticleId` of the loaded list, so articles ingested later stay unread whatever their publication date. With `upTo`, both bounds apply."
                   }
                 }
               }
@@ -1719,7 +1722,7 @@
             }
           },
           "400": {
-            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `article.filter_invalid`, `feed.id_invalid`, `folder.id_invalid`, `article.search_too_long`, `article.date_invalid`.",
+            "description": "Invalid request. Error codes: `request.invalid_json`, `request.multiple_json_values`, `article.filter_invalid`, `feed.id_invalid`, `folder.id_invalid`, `article.search_too_long`, `article.date_invalid`, `article.id_invalid`.",
             "x-error-codes": [
               "request.invalid_json",
               "request.multiple_json_values",
@@ -1727,7 +1730,8 @@
               "feed.id_invalid",
               "folder.id_invalid",
               "article.search_too_long",
-              "article.date_invalid"
+              "article.date_invalid",
+              "article.id_invalid"
             ],
             "content": {
               "application/json": {
@@ -3722,7 +3726,8 @@
         "required": [
           "items",
           "hasMore",
-          "nextCursor"
+          "nextCursor",
+          "latestArticleId"
         ],
         "properties": {
           "items": {
@@ -3740,6 +3745,12 @@
               "null"
             ],
             "description": "Pass as `before` to load the next page."
+          },
+          "latestArticleId": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Highest article ID that existed when the page was listed (0 when there are none). Pass the value of the first page as `upToId` to `POST /api/articles/mark-read` so articles ingested later stay unread, even with an old publication date."
           }
         }
       },
