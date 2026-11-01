@@ -208,17 +208,6 @@ func (s *Store) RevokeUserSessions(ctx context.Context, userID int64) error {
 	return tx.Commit(ctx)
 }
 
-func (s *Store) UpdateUserRefreshInterval(ctx context.Context, userID int64, interval *int) error {
-	command, err := s.pool.Exec(ctx, `UPDATE users SET refresh_interval_minutes=$2,updated_at=NOW() WHERE id=$1`, userID, interval)
-	if err != nil {
-		return err
-	}
-	if command.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 func (s *Store) GetAdminSettings(ctx context.Context) (AdminSettings, error) {
 	var settings AdminSettings
 	err := s.pool.QueryRow(ctx, `SELECT

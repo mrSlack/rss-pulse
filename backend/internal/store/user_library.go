@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/pulse-reader/app/internal/feeds"
 )
 
 func NormalizeFeedURL(raw string) (string, error) {
@@ -308,73 +307,6 @@ func (s *Store) UpdateFeedForUser(ctx context.Context, userID, feedID, sourceID 
 	for _, feed := range feedsForUser {
 		if feed.ID == updatedID {
 			return feed, nil
-		}
-	}
-	return Feed{}, ErrNotFound
-}
-
-func (s *Store) SubscribeFeed(ctx context.Context, userID int64, rawURL string, document feeds.Document, folderID *int64) (Feed, error) {
-	normalizedURL, err := NormalizeFeedURL(rawURL)
-	if err != nil {
-		return Feed{}, err
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return Feed{}, err
-	}
-	defer tx.Rollback(ctx)
-	if folderID != nil {
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM folders WHERE id = $1 AND owner_user_id = $2)`, *folderID, userID).Scan(&exists); err != nil {
-			return Feed{}, err
-		}
-		if !exists {
-			return Feed{}, ErrFolderUnavailable
-		}
-	}
-	var sourceID int64
-	err = tx.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url, title, url, site_url, last_checked_at, last_success_at, added_by_user_id)
-		VALUES ($1, $2, $1, $3, NOW(), NOW(), $4) ON CONFLICT (normalized_url) DO NOTHING RETURNING id`, normalizedURL, document.Title, document.SiteURL, userID).Scan(&sourceID)
-	newSource := err == nil
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url = $1`, normalizedURL).Scan(&sourceID)
-	}
-	if err != nil {
-		return Feed{}, err
-	}
-	if newSource {
-		allowedItems, err := filterAndLogBlockedItems(ctx, tx, sourceID, document.Title, document.Items)
-		if err != nil {
-			return Feed{}, err
-		}
-		if err := upsertSourceItems(ctx, tx, sourceID, allowedItems); err != nil {
-			return Feed{}, err
-		}
-	}
-	var feed Feed
-	err = tx.QueryRow(ctx, `INSERT INTO user_feeds (user_id, feed_source_id, folder_id) VALUES ($1, $2, $3)
-		ON CONFLICT (user_id, feed_source_id) DO NOTHING
-		RETURNING id, folder_id`, userID, sourceID, folderID).
-		Scan(&feed.ID, &feed.FolderID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Feed{}, ErrDuplicate
-	}
-	if err != nil {
-		return Feed{}, err
-	}
-	if err := tx.QueryRow(ctx, `SELECT title, url FROM feed_sources WHERE id = $1`, sourceID).Scan(&feed.Title, &feed.URL); err != nil {
-		return Feed{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Feed{}, err
-	}
-	feedsForUser, err := s.ListFeedsForUser(ctx, userID)
-	if err != nil {
-		return Feed{}, err
-	}
-	for _, subscribed := range feedsForUser {
-		if subscribed.ID == feed.ID {
-			return subscribed, nil
 		}
 	}
 	return Feed{}, ErrNotFound
