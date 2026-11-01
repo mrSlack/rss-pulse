@@ -27,18 +27,8 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // App.tsx is restructured in a later stage; until then missing effect
-      // dependencies are reported without failing the lint run.
-      'react-hooks/exhaustive-deps': 'warn',
-    },
-  },
-  {
-    // App.tsx is restructured in a later stage (and concurrently edited for
-    // pagination); its synchronous state resets inside effects are reported
-    // as warnings until then instead of being rewritten here.
-    files: ['src/App.tsx'],
-    rules: {
-      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/exhaustive-deps': 'error',
+      'react-hooks/set-state-in-effect': 'error',
     },
   },
   {

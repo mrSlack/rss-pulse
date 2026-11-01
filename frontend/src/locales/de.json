@@ -389,5 +389,6 @@
   "errors.articleModeration": "Der Artikel konnte nicht moderiert werden.",
   "apiErrors.admin.blocked_article_id_invalid": "Die ID des blockierten Artikels ist ungültig.",
   "apiErrors.admin.blocked_article_not_found": "Der blockierte Artikel wurde nicht gefunden oder ist nicht zur Moderation verfügbar.",
-  "apiErrors.admin.blocked_article_moderate_failed": "Der blockierte Artikel konnte nicht moderiert werden."
+  "apiErrors.admin.blocked_article_moderate_failed": "Der blockierte Artikel konnte nicht moderiert werden.",
+  "signin.sessionExpired": "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an."
 }

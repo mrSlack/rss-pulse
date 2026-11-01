@@ -548,6 +548,7 @@ a { color: inherit; text-decoration: none; }
 .signin-kicker { margin: 0 0 12px; color: var(--green); font-size: 9px; font-weight: 700; letter-spacing: 1.25px; }
 .signin-card h1 { margin: 0; color: var(--text-strong); font: 700 27px/1.2 'Manrope', sans-serif; letter-spacing: -.7px; }
 .signin-copy { max-width: 330px; margin: 10px 0 27px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.signin-notice { max-width: 330px; margin: -12px 0 20px; padding: 10px 12px; color: var(--ink); background: var(--green-pale); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; line-height: 1.5; }
 .signin-form { display: grid; gap: 9px; }
 .signin-form label { margin-top: 5px; color: var(--text-body); font-size: 11px; font-weight: 600; }
 .signin-form input { width: 100%; height: 43px; padding: 0 12px; color: var(--text-strong); background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }

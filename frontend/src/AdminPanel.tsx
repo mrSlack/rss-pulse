@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import './i18n';
-import { useEffect, useState, type FormEvent } from 'react';
-import { api, stripMarkup, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type SessionUser, type StopWord, type UserRole } from './api';
+import { useEffect, useEffectEvent, useState, type FormEvent } from 'react';
+import { api, errorMessage, isAbortError, stripMarkup, type AdminSettings, type BlockedFeedArticle, type FeedRequest, type SessionUser, type StopWord, type UserRole } from './api';
 import { ErrorToast } from './ErrorToast';
 
 const intervalChoices = [5, 10, 15, 30, 60, 120, 360, 720, 1440];
@@ -64,21 +64,28 @@ export function AdminPanel({ currentUserId, onSignedOut }: AdminPanelProps = {})
     setSharedTTL(String(next.sharedFeedTTLMinutes));
   }
 
+  const reportLoadError = useEffectEvent((reason: unknown) => setError(errorMessage(reason, t('errors.adminLoad'))));
+
   useEffect(() => {
-    let active = true;
-    Promise.all([api.getAdminSettings(), api.getFeedRequests(), api.getStopWords(), api.getBlockedFeedArticles()])
+    const controller = new AbortController();
+    const { signal } = controller;
+    Promise.all([api.getAdminSettings(signal), api.getFeedRequests(signal), api.getStopWords(signal), api.getBlockedFeedArticles(signal)])
       .then(([next, requests, words, blocked]) => {
-        if (!active) return;
+        if (signal.aborted) return;
         setSettings(next);
         setFeedRequests(requests);
         setStopWords(words);
         setBlockedArticles(blocked);
         setRefreshInterval(String(next.refreshIntervalMinutes));
         setSharedTTL(String(next.sharedFeedTTLMinutes));
+        setLoading(false);
       })
-      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : t('errors.adminLoad')); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+      .catch((reason: unknown) => {
+        if (signal.aborted || isAbortError(reason)) return;
+        reportLoadError(reason);
+        setLoading(false);
+      });
+    return () => controller.abort();
   }, []);
 
   async function addStopWord(event: FormEvent<HTMLFormElement>) {

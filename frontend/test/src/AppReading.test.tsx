@@ -139,3 +139,26 @@ describe('read and saved toggles', () => {
     expect(apiMock.getArticles).toHaveBeenCalledOnce();
   });
 });
+
+describe('cancelled article loads', () => {
+  it('aborts the previous view request when the filter changes without showing an error', async () => {
+    const user = userEvent.setup();
+    const signals: AbortSignal[] = [];
+    apiMock.getArticles.mockImplementation((params: URLSearchParams, signal: AbortSignal) => {
+      signals.push(signal);
+      if (params.get('filter') === 'saved') return Promise.resolve({ items: [article(9, { isSaved: true })], hasMore: false, nextCursor: null });
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+      });
+    });
+    render(<App />);
+
+    await waitFor(() => expect(signals).toHaveLength(1));
+    await user.click(await screen.findByRole('button', { name: /^Read later/ }));
+
+    await waitFor(() => expect(articleCards()).toHaveLength(1));
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

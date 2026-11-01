@@ -53,6 +53,9 @@ test('admin workspace visits every section without API, script, or layout errors
     }
   });
   page.on('requestfailed', (requestEvent) => {
+    // Loads are cancelled on purpose when a view unmounts (React StrictMode
+    // mounts every effect twice in development).
+    if (requestEvent.failure()?.errorText === 'net::ERR_ABORTED') return;
     if (requestEvent.url().includes('/api/')) failedRequests.push(`${requestEvent.method()} ${requestEvent.url()}`);
   });
 

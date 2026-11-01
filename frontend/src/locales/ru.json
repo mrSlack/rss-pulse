@@ -393,5 +393,6 @@
   "errors.articleModeration": "Не удалось выполнить модерацию новости.",
   "apiErrors.admin.blocked_article_id_invalid": "Некорректный ID заблокированной новости.",
   "apiErrors.admin.blocked_article_not_found": "Заблокированная новость не найдена или недоступна для модерации.",
-  "apiErrors.admin.blocked_article_moderate_failed": "Не удалось выполнить модерацию заблокированной новости."
+  "apiErrors.admin.blocked_article_moderate_failed": "Не удалось выполнить модерацию заблокированной новости.",
+  "signin.sessionExpired": "Срок действия сеанса истёк. Войдите снова."
 }
