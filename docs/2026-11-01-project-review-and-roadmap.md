@@ -32,7 +32,7 @@ deliberate and mostly correct:
 
 The main gaps are: no brute-force protection on login, several data-correctness
 issues in feed ingestion and pagination, unbounded data growth, queries that
-will degrade as article volume grows, a monolithic `App.tsx`, missing CI, and a
+will degrade as article volume grows, a monolithic `App.tsx`, no automated checks (CI is deferred by owner decision), and a
 few repository hygiene problems (a committed 18 MB binary).
 
 ## 2. Findings
@@ -88,7 +88,7 @@ trigger; **Low** — hygiene, polish, or future-proofing.
 | FE-1 | Medium | `App.tsx` is 775 lines with ~45 `useState` hooks covering session, library, articles, pagination, seven modals, profile, and folder management. Hard to test and change safely; duplicated query-building logic between initial load and `loadMore`. | `frontend/src/App.tsx` | Extract hooks (`useSession`, `useLibrary`, `useArticleFeed`) and per-modal components (`FeedModal`, `FolderModal`, `ProfileModal`, `FolderManager`). Consider TanStack Query for caching, cancellation, and invalidation. Refactor behind existing Playwright screenshots. |
 | FE-2 | Medium | No global handling of `401`: when a session expires, requests show error toasts but the user is not returned to the sign-in screen. | `frontend/src/api.ts` | Throw a typed `ApiError` with `status`/`code`; on `401` clear the session and show the sign-in screen with a localized "session expired" notice. |
 | FE-3 | Low | No request cancellation (`AbortController`); stale responses are ignored with flags but still consume bandwidth during fast filter/search changes. | `frontend/src/App.tsx` | Pass `signal` through `api.request`. Comes for free with FE-1 if a query library is adopted. |
-| FE-4 | Low | No ESLint (React hooks rules would flag the missing `t` dependencies in effects). | `frontend/package.json` | Add ESLint flat config with `typescript-eslint` and `eslint-plugin-react-hooks`; run in CI. |
+| FE-4 | Low | No ESLint (React hooks rules would flag the missing `t` dependencies in effects). | `frontend/package.json` | Add ESLint flat config with `typescript-eslint` and `eslint-plugin-react-hooks`; run locally via `npm run lint`. |
 | FE-5 | Low | `vite` and `@vitejs/plugin-react` are runtime `dependencies`; several dependencies use caret ranges while others are pinned. | `frontend/package.json` | Move build tools to `devDependencies`; choose one pinning policy (lockfile already pins). |
 | FE-6 | Low | Common reader features are missing: "mark all as read" (per feed/folder/view), keyboard navigation (`j`/`k`, `m`, `s`, `o`), OPML import/export. | — | See Phase 5. |
 
@@ -97,9 +97,9 @@ trigger; **Low** — hygiene, polish, or future-proofing.
 | ID | Sev | Finding | Evidence | Recommendation |
 | --- | --- | --- | --- | --- |
 | OPS-1 | High | An 18 MB Go executable `backend/api` (with debug info) is committed. `.gitignore` ignores `backend/pulse-reader` but not `backend/api`. It bloats every clone and can be mistaken for the current build. | `git ls-files backend/api` | `git rm --cached backend/api`, ignore `/backend/api`. History rewrite is optional and must be agreed separately. |
-| OPS-2 | High | No CI. Nothing enforces `gofmt`, `go vet`, Go tests (with PostgreSQL), frontend tests, type checking, or the build on push/PR. | no `.github/` or other CI configuration | Add a CI workflow: `gofmt -l`, `go vet`, `go test ./...` with a PostgreSQL service and `TEST_DATABASE_URL` (fail if integration tests were skipped), `npm ci`, `npm run test -- --run`, `npm run build`, and the Playwright suite on `compose.e2e.yml` (at least nightly). Add `govulncheck` and `npm audit --omit=dev`. |
-| OPS-3 | Medium | The documented Go test command in `AGENTS.md` does not set `TEST_DATABASE_URL`, so all integration tests are **silently skipped**; `SESSION_HANDOFF.md` has the correct command. | `AGENTS.md`, `backend/test/internal/store/store_test.go:60` | Update `AGENTS.md`; make skipped integration tests fail when an env flag such as `REQUIRE_INTEGRATION=1` is set (used by CI). |
-| OPS-4 | Medium | The development API container runs `go mod tidy` on every start against the bind-mounted source, silently rewriting `go.mod`/`go.sum`. The dev `Dockerfile` copies `go.mod` without `go.sum`. | `compose.backend.yml:9`, `backend/Dockerfile:11` | Run `go run ./cmd/api` only; copy `go.sum`; run `go mod tidy` explicitly (and check it in CI with `git diff --exit-code`). |
+| OPS-2 | Deferred | No CI. Nothing enforces `gofmt`, `go vet`, Go tests (with PostgreSQL), frontend tests, type checking, or the build on push/PR. | no `.github/` or other CI configuration | **Deferred by owner decision (2026-11-01): CI is out of scope until explicitly requested.** Until then, checks run manually with the documented commands (see task 0.4). |
+| OPS-3 | Medium | The documented Go test command in `AGENTS.md` does not set `TEST_DATABASE_URL`, so all integration tests are **silently skipped**; `SESSION_HANDOFF.md` has the correct command. | `AGENTS.md`, `backend/test/internal/store/store_test.go:60` | Update `AGENTS.md`; make skipped integration tests fail when an env flag such as `REQUIRE_INTEGRATION=1` is set, so manual runs can prove they actually ran. |
+| OPS-4 | Medium | The development API container runs `go mod tidy` on every start against the bind-mounted source, silently rewriting `go.mod`/`go.sum`. The dev `Dockerfile` copies `go.mod` without `go.sum`. | `compose.backend.yml:9`, `backend/Dockerfile:11` | Run `go run ./cmd/api` only; copy `go.sum`; run `go mod tidy` explicitly (and check with `git diff --exit-code` before committing). |
 | OPS-5 | Medium | Observability is minimal: `log.Printf` only, no request/access logging, no structured fields (request ID is generated but never logged), no metrics. Refresh failures are only visible per-feed in the UI. | `backend/cmd/api/main.go`, `backend/internal/httpapi/handler.go` | Switch to `log/slog` (JSON in production), add an access-log middleware with request ID, user ID, status, and latency; log refresh cycle summaries. Optional `/metrics` (Prometheus) on an internal port. Split health into liveness and readiness. |
 | OPS-6 | Medium | Backups are created only by `update-production.sh`; there is no scheduled backup, rotation, or tested restore procedure. | `scripts/update-production.sh` | Add a backup script for cron/systemd timers with rotation, document and periodically test restore. |
 | OPS-7 | Low | Migrations run only forward with no down scripts and no pre-deploy compatibility check; the API runs migrations at start-up in every replica. | `backend/internal/store/store.go` | Acceptable for a single instance. Document "backup before upgrade" (already in the update script) and a manual rollback procedure; keep the advisory lock. |
@@ -113,7 +113,7 @@ trigger; **Low** — hygiene, polish, or future-proofing.
 | DOC-1 | Low | `docs/PROJECT.md` says the `.agents/skills/` directory is included in the repository, but `.gitignore` ignores `.agents/skills/` and no files are tracked. | Decide whether skills are vendored; align `.gitignore` and the document. |
 | DOC-2 | Low | `AGENTS.md` says "Keep Go tests beside the package", while most tests live in `backend/test/internal/...` (only two `_test.go` files are beside their packages). | Document the actual convention (external test packages under `backend/test/`), or move tests. |
 | DOC-3 | Low | `docs/PROJECT.md` "Database migration file design" mentions only `006_…`; files `007`–`010` exist. The principle is correct, but an index of migrations would help. | Add a short migration list or point to the directory. |
-| DOC-4 | Low | No API reference beyond prose in `PROJECT.md`. | Add an OpenAPI description (can be hand-written) and validate it in CI against handler tests. |
+| DOC-4 | Low | No API reference beyond prose in `PROJECT.md`. | Add an OpenAPI description (can be hand-written) and validate it against handler tests. |
 
 ## 3. Improvement roadmap
 
@@ -124,15 +124,18 @@ tests. Every task follows the existing workflow: feature branch, regression
 test first, `gofmt`, documented test commands, and screenshots for visual
 changes.
 
-### Phase 0 — Repository hygiene and CI (≈2 days)
+### Phase 0 — Repository hygiene and local checks (≈1 day)
+
+CI is **not** part of this plan; it will be added only on an explicit request
+from the project owner.
 
 | # | Task | Closes | Acceptance criteria | Est. |
 | --- | --- | --- | --- | --- |
 | 0.1 | Remove `backend/api` from the index and ignore it. | OPS-1 | `git ls-files backend/api` is empty; `.gitignore` covers build outputs. | 0.1 |
 | 0.2 | Stop `go mod tidy` at container start; copy `go.sum` in the dev image. | OPS-4 | Starting the API leaves the working tree clean. | 0.2 |
 | 0.3 | Fix the documented Go test command; add `REQUIRE_INTEGRATION`. | OPS-3, DOC-2 | With `REQUIRE_INTEGRATION=1` and no database, tests fail instead of skipping. | 0.3 |
-| 0.4 | CI workflow (backend lint/vet/tests with PostgreSQL, frontend tests/build, `govulncheck`, `npm audit`, tidy check); nightly Playwright on `compose.e2e.yml`. | OPS-2 | Workflow is green on `master`; a failing test blocks merge. | 1.0 |
-| 0.5 | ESLint for the frontend, wired into CI. | FE-4, FE-5 | `npm run lint` passes; hooks rules enabled. | 0.4 |
+| 0.4 | Document a single manual pre-merge checklist in `AGENTS.md` (`gofmt -l`, `go vet`, Go tests with `TEST_DATABASE_URL`, frontend tests, build, optional `govulncheck`/`npm audit`). No CI configuration. | OPS-3 | Checklist exists and every command in it has been run once successfully. | 0.2 |
+| 0.5 | ESLint for the frontend (`npm run lint`), added to the manual checklist. | FE-4, FE-5 | `npm run lint` passes; hooks rules enabled. | 0.4 |
 
 ### Phase 1 — Security hardening (≈3 days)
 
@@ -195,12 +198,12 @@ changes.
 | 6.2 | Liveness vs readiness endpoints; optional Prometheus metrics (refresh duration/errors, HTTP latency). | OPS-5 | Compose health checks use readiness. | 0.5 |
 | 6.3 | Scheduled backup script with rotation, documented and tested restore in all three README editions. | OPS-6, OPS-7 | Restore rehearsal recorded in the docs. | 0.5 |
 | 6.4 | Remove dead store functions; central store-error mapping in handlers. | OPS-8, OPS-9 | No behavioural change; tests updated. | 0.5 |
-| 6.5 | Documentation fixes and an OpenAPI description. | DOC-1, DOC-3, DOC-4 | Docs consistent with the repository; spec validated in CI. | 0.75 |
+| 6.5 | Documentation fixes and an OpenAPI description. | DOC-1, DOC-3, DOC-4 | Docs consistent with the repository; spec validated by a test. | 0.75 |
 
 ### Suggested order and milestones
 
 1. **Milestone A — "Safe baseline"** (≈1 week): Phase 0, Phase 1, tasks 2.1–2.2.
-   Closes every High finding except PERF-1.
+   Closes every High finding except PERF-1 (OPS-2/CI is deferred).
 2. **Milestone B — "Correct and predictable"** (≈1 week): rest of Phase 2,
    Phase 3, task 4.2 (retention).
 3. **Milestone C — "Scales and is pleasant to use"** (≈1.5–2 weeks): rest of
@@ -221,7 +224,5 @@ carry the old paging logic. Task 4.1 (baseline) must precede 4.3–4.4.
    (Recommended: yes, bounded below by the shared TTL.)
 4. Is loading remote images directly an accepted privacy trade-off, or should
    an opt-out/proxy be planned?
-5. CI platform: GitHub Actions, or a self-hosted alternative (Gitea/Forgejo
-   Actions) matching the self-hosted deployment?
-6. Should the committed binary be purged from Git history (requires a force
+5. Should the committed binary be purged from Git history (requires a force
    push and re-cloning), or only removed going forward?
