@@ -66,7 +66,12 @@ func TestPendingFeedRequestsAreCappedPerUser(t *testing.T) {
 	}
 }
 
-func TestAdminFeedRequestListIsLimited(t *testing.T) {
+type feedRequestPage struct {
+	Requests []store.FeedRequest `json:"requests"`
+	Total    int                 `json:"total"`
+}
+
+func TestAdminFeedRequestListIsPagedWithTotal(t *testing.T) {
 	ctx := context.Background()
 	pool, _, readerID := isolatedAPIDatabase(t)
 	repository := store.New(pool)
@@ -77,23 +82,37 @@ func TestAdminFeedRequestListIsLimited(t *testing.T) {
 		}
 	}
 	adminCookie := loginForTest(t, handler, "admin@example.com", "a-long-admin-password", false)
+	list := func(query string) feedRequestPage {
+		t.Helper()
+		response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests"+query, "", adminCookie)
+		var page feedRequestPage
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil || page.Requests == nil {
+			t.Fatalf("list %q = %d %s, want a page object", query, response.Code, response.Body.String())
+		}
+		return page
+	}
 
-	all := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests", "", adminCookie)
-	var requests []store.FeedRequest
-	if all.Code != http.StatusOK || json.Unmarshal(all.Body.Bytes(), &requests) != nil || len(requests) != 5 {
-		t.Fatalf("default list = %d %s, want a plain array of 5", all.Code, all.Body.String())
+	if page := list(""); len(page.Requests) != 5 || page.Total != 5 {
+		t.Fatalf("default list = %d requests, total %d; want 5 and 5", len(page.Requests), page.Total)
 	}
-	limited := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?limit=2", "", adminCookie)
-	requests = nil
-	if limited.Code != http.StatusOK || json.Unmarshal(limited.Body.Bytes(), &requests) != nil || len(requests) != 2 {
-		t.Fatalf("limit=2 list = %d %s, want 2 requests", limited.Code, limited.Body.String())
+	first := list("?limit=2")
+	if len(first.Requests) != 2 || first.Total != 5 || first.Requests[0].URL != "https://pending.example/feed-0.xml" {
+		t.Fatalf("limit=2 = %+v, want the two oldest requests and total 5", first)
 	}
-	if requests[0].URL != "https://pending.example/feed-0.xml" {
-		t.Fatalf("limited list must keep oldest-first order, got %q first", requests[0].URL)
+	next := list("?limit=2&offset=2")
+	if len(next.Requests) != 2 || next.Total != 5 || next.Requests[0].URL != "https://pending.example/feed-2.xml" {
+		t.Fatalf("limit=2&offset=2 = %+v, want requests 3 and 4 and total 5", next)
+	}
+	if past := list("?offset=10"); len(past.Requests) != 0 || past.Total != 5 {
+		t.Fatalf("offset past the end = %+v, want an empty page with total 5", past)
 	}
 	for _, raw := range []string{"0", "201", "-1", "abc", "1.5"} {
 		response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?limit="+raw, "", adminCookie)
 		assertErrorCode(t, response, http.StatusBadRequest, "feed.requests_limit_invalid")
+	}
+	for _, raw := range []string{"-1", "abc", "1.5"} {
+		response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?offset="+raw, "", adminCookie)
+		assertErrorCode(t, response, http.StatusBadRequest, "feed.requests_offset_invalid")
 	}
 	if response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests?limit=200", "", adminCookie); response.Code != http.StatusOK {
 		t.Fatalf("limit=200 = %d, want 200", response.Code)

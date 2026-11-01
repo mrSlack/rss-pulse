@@ -25,11 +25,14 @@ func subscriptionsTo(t *testing.T, pool *pgxpool.Pool, userID int64, normalizedU
 func pendingRequests(t *testing.T, handler http.Handler, adminCookie *http.Cookie) []store.FeedRequest {
 	t.Helper()
 	response := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests", "", adminCookie)
-	var requests []store.FeedRequest
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &requests) != nil {
+	var page struct {
+		Requests []store.FeedRequest `json:"requests"`
+		Total    int                 `json:"total"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil || page.Requests == nil {
 		t.Fatalf("list feed requests = %d %s", response.Code, response.Body.String())
 	}
-	return requests
+	return page.Requests
 }
 
 func TestSecondRequesterJoinsPendingRequestAndBothAreSubscribed(t *testing.T) {

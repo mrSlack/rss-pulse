@@ -170,15 +170,9 @@ func TestFeedRequestsAreNotFetchedOrStoredUntilAdministratorApproval(t *testing.
 		t.Fatalf("unapproved request created %d feed sources, want none", sourceCount)
 	}
 
-	requests := authenticatedRequest(t, handler, http.MethodGet, "/api/admin/feed-requests", "", adminCookie)
-	if requests.Code != http.StatusOK {
-		t.Fatalf("list pending requests = %d %s", requests.Code, requests.Body.String())
-	}
-	var pending []struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(requests.Body.Bytes(), &pending); err != nil || len(pending) != 1 {
-		t.Fatalf("pending requests = %s, error %v", requests.Body.String(), err)
+	pending := pendingRequests(t, handler, adminCookie)
+	if len(pending) != 1 {
+		t.Fatalf("pending requests = %+v, want 1", pending)
 	}
 	approved := authenticatedRequest(t, handler, http.MethodPost, "/api/admin/feed-requests/"+intString(pending[0].ID)+"/approve", "{}", adminCookie)
 	if approved.Code != http.StatusNoContent {
