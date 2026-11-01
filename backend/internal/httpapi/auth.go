@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/pulse-reader/app/internal/auth"
+	"github.com/pulse-reader/app/internal/metrics"
 	"github.com/pulse-reader/app/internal/store"
 )
 
@@ -83,6 +84,9 @@ func currentUser(r *http.Request) (store.User, bool) {
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	// Every return path sets the outcome; malformed requests count as failures.
+	outcome := metrics.SignInFailure
+	defer func() { h.metrics.ObserveSignIn(outcome) }()
 	var request struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -101,10 +105,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		// Fail closed: without the shared limiter state the attempt cannot be
 		// checked against the limits, so it must not reach password verification.
 		h.logger.Error("sign-in rate limit check failed", slog.String("error", err.Error()))
+		outcome = metrics.SignInError
 		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
 		return
 	}
 	if wait > 0 {
+		outcome = metrics.SignInRateLimited
 		w.Header().Set("Retry-After", retryAfterSeconds(wait))
 		writeError(w, http.StatusTooManyRequests, "auth.rate_limited", "Too many sign-in attempts. Please wait and try again later.")
 		return
@@ -119,6 +125,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		h.loginLimiter.cancel(r.Context(), attempt)
+		outcome = metrics.SignInError
 		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
 		return
 	}
@@ -134,15 +141,18 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := auth.NewSessionToken()
 	if err != nil {
+		outcome = metrics.SignInError
 		writeError(w, http.StatusInternalServerError, "auth.session_create_failed", "A session could not be created.")
 		return
 	}
 	expiresAt := time.Now().Add(sessionLifetime)
 	if err := h.store.CreateSession(r.Context(), user.ID, auth.HashSessionToken(token), expiresAt); err != nil {
+		outcome = metrics.SignInError
 		writeError(w, http.StatusInternalServerError, "auth.session_create_failed", "A session could not be created.")
 		return
 	}
 	h.setSessionCookie(w, token, expiresAt)
+	outcome = metrics.SignInSuccess
 	writeJSON(w, http.StatusOK, user)
 }
 
