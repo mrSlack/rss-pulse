@@ -212,9 +212,9 @@ commands from `AGENTS.md`.
 | 2 | Sign-in protection — **done** (`stage-2/sign-in-protection`) | 1.1 (SEC-1), 1.5 (SEC-5), 1.6 (SEC-6), 0.5 | 1 | 1.5–2 |
 | 3 | Reading correctness — **done** (`stage-3/reading-correctness`) | 2.2 + 2.4 together (REL-2, REL-4), 2.3 (REL-3) | 1 | 2–2.5 |
 | 4 | Data growth — **done** (`stage-4/data-growth`) | 4.1 (baseline), 4.2 (retention, session cleanup) | decision Q1 | 1.5 |
-| 5 | Refresh engine | 3.1, 3.2, 3.4, 3.5, then design note + 3.3 | decision Q3 | 3–3.5 |
-| 6 | Accounts and requests | 1.4 (SEC-3), 2.6 (REL-9), 2.5 (REL-10) | decision Q2 | 2 |
-| 7 | Performance | 4.3, 4.4, 4.5 | 4 | 3 |
+| 5 | Refresh engine — **done** (`stage-5/refresh-engine`) | 3.1, 3.2, 3.4, 3.5, then design note + 3.3 | decision Q3 | 3–3.5 |
+| 6 | Accounts and requests — **done** (`stage-6/accounts-and-requests`) | 1.4 (SEC-3), 2.6 (REL-9), 2.5 (REL-10) | decision Q2 | 2 |
+| 7 | Performance — **done** (`stage-7/performance`) | 4.3, 4.4, 4.5 | 4 | 3 |
 | 8 | Frontend | 5.1, 5.2, then 5.3–5.5 (5.6 per decision Q4) | 3 | 5–6 |
 | 9 | Operations and cleanup | 0.4, 6.1–6.5 | 1; may run in parallel | 2–2.5 |
 
