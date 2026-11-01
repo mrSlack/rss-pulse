@@ -40,6 +40,7 @@ function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<number>>(() => new Set());
@@ -105,6 +106,7 @@ function App() {
     if (!sessionUser || sessionLoading) {
       setArticles([]);
       setHasMore(false);
+      setNextCursor(null);
       setLoading(false);
       return;
     }
@@ -123,7 +125,8 @@ function App() {
         const page = await api.getArticles(params);
         if (!active) return;
         setArticles(page.items);
-        setHasMore(page.hasMore);
+        setHasMore(page.hasMore && Boolean(page.nextCursor));
+        setNextCursor(page.nextCursor ?? null);
         setLoadMoreFailed(false);
         setSelectedId((current) => page.items.some((item) => item.id === current) ? current : null);
         setError('');
@@ -197,11 +200,12 @@ function App() {
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isRead: true } : item));
     try {
       await api.updateArticle(article.id, { isRead: true });
-      await refreshStructure();
     } catch (reason) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isRead: false } : item));
       setError(reason instanceof Error ? reason.message : t('errors.articleStatus'));
+      return;
     }
+    await refreshStructure();
   }
 
   async function toggleRead(article: Article) {
@@ -209,20 +213,22 @@ function App() {
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isRead } : item));
     try {
       await api.updateArticle(article.id, { isRead });
-      await refreshStructure();
-      setRefreshVersion((current) => current + 1);
     } catch (reason) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isRead: article.isRead } : item));
       setError(reason instanceof Error ? reason.message : t('errors.articleStatus'));
+      return;
     }
+    // Only counters change; the loaded pages, cursor, and scroll position stay.
+    await refreshStructure();
   }
 
   async function toggleSaved(article: Article) {
     const isSaved = !article.isSaved;
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isSaved } : item));
     try {
+      // Saved state does not affect any counter, so nothing is reloaded. An
+      // unsaved article stays in the Saved view until the next explicit load.
       await api.updateArticle(article.id, { isSaved });
-      setRefreshVersion((current) => current + 1);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('errors.articleSave'));
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isSaved: article.isSaved } : item));
@@ -464,13 +470,13 @@ function App() {
   }
 
   const loadMore = useCallback(async () => {
-    if (loadMoreInFlightRef.current || !hasMore) return;
+    if (loadMoreInFlightRef.current || !hasMore || !nextCursor) return;
     loadMoreInFlightRef.current = true;
     const requestVersion = articleRequestVersionRef.current;
     setLoadingMore(true);
     setLoadMoreFailed(false);
     try {
-      const params = new URLSearchParams({ filter, limit: String(articlePageSize), offset: String(articles.length) });
+      const params = new URLSearchParams({ filter, limit: String(articlePageSize), before: nextCursor });
       if (feedId !== null) params.set('feedId', String(feedId));
       if (folderId !== null) params.set('folderId', String(folderId));
       if (search.trim()) params.set('q', search.trim());
@@ -480,8 +486,12 @@ function App() {
       }
       const page = await api.getArticles(params);
       if (requestVersion !== articleRequestVersionRef.current) return;
-      setArticles((current) => [...current, ...page.items]);
-      setHasMore(page.hasMore);
+      setArticles((current) => {
+        const loaded = new Set(current.map((item) => item.id));
+        return [...current, ...page.items.filter((item) => !loaded.has(item.id))];
+      });
+      setHasMore(page.hasMore && Boolean(page.nextCursor));
+      setNextCursor(page.nextCursor ?? null);
       setError('');
     } catch (reason) {
       if (requestVersion === articleRequestVersionRef.current) {
@@ -492,7 +502,7 @@ function App() {
       loadMoreInFlightRef.current = false;
       if (requestVersion === articleRequestVersionRef.current) setLoadingMore(false);
     }
-  }, [articles.length, feedId, filter, folderId, hasMore, search, t]);
+  }, [feedId, filter, folderId, hasMore, nextCursor, search, t]);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;

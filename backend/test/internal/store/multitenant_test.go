@@ -135,7 +135,7 @@ func TestSourceLeasesFenceConcurrentAndStaleRefreshesAndHonorTTL(t *testing.T) {
 	}
 }
 
-func TestSourceRefreshMergesDuplicateArticlesWithinThirtyMinutes(t *testing.T) {
+func TestSourceRefreshMergesOnlyURLDuplicatesWithinThirtyMinutes(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedPostgres(t)
 	if err := store.Migrate(ctx, pool); err != nil {
@@ -191,10 +191,14 @@ func TestSourceRefreshMergesDuplicateArticlesWithinThirtyMinutes(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM articles WHERE feed_source_id=$1`, sourceID).Scan(&articleCount); err != nil {
 		t.Fatal(err)
 	}
-	if articleCount != 5 {
-		t.Fatalf("article count = %d, want 5 (three matches updated and one outside-window item inserted)", articleCount)
+	if articleCount != 7 {
+		t.Fatalf("article count = %d, want 7 (URL match updated; title-only, summary-only, and outside-window items inserted)", articleCount)
 	}
-	wantArticles := []feeds.Item{document.Items[0], document.Items[1], document.Items[2]}
+	wantArticles := []feeds.Item{
+		document.Items[0],
+		{GUID: oldArticles[1].guid, Title: oldArticles[1].title, URL: oldArticles[1].url, Summary: oldArticles[1].summary, PublishedAt: oldPublishedAt},
+		{GUID: oldArticles[2].guid, Title: oldArticles[2].title, URL: oldArticles[2].url, Summary: oldArticles[2].summary, PublishedAt: oldPublishedAt},
+	}
 	for i, want := range wantArticles {
 		var gotGUID, gotTitle, gotURL, gotSummary string
 		var gotPublishedAt time.Time
@@ -384,7 +388,7 @@ func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.
 	if len(adminFolders) == 0 || adminFolders[0].ID == readerFolder.ID {
 		t.Fatalf("admin folders include reader's folder: %#v", adminFolders)
 	}
-	readerArticles, err := store.New(pool).ListArticlesForUser(ctx, readerID, "all", nil, nil, "", nil, 20, 0)
+	readerArticles, err := store.New(pool).ListArticlesForUser(ctx, readerID, "all", nil, nil, "", nil, 20, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +399,7 @@ func TestLegacyFeedMigrationMergesSharedArticlesAndKeepsPrivateState(t *testing.
 	if _, err := store.New(pool).UpdateArticleForUser(ctx, readerID, readerArticles[0].ID, &read, nil); err != nil {
 		t.Fatal(err)
 	}
-	adminArticle, err := store.New(pool).ListArticlesForUser(ctx, adminID, "all", nil, nil, "", nil, 20, 0)
+	adminArticle, err := store.New(pool).ListArticlesForUser(ctx, adminID, "all", nil, nil, "", nil, 20, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

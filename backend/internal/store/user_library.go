@@ -350,7 +350,11 @@ func (s *Store) SubscribeFeed(ctx context.Context, userID int64, rawURL string, 
 	return Feed{}, ErrNotFound
 }
 
-func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter string, feedID, folderID *int64, query string, since *time.Time, limit, offset int) ([]Article, error) {
+// ListArticlesForUser returns up to limit+1 articles in (published_at DESC,
+// id DESC) order so callers can detect another page. With a non-nil before
+// cursor (keyset paging) only articles strictly after that position are
+// returned and offset is ignored; offset paging is kept for older clients.
+func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter string, feedID, folderID *int64, query string, since *time.Time, limit, offset int, before *ArticleCursor) ([]Article, error) {
 	conditions := []string{"uf.user_id = $1"}
 	args := []any{userID}
 	add := func(value any) string {
@@ -377,6 +381,10 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	}
 	if query != "" {
 		conditions = append(conditions, "STRPOS(LOWER(a.title || ' ' || a.summary), LOWER("+add(query)+")) > 0")
+	}
+	if before != nil {
+		conditions = append(conditions, "(a.published_at, a.id) < ("+add(before.PublishedAt)+"::timestamptz, "+add(before.ID)+"::bigint)")
+		offset = 0
 	}
 	if limit < 1 || limit > 200 {
 		limit = 20
@@ -454,14 +462,18 @@ func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []f
 			return err
 		}
 
+		// The GUID is unknown, so look for the same article republished under
+		// a new GUID within 30 minutes. Only strong evidence counts: an equal
+		// non-empty URL, or both an equal non-empty title and an equal
+		// non-empty summary. Repeated titles ("Daily digest") or boilerplate
+		// summaries alone must not merge distinct articles and their state.
 		err = tx.QueryRow(ctx, `SELECT id FROM articles
 			WHERE feed_source_id=$1
-			AND published_at BETWEEN $6::timestamptz - INTERVAL '30 minutes' AND $6::timestamptz + INTERVAL '30 minutes'
-			AND (($2 <> '' AND guid=$2) OR ($3 <> '' AND title=$3) OR ($4 <> '' AND url=$4) OR ($5 <> '' AND summary=$5))
-			ORDER BY CASE WHEN guid=$2 AND $2 <> '' THEN 0 WHEN url=$4 AND $4 <> '' THEN 1
-				WHEN title=$3 AND $3 <> '' THEN 2 ELSE 3 END,
-				ABS(EXTRACT(EPOCH FROM (published_at - $6)))
-			LIMIT 1 FOR UPDATE`, sourceID, item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt).Scan(&existingID)
+			AND published_at BETWEEN $5::timestamptz - INTERVAL '30 minutes' AND $5::timestamptz + INTERVAL '30 minutes'
+			AND (($3 <> '' AND url=$3) OR ($2 <> '' AND $4 <> '' AND title=$2 AND summary=$4))
+			ORDER BY CASE WHEN $3 <> '' AND url=$3 THEN 0 ELSE 1 END,
+				ABS(EXTRACT(EPOCH FROM (published_at - $5)))
+			LIMIT 1 FOR UPDATE`, sourceID, item.Title, item.URL, item.Summary, item.PublishedAt).Scan(&existingID)
 		if err == nil {
 			_, err = tx.Exec(ctx, `UPDATE articles SET guid=$2,title=$3,url=$4,summary=$5,
 				published_at=CASE WHEN $7 THEN $6 ELSE published_at END WHERE id=$1`,
