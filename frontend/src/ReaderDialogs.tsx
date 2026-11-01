@@ -1,12 +1,17 @@
+import { lazy, Suspense } from 'react';
 import type { Feed, Folder, SessionUser } from './api';
 import { FeedModal } from './FeedModal';
-import { FolderDeleteDialog, FolderManager } from './FolderManager';
 import { FolderModal } from './FolderModal';
 import type { FolderDeletion } from './hooks/useLibrary';
 import { MarkAllReadDialog } from './MarkAllReadDialog';
-import { OpmlImportModal } from './OpmlImportModal';
-import { ProfileModal } from './ProfileModal';
-import { ShortcutsDialog } from './ShortcutsDialog';
+
+// Rarely opened dialogs are split into their own chunks and loaded on first use.
+// Adding a feed or folder and marking all as read stay in the main bundle.
+const FolderManager = lazy(() => import('./FolderManager').then((module) => ({ default: module.FolderManager })));
+const FolderDeleteDialog = lazy(() => import('./FolderManager').then((module) => ({ default: module.FolderDeleteDialog })));
+const OpmlImportModal = lazy(() => import('./OpmlImportModal').then((module) => ({ default: module.OpmlImportModal })));
+const ProfileModal = lazy(() => import('./ProfileModal').then((module) => ({ default: module.ProfileModal })));
+const ShortcutsDialog = lazy(() => import('./ShortcutsDialog').then((module) => ({ default: module.ShortcutsDialog })));
 
 /** The dialog the reader shows, with the data it edits. */
 export type ReaderDialog =
@@ -39,7 +44,12 @@ type Props = {
   onImported: () => void;
 };
 
-export function ReaderDialogs({ dialog, onOpen, onClose, user, feeds, folders, viewTitle, ...handlers }: Props) {
+export function ReaderDialogs(props: Props) {
+  // A lazy dialog renders nothing while its chunk loads (usually a few ms).
+  return <Suspense fallback={null}><ReaderDialog {...props} /></Suspense>;
+}
+
+function ReaderDialog({ dialog, onOpen, onClose, user, feeds, folders, viewTitle, ...handlers }: Props) {
   switch (dialog?.kind) {
     case 'feed':
     case 'editFeed': {

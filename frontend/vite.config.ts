@@ -1,8 +1,20 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { serviceWorker } from './vite-plugin-service-worker.ts';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), serviceWorker()],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          // Third-party code (React, i18next) changes far less often than the
+          // app, so it gets its own long-cached chunk that survives app deploys.
+          groups: [{ name: 'vendor', test: /[\\/]node_modules[\\/]/ }],
+        },
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
@@ -15,5 +27,6 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['test/**/*.test.{ts,tsx}'],
+    setupFiles: ['test/setup.ts'],
   },
 });

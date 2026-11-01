@@ -55,7 +55,7 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool, op
 	for _, option := range options {
 		option(handler)
 	}
-	handler.loginLimiter = newLoginLimiter(handler.now)
+	handler.loginLimiter = newLoginLimiter(repository, handler.now, handler.logger)
 	router := chi.NewRouter()
 	// accessLog wraps Recoverer so a recovered panic is logged with status 500.
 	router.Use(requestID, handler.accessLog, middleware.Recoverer, handler.sameOrigin)

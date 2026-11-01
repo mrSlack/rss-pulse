@@ -332,6 +332,7 @@
   "apiErrors.admin.blocked_articles_load_failed": "Не удалось загрузить журнал блокировок.",
   "apiErrors.feed.requests_load_failed": "Не удалось загрузить заявки на ленты.",
   "apiErrors.feed.requests_limit_invalid": "Лимит заявок на ленты должен быть от 1 до 200.",
+  "apiErrors.feed.requests_cursor_invalid": "Недопустимый курсор страницы заявок на ленты.",
   "apiErrors.feed.request_id_invalid": "Некорректный ID заявки на ленту.",
   "apiErrors.feed.request_not_found": "Заявка на ленту не найдена.",
   "apiErrors.feed.request_approve_failed": "Не удалось одобрить заявку на ленту.",
@@ -444,5 +445,9 @@
   "apiErrors.opml.too_large": "OPML-файл не должен превышать 1 МиБ.",
   "apiErrors.opml.content_type_invalid": "Загрузите OPML-файл.",
   "apiErrors.opml.import_failed": "Не удалось импортировать подписки.",
-  "apiErrors.opml.export_failed": "Не удалось экспортировать подписки."
+  "apiErrors.opml.export_failed": "Не удалось экспортировать подписки.",
+  "offline.reader": "Нет подключения к сети. Загруженные ранее статьи по-прежнему доступны.",
+  "offline.signedOut": "Нет подключения к сети.",
+  "update.available": "Доступна новая версия Pulse.",
+  "update.reload": "Обновить"
 }

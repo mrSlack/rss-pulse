@@ -198,21 +198,26 @@ func (h *Handler) listFeedRequests(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	offset := 0
-	if raw := r.URL.Query().Get("offset"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 0 {
-			writeError(w, http.StatusBadRequest, "feed.requests_offset_invalid", "The feed request offset must be zero or a positive whole number.")
+	var after *store.FeedRequestCursor
+	if _, hasAfter := r.URL.Query()["after"]; hasAfter {
+		cursor, err := store.DecodeFeedRequestCursor(r.URL.Query().Get("after"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "feed.requests_cursor_invalid", "The feed request page cursor is invalid.")
 			return
 		}
-		offset = parsed
+		after = &cursor
 	}
-	requests, total, err := h.store.ListPendingFeedRequests(r.Context(), limit, offset)
+	page, err := h.store.ListPendingFeedRequests(r.Context(), limit, after)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "feed.requests_load_failed", "Feed requests could not be loaded.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"requests": requests, "total": total})
+	var nextCursor *string
+	if page.Next != nil {
+		encoded := store.EncodeFeedRequestCursor(*page.Next)
+		nextCursor = &encoded
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": page.Requests, "total": page.Total, "nextCursor": nextCursor})
 }
 
 func (h *Handler) approveFeedRequest(w http.ResponseWriter, r *http.Request) {

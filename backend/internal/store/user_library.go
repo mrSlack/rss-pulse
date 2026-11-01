@@ -253,7 +253,8 @@ func (s *Store) PrepareFeedUpdate(ctx context.Context, userID, feedID int64, raw
 		return 0, false, ErrDuplicate
 	}
 	// The caller has already confirmed through RequestFeedApproval that the source
-	// is approved; sources are never deleted, so it is looked up, not created.
+	// is approved and ended any unsubscribed grace period, so the maintenance job
+	// does not delete it; it is looked up, not created.
 	var sourceID int64
 	err = tx.QueryRow(ctx, `SELECT id FROM feed_sources WHERE normalized_url=$1`, normalizedURL).Scan(&sourceID)
 	if errors.Is(err, pgx.ErrNoRows) {

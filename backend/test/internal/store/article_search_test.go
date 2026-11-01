@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,7 +130,7 @@ func TestArticleSearchFindsArticlesAllowedFromQuarantine(t *testing.T) {
 	assertSearch(t, f, "<p>")
 }
 
-func TestArticleSearchTextStripsMarkupAndLowerCases(t *testing.T) {
+func TestArticleSearchKeyStripsMarkupLowerCasesAndJoinsWords(t *testing.T) {
 	cases := map[string][2]string{
 		"привет мир":            {"ПРИВЕТ", "<p>Мир</p>"},
 		"straße äöü":            {"STRAẞE", "<b>ÄÖÜ</b>"},
@@ -137,10 +138,13 @@ func TestArticleSearchTextStripsMarkupAndLowerCases(t *testing.T) {
 		"title one two":         {"Title", "one<br/>two"},
 		"title spaced out text": {"Title", " spaced \n\t out <i></i> text "},
 		"only title":            {"Only Title", ""},
+		// The separator stands only for word boundaries.
+		"x y z": {"X", "yǂz"},
 	}
-	for want, input := range cases {
-		if got := store.ArticleSearchText(input[0], input[1]); got != want {
-			t.Errorf("ArticleSearchText(%q, %q) = %q, want %q", input[0], input[1], got, want)
+	for words, input := range cases {
+		want := strings.ReplaceAll(words, " ", store.SearchWordSeparator)
+		if got := store.ArticleSearchKey(input[0], input[1]); got != want {
+			t.Errorf("ArticleSearchKey(%q, %q) = %q, want %q", input[0], input[1], got, want)
 		}
 	}
 }

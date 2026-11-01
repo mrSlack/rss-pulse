@@ -1,29 +1,40 @@
 package store
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
-func TestSearchConditionUsesTrigramIndexOnlyForThreeCharacterWords(t *testing.T) {
+func TestSearchConditionUsesTrigramIndexOnlyForThreeCharacterKeys(t *testing.T) {
+	const key = "COALESCE(a.search_key, pulse_article_search_key(a.title, a.summary))"
+	const exact = "STRPOS(" + key + ", $1) > 0"
+	const indexed = key + ` LIKE $1 ESCAPE '\'`
 	cases := []struct {
 		query, condition, value string
 	}{
 		{"", "", ""},
 		{"   ", "", ""},
-		{"ma", "STRPOS(a.search_text, $1) > 0", "ma"},
-		{"A b", "STRPOS(a.search_text, $1) > 0", "a b"},
-		{"%", "STRPOS(a.search_text, $1) > 0", "%"},
-		{`c:\t`, "STRPOS(a.search_text, $1) > 0", `c:\t`},
-		{"MAR", `a.search_text LIKE $1 ESCAPE '\'`, "%mar%"},
-		{"Größe", `a.search_text LIKE $1 ESCAPE '\'`, "%größe%"},
-		{"ёж и", "STRPOS(a.search_text, $1) > 0", "ёж и"},
-		{"Ёжик", `a.search_text LIKE $1 ESCAPE '\'`, "%ёжик%"},
-		{"100%", `a.search_text LIKE $1 ESCAPE '\'`, `%100\%%`},
-		{`sure_thing  \x`, `a.search_text LIKE $1 ESCAPE '\'`, `%sure\_thing \\x%`},
+		{"ǂ", "", ""},
+		{"ma", exact, "ma"},
+		{"%", exact, "%"},
+		{`c:\t`, exact, `c:\t`},
+		{". ,", exact, ".ǂ,"},
+		{"MAR", indexed, "%mar%"},
+		{"Größe", indexed, "%größe%"},
+		// The separator is a letter, so short words of a phrase form trigrams together.
+		{"A b", indexed, "%aǂb%"},
+		{"ёж и", indexed, "%ёжǂи%"},
+		{"Energy  Climate", indexed, "%energyǂclimate%"},
+		{"energyǂclimate", indexed, "%energyǂclimate%"},
+		{"Ёжик", indexed, "%ёжик%"},
+		{"100%", indexed, `%100\%%`},
+		{`sure_thing  \x`, indexed, `%sure\_thingǂ\\x%`},
 	}
 	for _, tc := range cases {
-		var values []any
+		var values []string
 		add := func(value any) string {
-			values = append(values, value)
-			return "$1"
+			values = append(values, value.(string))
+			return "$" + strconv.Itoa(len(values))
 		}
 		condition := searchCondition(tc.query, add)
 		if condition != tc.condition {
@@ -31,12 +42,12 @@ func TestSearchConditionUsesTrigramIndexOnlyForThreeCharacterWords(t *testing.T)
 		}
 		if tc.condition == "" {
 			if len(values) != 0 {
-				t.Errorf("searchCondition(%q) added %v", tc.query, values)
+				t.Errorf("searchCondition(%q) added %q", tc.query, values)
 			}
 			continue
 		}
 		if len(values) != 1 || values[0] != tc.value {
-			t.Errorf("searchCondition(%q) value = %v, want %q", tc.query, values, tc.value)
+			t.Errorf("searchCondition(%q) values = %q, want %q", tc.query, values, tc.value)
 		}
 	}
 }

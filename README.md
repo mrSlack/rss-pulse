@@ -54,7 +54,7 @@ docker compose -f compose.frontend.yml exec frontend npm run test -- --run
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e
 ```
 
-Playwright starts a local Vite server and uses deterministic API fixtures. Screenshot baselines are stored under `frontend/test/e2e/`. After an intentional visual change, review and update them with:
+Playwright starts a local Vite server and uses deterministic API fixtures. The offline and installation tests (`frontend/test/e2e/pwa.spec.ts`) run against a production build that Playwright serves with `vite preview` on port 4173. Screenshot baselines are stored under `frontend/test/e2e/`. After an intentional visual change, review and update them with:
 
 ```sh
 docker compose -f compose.frontend.yml exec frontend npm run test:e2e:update
@@ -66,7 +66,7 @@ The Compose files use the external `rss-reader-net` network so each service grou
 
 The interface is available in English, German, and Russian. The first visit defaults to English. Choose a language from the selector in the toolbar or sign-in screen; the preference is stored in browser local storage. Translation catalogs are plain JSON files in `frontend/src/locales/`.
 
-To add a language, create a locale JSON file using the keys in `en.json`, add its language code to `supportedLanguages` and `resources` in `frontend/src/i18n.ts`, and add its native display name to `frontend/src/LanguageSelector.tsx`. English is the source catalog and fallback.
+To add a language, create a locale JSON file using the keys in `en.json`, add its language code to `supportedLanguages` and a loader to `catalogLoaders` in `frontend/src/i18n.ts`, and add its native display name to `frontend/src/LanguageSelector.tsx`. English is the source catalog and fallback.
 
 ## Agent skills
 
@@ -112,7 +112,7 @@ Before updating production, back up the database. Then build and start the updat
 
 It requires a clean checkout on `master`, creates a database backup with `scripts/backup-production.sh` (see [Production backups](#production-backups); the update stops if the backup fails), fast-forwards from `origin/master`, validates Compose configuration, rebuilds the services, and waits for health checks. Do not run the local database Compose group against the production data directory.
 
-Article search uses the PostgreSQL extension `pg_trgm`, which migration `016_article_search.sql` creates. It ships with the official PostgreSQL images and is a trusted extension, so the database owner can create it without superuser rights; with another PostgreSQL installation, make sure the contrib extensions are installed. The migration rewrites every stored article once and builds a search index, which took about 3 minutes for 500,000 articles in testing. The API starts listening only afterwards. The production API health check therefore allows a 15-minute start period, and the update script waits up to 900 seconds for health checks (override with `DEPLOY_WAIT_TIMEOUT=<seconds> scripts/update-production.sh`). If even that is exceeded, follow `docker compose --env-file .env.production -f compose.production.yml logs -f api` until the API reports that it is listening.
+Article search uses the PostgreSQL extension `pg_trgm`, which migration `016_article_search.sql` creates. It ships with the official PostgreSQL images and is a trusted extension, so the database owner can create it without superuser rights; with another PostgreSQL installation, make sure the contrib extensions are installed. The migrations themselves finish within seconds; the API then fills the search text of existing articles and builds the search index in the background while it already serves requests (about 5 minutes for 500,000 articles in testing). Search works during that time but is slower; the API log reports `article search upgrade completed` when it is done. The update script waits up to 180 seconds for health checks (override with `DEPLOY_WAIT_TIMEOUT=<seconds> scripts/update-production.sh`).
 
 ## Data, accounts, and refresh behavior
 
@@ -128,13 +128,15 @@ Before storing a fetched article, Pulse checks its title and summary against the
 
 Sessions use a random HttpOnly cookie with `SameSite=Strict` and expire after 14 days. Passwords are stored as Argon2id hashes. Use HTTPS and `SESSION_COOKIE_SECURE=true` outside local loopback development.
 
-Sign-in is rate limited: after 10 failed attempts for an account within 15 minutes, or 30 attempts from one client address within a minute, the API answers `429` until the window allows again. The API reads the client address from `X-Real-IP` only when the request comes from a network in `TRUSTED_PROXY_CIDRS` (comma-separated CIDRs; empty uses loopback, RFC 1918 and `fc00::/7`, which covers the Docker network of the bundled Nginx; `none` ignores the header). An invalid value stops the API at startup. Each user may have at most 10 feed requests awaiting approval.
+Sign-in is rate limited: after 10 failed attempts for an account within 15 minutes, or 30 attempts from one client address within a minute, the API answers `429` until the window allows again. These counters are kept in PostgreSQL, so they survive restarts and apply across several API instances; if they cannot be read, sign-in fails with an error instead of skipping the check. The API reads the client address from `X-Real-IP` only when the request comes from a network in `TRUSTED_PROXY_CIDRS` (comma-separated CIDRs; empty uses loopback, RFC 1918 and `fc00::/7`, which covers the Docker network of the bundled Nginx; `none` ignores the header). An invalid value stops the API at startup. Each user may have at most 10 feed requests awaiting approval.
 
 The bundled Nginx sends a Content Security Policy and other browser security headers. It does not terminate TLS and therefore does not send `Strict-Transport-Security`; configure HSTS on the TLS-terminating reverse proxy (for example `add_header Strict-Transport-Security "max-age=31536000" always;` in a host-level Nginx).
 
+Pulse can be installed as an app and keeps recently loaded article lists readable offline. This uses a service worker, which browsers only allow over HTTPS (or on `localhost`). The stored articles and the remembered account are deleted from the device on sign-out, when the session expires, and when another account signs in. A reverse proxy in front of Pulse must not cache `/sw.js` or `/manifest.webmanifest` longer than the bundled Nginx does (`no-cache`); otherwise updates reach installed apps late. After a deployment, open pages offer a "Reload" button to switch to the new version. See "Installation and offline reading" in `docs/PROJECT.md`.
+
 ### Data retention
 
-A background maintenance job runs about one minute after API start and then every 6 hours. It deletes articles whose publication and first-seen times are both older than `ARTICLE_RETENTION_DAYS` (default 180, allowed 30–3,650) unless at least one user has saved them; read/saved states of deleted articles are removed with them. A refresh does not re-insert dated items older than that period unless they are already stored. Decided (allowed/rejected) quarantine records and non-moderatable legacy records are deleted once neither their decision nor their last appearance in a refresh is newer than `QUARANTINE_RETENTION_DAYS` (default 90, allowed 7–3,650); pending records are kept. Expired sessions are removed by the same job. Set either variable to `0` to disable that cleanup; an invalid value stops the API at startup.
+A background maintenance job runs about one minute after API start and then every 6 hours. It deletes articles whose publication and first-seen times are both older than `ARTICLE_RETENTION_DAYS` (default 180, allowed 30–3,650) unless at least one user has saved them; read/saved states of deleted articles are removed with them. A refresh does not re-insert dated items older than that period unless they are already stored. Decided (allowed/rejected) quarantine records and non-moderatable legacy records are deleted once neither their decision nor their last appearance in a refresh is newer than `QUARANTINE_RETENTION_DAYS` (default 90, allowed 7–3,650); pending records are kept. Shared feed sources that nobody has subscribed to for `UNSUBSCRIBED_SOURCE_RETENTION_DAYS` (default 30, allowed 1–3,650, counted from the first job run after the last subscriber left) are deleted with their articles, unless a feed request for the URL or a quarantined article awaiting moderation is still pending; subscribing again within that period keeps the source, and after its deletion the URL needs administrator approval again. Expired sessions are removed by the same job. Set any of these variables to `0` to disable that cleanup; an invalid value stops the API at startup.
 
 ## Backups, logs, and shutdown
 
@@ -203,7 +205,7 @@ Enable it with `sudo systemctl daemon-reload && sudo systemctl enable --now puls
 ./scripts/restore-production.sh --yes backups/production/pulse-20261101T031700Z.dump
 ```
 
-Without `--yes` the script only explains what it would replace. With it, the script checks that the archive is readable, saves the current database with `backup-production.sh` (`--skip-safety-backup` skips this when the current database cannot be dumped), stops `api` and `web`, drops and recreates the database, restores the archive with `pg_restore`, starts all services, and waits up to `DEPLOY_WAIT_TIMEOUT` seconds (default 900) for their health checks. Everything written after the backup is lost, including newer sessions, so users may have to sign in again.
+Without `--yes` the script only explains what it would replace. With it, the script checks that the archive is readable, saves the current database with `backup-production.sh` (`--skip-safety-backup` skips this when the current database cannot be dumped), stops `api` and `web`, drops and recreates the database, restores the archive with `pg_restore`, starts all services, and waits up to `DEPLOY_WAIT_TIMEOUT` seconds (default 180) for their health checks. Everything written after the backup is lost, including newer sessions, so users may have to sign in again.
 
 Plain SQL dumps (`*.sql` from older versions of the update script) are not restored by the script. Stop `api` and `web`, recreate the database inside the `db` container (`dropdb --force` and `createdb` as `POSTGRES_USER`), load the file with `psql -v ON_ERROR_STOP=1 -U <user> -d <database> < <file>.sql` through `docker compose ... exec -T db`, and start the services again.
 

@@ -1,3 +1,13 @@
+# Session handoff — 2026-11-01 (round 2: search, sources, rate limit, PWA)
+
+- **State:** merged into `master` via `improve/integration`: `improve/search`, `improve/sources-and-requests`, `improve/persistent-rate-limit`, `improve/frontend-pwa`, plus a Vitest async-timeout setup (`frontend/test/setup.ts`) for load-related flakiness. Not deployed to production yet.
+- **Changes:** migration 016 reduced to `pg_trgm`; 018 adds nullable `articles.search_key` filled in the background (`store.ArticleSearchUpgrade`, marker `018_article_search_key.sql:background`) with a concurrently built trigram index — no startup downtime; phrase search of common words ~4–14× faster; deploy wait back to 180 s / health start period 70 s. 019 + maintenance delete sources without subscribers after `UNSUBSCRIBED_SOURCE_RETENTION_DAYS` (30). Admin feed requests use keyset paging (`after`/`nextCursor`, `offset` removed). 020 moves sign-in limits to PostgreSQL (`login_attempts`, HMAC keys, advisory locks; fails closed). Frontend: lazy chunks + vendor chunk, de/ru catalogs lazy, PWA (manifest, `sw.js`, offline reading of cached lists, caches cleared on sign-out/401/user change, reload prompt), CSP `worker-src`/`manifest-src`; subscription-limit E2E 96 s → 8 s.
+- **Verified on merged tree:** gofmt/vet/tidy clean, `REQUIRE_INTEGRATION=1 go test ./...` ok; lint, typecheck, 91/91 unit tests, build, `npm audit --omit=dev` 0; Playwright 22/22; compose configs and shellcheck clean. Upgrade rehearsal: old master (010) with 50k articles → new production image: API ready in 0.3 s, background search step done in ~4 s, data and unread counts intact, searches return results.
+- **Known:** search key trick needs a UTF-8 database with a non-`C` locale for phrase speed (official image default is fine); backfill doubles `articles` table size until VACUUM; offline start remembers last account in localStorage (`pulse.offlineUser`); limiter rows are swept on sign-in only. CI still deferred.
+- **Next:** on the production host: check `SHOW lc_ctype`, run `scripts/update-production.sh` (it backs up first), watch logs for the background search step.
+
+---
+
 # Session handoff — 2026-11-01 (code review fixes, merge to master)
 
 - **State:** `improvements` reviewed as a whole (`master...improvements`); 9 findings confirmed with failing tests and fixed on `review-fix/{rate-limit,parsers-opml,article-feed,feed-requests}`, merged into `improvements`, then `improvements` merged into `master` (not pushed).

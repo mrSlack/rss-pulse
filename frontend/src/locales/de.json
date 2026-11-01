@@ -328,6 +328,7 @@
   "apiErrors.admin.blocked_articles_load_failed": "Das Protokoll blockierter Artikel konnte nicht geladen werden.",
   "apiErrors.feed.requests_load_failed": "Feed-Anfragen konnten nicht geladen werden.",
   "apiErrors.feed.requests_limit_invalid": "Das Limit für Feed-Anfragen muss zwischen 1 und 200 liegen.",
+  "apiErrors.feed.requests_cursor_invalid": "Der Seitencursor für Feed-Anfragen ist ungültig.",
   "apiErrors.feed.request_id_invalid": "Die ID der Feed-Anfrage ist ungültig.",
   "apiErrors.feed.request_not_found": "Die Feed-Anfrage wurde nicht gefunden.",
   "apiErrors.feed.request_approve_failed": "Die Feed-Anfrage konnte nicht freigegeben werden.",
@@ -432,5 +433,9 @@
   "apiErrors.opml.too_large": "Die OPML-Datei darf nicht größer als 1 MiB sein.",
   "apiErrors.opml.content_type_invalid": "Laden Sie eine OPML-Datei hoch.",
   "apiErrors.opml.import_failed": "Die Abonnements konnten nicht importiert werden.",
-  "apiErrors.opml.export_failed": "Die Abonnements konnten nicht exportiert werden."
+  "apiErrors.opml.export_failed": "Die Abonnements konnten nicht exportiert werden.",
+  "offline.reader": "Sie sind offline. Zuvor geladene Artikel bleiben lesbar.",
+  "offline.signedOut": "Sie sind offline.",
+  "update.available": "Eine neue Version von Pulse ist verfügbar.",
+  "update.reload": "Neu laden"
 }

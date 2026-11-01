@@ -55,6 +55,8 @@ type Store struct {
 	pool *pgxpool.Pool
 	// articleRetentionDays is read by refresh commits; 0 disables the retention cutoff.
 	articleRetentionDays atomic.Int32
+	// loginSecret caches the HMAC key of the sign-in rate-limit table.
+	loginSecret atomic.Pointer[[]byte]
 }
 
 type Folder struct {

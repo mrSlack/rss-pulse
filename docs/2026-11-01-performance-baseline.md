@@ -261,7 +261,8 @@ Applied with `psql -1` to a copy of `pulse_before` (500,000 articles), load aver
 API applies migrations before it listens, so the first start after the upgrade is delayed by that
 time. `scripts/update-production.sh` waits 180 s for health checks; on a database of this size it can
 report a timeout while the API is still migrating, so check `docker compose ps` and the API log
-afterwards.
+afterwards. (Superseded: migration 016 no longer fills or indexes rows; see "Search key and non-blocking
+search upgrade" below.)
 
 Migration 016 also ran as a non-superuser database owner (`CREATE ROLE … NOSUPERUSER`, database
 owned by that role): the full store and seed integration test suites passed, and `pg_trgm` was
@@ -291,3 +292,127 @@ go run ./cmd/perfbench -mode ingest -runs 7 -dsn 'postgres://pulse:test-only@pul
 ```
 
 The Go commands ran in `golang:1.27.3-alpine3.24` on the same Docker network.
+
+## Search key and non-blocking search upgrade
+
+Measured on 2026-11-01 with the same image, settings, seed flags, and representative user (id 17),
+in one `tmpfs` cluster (`pulse-r2a-db`); load average 2.5–5 during the search and ingestion runs.
+This change replaces stage 7's `articles.search_text` (space-separated words, trigram index built by
+migration 016 inside the startup transaction) with `articles.search_key` (words joined by the letter
+`ǂ`, LZ4-compressed, filled and indexed after start by `store.ArticleSearchUpgrade`; see
+`docs/PROJECT.md`, "Performance notes").
+
+- **Before:** `pulse_before`, seeded by the base commit `4cfc3ab` (all migrations up to `017_`):
+  articles 696 MB, `articles_search_text_trgm_idx` 521 MB. Seeding took 4 min 34 s.
+- **After:** `pulse_after`, seeded by this change (same random dataset): articles 762 MB,
+  `articles_search_key_trgm_idx` 472 MB, 1,729 MB with all indexes and TOAST. Seeding took 2 min 50 s,
+  because the seed tool now builds the index after `COPY` instead of maintaining it.
+
+### Search through the application
+
+`go run ./cmd/perfbench -mode search -runs 5` (same procedure as in "After stage 7"), two interleaved
+rounds; the table shows the mean of the two round medians in ms.
+
+| Query | Before (stage 7) | After | After plan |
+| --- | ---: | ---: | --- |
+| `market` (2 % of articles) | 36.8 | 30.7 | trigram index, 10,168 candidates estimated, parallel bitmap heap scan |
+| `straße` (common seed word) | 465.3 | 352.5 | per-source scan of the key (planner choice) |
+| `безопасность` (common seed word) | 490.9 | 379.9 | per-source scan |
+| `energy climate` (two common words) | 2,989.2 | 684.1 | trigram index, 62,499 candidates for 3,248 matches (417 of the user) |
+| `energy climate policy` | 2,642.0 | 435.3 | trigram index, 29,815 candidates removed by the recheck |
+| `энергия климат` (two common words) | 452.3 | 72.0 | trigram index, 4,622 candidates removed by the recheck |
+| `of the` (two very common short words) | 2,543.3 | 185.0 | trigram index, 13,518 candidates removed by the recheck |
+| `ma` (two letters) | 459.4 | 330.5 | `STRPOS`, per-source scan |
+| `ent` (in most articles) | 435.5 | 288.2 | per-source scan |
+| `a b` (two one-letter words) | 474.4 | 382.0 | per-source scan (planner choice; the pattern has the trigram `aǂb`) |
+
+Round medians (ms), before / after: `market` 36.9, 36.7 / 34.3, 27.1; `straße` 462.0, 468.5 / 355.3,
+349.7; `безопасность` 471.8, 510.0 / 383.3, 376.4; `energy climate` 3,000.9, 2,977.4 / 683.9, 684.2;
+`energy climate policy` 2,637.1, 2,646.8 / 450.8, 419.8; `энергия климат` 453.5, 451.1 / 74.7, 69.3;
+`of the` 2,550.7, 2,535.8 / 192.2, 177.7; `ma` 463.1, 455.6 / 329.0, 331.9; `ent` 434.8, 436.1 /
+291.7, 284.6; `a b` 507.5, 441.3 / 373.6, 390.4.
+
+Why the phrase searches got faster: pg_trgm extracts trigrams from runs of letters and digits. With
+spaces between words, the index only recorded which words an article contains, so for
+`%energy climate%` every article containing both words (205,229 of 500,000) was a candidate whose
+text had to be rechecked. With `ǂ` (a letter) between words, the key is one run and the pattern
+`%energyǂclimate%` also requires the boundary trigrams `gyǂ`, `yǂc`, and `ǂcl`, which leaves 62,499
+candidates. The seed vocabulary (about 100 words per language, many English words ending in `y` and
+starting with `c`) keeps `yǂc` common; the Russian phrase shows the effect with more varied
+boundaries (4,622 candidates). Real feeds have a far larger vocabulary.
+
+Why the scans got faster: rows with a summary exceed PostgreSQL's 2 kB TOAST threshold, so the key is
+stored compressed, and decompressing it dominated every scan of the user's articles. A sequential
+`LIKE '%straße%'` over all 500,000 keys took 3.4 s with pglz and 1.6 s with LZ4 (single process), so
+migration 018 sets `COMPRESSION lz4` on `search_key` (values written later use it; the backfill and the
+seed tool write every value).
+
+Two rejected variants, measured on the same data:
+
+- An expression index on the space-separated text with all spaces removed
+  (`replace(search_text, ' ', '')`) plus an exact `STRPOS` check made phrases fast (`energy climate`
+  150–230 ms: the boundary trigrams `gyc` and `ycl` span two letters on each side) but every rechecked
+  or scanned row then paid for `replace()` and repeated decompression: `market` 213–407 ms,
+  `straße` 1.3–2.1 s, `ent` 1.2–1.5 s.
+- Keeping the SQL fallback as an inlinable `LANGUAGE sql` function: the planner then costs the regular
+  expressions inside `COALESCE` for every row and preferred per-source bitmap plans. The PL/pgSQL
+  function with `COST 1` keeps the plans of the stored key.
+
+### Ingestion
+
+`go run ./cmd/perfbench -mode ingest -runs 7`, three interleaved rounds; medians of the round
+medians in ms (round medians in parentheses). Unchanged within noise:
+
+| Scenario | Before (stage 7) | After |
+| --- | ---: | ---: |
+| Existing source, 200 known | 36.2 (34.8 / 36.4 / 36.2) | 35.1 (35.1 / 35.7 / 33.8) |
+| Existing source, 20 new | 42.0 (42.0 / 41.2 / 46.5) | 42.4 (42.4 / 43.0 / 41.3) |
+| New source, 200 new | 251.1 (253.3 / 251.1 / 217.7) | 217.1 (194.1 / 246.1 / 217.1) |
+
+### Upgrade time
+
+The API was started (built binary, `ARTICLE_RETENTION_DAYS=0`) against copies of two seeded databases:
+
+- **From before 016** (production state; `pulse_old`, seeded by `4612291`, migrations up to `012_`):
+  the API listened 0.8 s after its container started, including migrations 013–018 (018 only changes
+  the catalog). `ArticleSearchUpgrade` then filled 500,000 keys in 1 min 47 s and built the index
+  concurrently in 1 min 57 s: 3 min 45 s in total, while the API served requests. Searches during the
+  backfill took about 3 s (`market` 3.2 s, `straße` 3.1 s, `energy climate` 2.4 s), because rows
+  without a key are normalized by `pulse_article_search_key` on every search.
+- **From the first version of 016** (`pulse_before` with stage 7's 016 and 017 applied): the API
+  listened 0.2 s after its container started; migration 018 dropped `search_text` and its index.
+  The upgrade took 3 min 35 s (backfill 1 min 41 s, index 1 min 54 s; measured before the LZ4 change).
+
+Stage 7's migration 016 kept the API from listening for 3 min 16 s on the same data. The heap grows
+by the rewritten rows (`articles` 1,483 MB after the upgrade and `VACUUM`, against 746 MB when seeded);
+the space is reused by later writes, and `VACUUM FULL` (which locks the table) reclaims it.
+
+On the seeded data, `pulse_article_search_key` produced exactly the Go value
+(`store.ArticleSearchKey`) for all 500,000 articles.
+
+### Commands
+
+```sh
+docker network create pulse-r2a-net
+docker run -d --name pulse-r2a-db --network pulse-r2a-net --tmpfs /var/lib/postgresql \
+  -e POSTGRES_USER=pulse -e POSTGRES_PASSWORD=test-only -e POSTGRES_DB=pulse_test postgres:18.6-alpine3.24
+docker exec pulse-r2a-db psql -U pulse -d pulse_test -c "CREATE DATABASE pulse_before" -c "CREATE DATABASE pulse_after" -c "CREATE DATABASE pulse_old"
+
+# from backend/ of a checkout of 4cfc3ab ("before"), of 4612291 ("old"), and of this change ("after")
+go run ./cmd/seed -confirm-destroy-data -dsn 'postgres://pulse:test-only@pulse-r2a-db:5432/pulse_before?sslmode=disable'
+go run ./cmd/seed -confirm-destroy-data -dsn 'postgres://pulse:test-only@pulse-r2a-db:5432/pulse_old?sslmode=disable'
+go run ./cmd/seed -confirm-destroy-data -dsn 'postgres://pulse:test-only@pulse-r2a-db:5432/pulse_after?sslmode=disable'
+
+# search and ingestion; "before" runs the base commit's perfbench against pulse_before
+go run ./cmd/perfbench -mode search -runs 5 -q 'market,straße,безопасность,energy climate,ma,ent,energy climate policy,энергия климат,of the,a b' \
+  -dsn 'postgres://pulse:test-only@pulse-r2a-db:5432/pulse_after?sslmode=disable'
+go run ./cmd/perfbench -mode ingest -runs 7 -dsn 'postgres://pulse:test-only@pulse-r2a-db:5432/pulse_after?sslmode=disable'
+
+# one plan
+docker exec -i pulse-r2a-db psql -X -q -U pulse -d pulse_after -v uid=17 -v pattern=%energyǂclimate% \
+  -f - < docs/2026-11-01-performance-search.sql
+
+# upgrade: copy a seeded database and start the API against it; watch for "article search upgrade completed"
+docker exec pulse-r2a-db psql -U pulse -d pulse_test -c "CREATE DATABASE pulse_upg TEMPLATE pulse_old"
+DATABASE_URL='postgres://pulse:test-only@pulse-r2a-db:5432/pulse_upg?sslmode=disable' ARTICLE_RETENTION_DAYS=0 ./api
+```

@@ -38,7 +38,7 @@ func insertMarkReadArticles(t *testing.T, pool *pgxpool.Pool, sourceID int64, pr
 	ids := make([]int64, count)
 	for i := range count {
 		title := prefix + " story " + intString(int64(i))
-		if err := pool.QueryRow(context.Background(), `INSERT INTO articles (feed_source_id,guid,title,published_at,search_text) VALUES ($1,$2,$3,$4,lower($3)) RETURNING id`,
+		if err := pool.QueryRow(context.Background(), `INSERT INTO articles (feed_source_id,guid,title,published_at) VALUES ($1,$2,$3,$4) RETURNING id`,
 			sourceID, prefix+intString(int64(i)), title, newest.Add(-time.Duration(i)*time.Hour)).Scan(&ids[i]); err != nil {
 			t.Fatal(err)
 		}

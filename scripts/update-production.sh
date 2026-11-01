@@ -6,7 +6,7 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="$repo_root/compose.production.yml"
 env_file="$repo_root/.env.production"
 
-wait_timeout="${DEPLOY_WAIT_TIMEOUT:-900}"
+wait_timeout="${DEPLOY_WAIT_TIMEOUT:-180}"
 if ! [[ "$wait_timeout" =~ ^[1-9][0-9]*$ ]]; then
   printf 'DEPLOY_WAIT_TIMEOUT must be a positive number of seconds, got %s\n' "$wait_timeout" >&2
   exit 1
