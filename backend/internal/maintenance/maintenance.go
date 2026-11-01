@@ -1,5 +1,6 @@
 // Package maintenance runs periodic data-retention cleanup: expired articles,
-// decided quarantine records, sources without subscribers, and expired sessions.
+// decided quarantine records, sources without subscribers, expired sessions, and
+// sign-in attempts that have left their rate-limit window.
 package maintenance
 
 import (
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pulse-reader/app/internal/store"
 )
 
 const (
@@ -66,6 +69,7 @@ type Repository interface {
 	DeleteExpiredQuarantine(ctx context.Context, retentionDays int) (int64, error)
 	DeleteUnsubscribedSources(ctx context.Context, graceDays, batchSize int) (sources, articles int64, err error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
+	DeleteExpiredLoginAttempts(ctx context.Context, throttle store.LoginThrottle, now time.Time) (int64, error)
 }
 
 // RunOnce performs every enabled cleanup. A failing step does not prevent the others.
@@ -98,6 +102,13 @@ func RunOnce(ctx context.Context, repository Repository, config Config) error {
 		failures = append(failures, fmt.Errorf("session cleanup: %w", err))
 	}
 	slog.Info("maintenance: deleted expired sessions", slog.Int64("count", count))
+	// The sign-in limiter also sweeps while sign-ins arrive; this removes the
+	// attempts left behind once they stop (for example after an attack).
+	count, err = repository.DeleteExpiredLoginAttempts(ctx, store.DefaultLoginThrottle, time.Now())
+	if err != nil {
+		failures = append(failures, fmt.Errorf("sign-in attempt cleanup: %w", err))
+	}
+	slog.Info("maintenance: deleted expired sign-in attempts", slog.Int64("count", count))
 	return errors.Join(failures...)
 }
 
