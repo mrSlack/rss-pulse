@@ -29,7 +29,7 @@ func main() {
 	runs := flag.Int("runs", 7, "measured runs per scenario")
 	sourceID := flag.Int64("source", 17, "seeded source refreshed by the ingest scenarios")
 	userID := flag.Int64("user", 17, "seeded user whose articles are searched")
-	queries := flag.String("q", "market,straße,безопасность,energy climate,ma,ent", "comma-separated search queries")
+	queries := flag.String("q", "market,straße,безопасность,energy climate,ma,ent,energy climate policy,энергия климат,of the,a b", "comma-separated search queries")
 	flag.Parse()
 	ctx := context.Background()
 	config, err := pgxpool.ParseConfig(*dsn)
