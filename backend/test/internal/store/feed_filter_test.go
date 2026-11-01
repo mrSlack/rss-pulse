@@ -46,7 +46,7 @@ func TestSourceRefreshLogsAndSkipsBlockedArticles(t *testing.T) {
 		{GUID: "blocked-summary", Title: "Plain headline", URL: "https://example.com/blocked-summary", Summary: "<p>Hidden&nbsp;phrase in the description</p>", PublishedAt: time.Now().UTC()},
 		{GUID: "allowed", Title: "Ordinary science news", URL: "https://example.com/allowed", PublishedAt: time.Now().UTC()},
 	}}
-	if err := store.New(pool).CommitSourceRefresh(ctx, lease, document); err != nil {
+	if _, err := store.New(pool).CommitSourceRefresh(ctx, lease, document); err != nil {
 		t.Fatalf("CommitSourceRefresh() error = %v", err)
 	}
 	var articleCount int
@@ -75,7 +75,7 @@ func TestSourceRefreshLogsAndSkipsBlockedArticles(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE feed_sources SET lease_token='second-lease',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1`, sourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.New(pool).CommitSourceRefresh(ctx, store.SourceLease{ID: sourceID, Token: "second-lease"}, document); err != nil {
+	if _, err := store.New(pool).CommitSourceRefresh(ctx, store.SourceLease{ID: sourceID, Token: "second-lease"}, document); err != nil {
 		t.Fatal(err)
 	}
 	var logCount int

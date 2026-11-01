@@ -322,3 +322,25 @@ func TestArticleSearchUpgradeStopsWhenCanceled(t *testing.T) {
 		t.Fatalf("search index exists=%v valid=%v after a canceled and a complete run", exists, valid)
 	}
 }
+
+func TestArticleSearchUpgradeReportsBackfillProgress(t *testing.T) {
+	f := newDedupFixture(t)
+	f.refresh(t, searchFixtureItems()...)
+	ctx := context.Background()
+	command, err := f.pool.Exec(ctx, `UPDATE articles SET search_key = NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported []int64
+	upgrade := store.ArticleSearchUpgrade{BatchSize: 2, Progress: func(filled int64) { reported = append(reported, filled) }}
+	if err := upgrade.Run(ctx, f.pool); err != nil {
+		t.Fatalf("ArticleSearchUpgrade.Run() error = %v", err)
+	}
+	var total int64
+	for _, filled := range reported {
+		total += filled
+	}
+	if total != command.RowsAffected() || len(reported) < 2 {
+		t.Fatalf("progress reports %v (sum %d), want one per batch summing to %d", reported, total, command.RowsAffected())
+	}
+}

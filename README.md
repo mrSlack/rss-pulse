@@ -236,7 +236,9 @@ The API writes structured logs (Go `log/slog`) to stderr. `LOG_FORMAT` selects `
 
 Follow logs with `docker compose -f <compose-file> logs -f api`. With JSON logs, a filter such as `docker compose --env-file .env.production -f compose.production.yml logs --no-log-prefix api | jq 'select(.status >= 500)'` shows failed requests.
 
-`GET /api/health/live` reports that the API process is running without contacting the database. `GET /api/health/ready` also checks the database (2-second timeout) and answers `503` when it is unavailable; the Compose health checks use it. `GET /api/health` remains an alias of the readiness check. The API does not export Prometheus metrics yet.
+`GET /api/health/live` reports that the API process is running without contacting the database. `GET /api/health/ready` also checks the database (2-second timeout) and answers `503` when it is unavailable; the Compose health checks use it. `GET /api/health` remains an alias of the readiness check.
+
+Set `METRICS_ADDR` (for example `METRICS_ADDR=:9090`; empty by default, which disables metrics) to export Prometheus metrics on a separate listener at `http://api:9090/metrics`. It is not part of the public site: Nginx forwards only `/api/` to port 8080, and the Compose files declare port 9090 with `expose` only, without a host port. Run Prometheus as a container on the same Docker network (`rss-reader-net` locally, `pulse-production_default` in production) and scrape `api:9090`; every container on that network can reach the port, so attach only trusted services. An invalid value or the API port 8080 stops the API at startup. The metrics cover API requests by route, feed refresh outcomes and backlog, sign-in outcomes, maintenance runs, the search upgrade, and the database pool; [docs/PROJECT.md](docs/PROJECT.md#metrics) lists them with an example scrape configuration and alert rules.
 
 ### Shutdown
 

@@ -217,7 +217,7 @@ func TestConditionalRefreshCommits(t *testing.T) {
 	}
 	lease.Validators = feeds.Validators{ETag: `"v1"`, LastModified: "Sun, 01 Nov 2026 10:00:00 GMT"}
 	document := feeds.Document{Title: "Conditional", Items: []feeds.Item{{GUID: "a", Title: "Article", URL: "https://conditional.example/a"}}}
-	if err := f.store.CommitSourceRefresh(f.ctx, lease, document); err != nil {
+	if _, err := f.store.CommitSourceRefresh(f.ctx, lease, document); err != nil {
 		t.Fatal(err)
 	}
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
@@ -92,6 +93,24 @@ func (h *Handler) accessLog(next http.Handler) http.Handler {
 			attributes = append(attributes, slog.Int64("user_id", fields.userID))
 		}
 		h.logger.LogAttrs(r.Context(), level, "http request", attributes...)
+	})
+}
+
+// instrument records each request in the metrics under its chi route pattern (for
+// example /api/feeds/{id}), never the raw path, so IDs do not become label values.
+func (h *Handler) instrument(next http.Handler) http.Handler {
+	if h.metrics == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		wrapped := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(wrapped, r)
+		route := ""
+		if routeContext := chi.RouteContext(r.Context()); routeContext != nil {
+			route = routeContext.RoutePattern()
+		}
+		h.metrics.ObserveHTTPRequest(route, r.Method, wrapped.Status(), time.Since(started))
 	})
 }
 

@@ -106,23 +106,23 @@ func (s *Store) ListBlockedFeedArticles(ctx context.Context, limit int) ([]Block
 	return result, rows.Err()
 }
 
-func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, currentTitle string, items []feeds.Item) ([]feeds.Item, error) {
+func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, currentTitle string, items []feeds.Item) ([]feeds.Item, int, error) {
 	rows, err := tx.Query(ctx, `SELECT term FROM feed_stop_words ORDER BY term,id`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	terms := make([]string, 0)
 	for rows.Next() {
 		var term string
 		if err := rows.Scan(&term); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, 0, err
 		}
 		terms = append(terms, term)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
+		return nil, 0, err
 	}
 	rows.Close()
 
@@ -130,16 +130,17 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 	var addedByUserID *int64
 	if err := tx.QueryRow(ctx, `SELECT title,url,added_by_user_id FROM feed_sources WHERE id=$1`, sourceID).
 		Scan(&feedTitle, &feedURL, &addedByUserID); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if strings.TrimSpace(currentTitle) != "" {
 		feedTitle = strings.TrimSpace(currentTitle)
 	}
 	statuses, err := quarantineStatuses(ctx, tx, sourceID, items)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	allowed := make([]feeds.Item, 0, len(items))
+	quarantined := 0
 	batch := &pgx.Batch{}
 	for _, item := range items {
 		status := statuses[item.GUID]
@@ -152,6 +153,7 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 			// The insert below creates a pending record; a repeated GUID later in the
 			// same feed sees it, as it would in a sequential lookup.
 			statuses[item.GUID] = "pending"
+			quarantined++
 		}
 		batch.Queue(`INSERT INTO blocked_feed_articles
 			(feed_source_id,article_guid,article_title,article_url,feed_title,feed_url,added_by_user_id,matched_term,summary,published_at,moderation_eligible)
@@ -170,14 +172,14 @@ func filterAndLogBlockedItems(ctx context.Context, tx pgx.Tx, sourceID int64, cu
 		for range batch.Len() {
 			if _, err := results.Exec(); err != nil {
 				results.Close()
-				return nil, err
+				return nil, 0, err
 			}
 		}
 		if err := results.Close(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
-	return allowed, nil
+	return allowed, quarantined, nil
 }
 
 // quarantineStatuses returns the moderation status of every item GUID that already has
@@ -259,7 +261,7 @@ func (s *Store) ModerateBlockedFeedArticle(ctx context.Context, id int64, allow 
 		item.Summary = *summary
 		item.PublishedAt = *published
 		item.HasPublishedAt = true
-		if err := upsertSourceItems(ctx, tx, sourceID, []feeds.Item{item}); err != nil {
+		if _, err := upsertSourceItems(ctx, tx, sourceID, []feeds.Item{item}); err != nil {
 			return err
 		}
 		status = "allowed"

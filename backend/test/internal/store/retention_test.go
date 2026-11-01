@@ -221,7 +221,7 @@ func TestSourceRefreshDoesNotReinsertArticlesOlderThanRetention(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE feed_sources SET lease_token='lease',lease_expires_at=NOW()+INTERVAL '1 minute' WHERE id=$1`, f.sourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.CommitSourceRefresh(ctx, store.SourceLease{ID: f.sourceID, Token: "lease"}, document); err != nil {
+	if _, err := f.store.CommitSourceRefresh(ctx, store.SourceLease{ID: f.sourceID, Token: "lease"}, document); err != nil {
 		t.Fatalf("CommitSourceRefresh() error = %v", err)
 	}
 	if got := f.count(t, `SELECT COUNT(*) FROM articles WHERE guid='old-new'`); got != 0 {
@@ -238,7 +238,7 @@ func TestSourceRefreshDoesNotReinsertArticlesOlderThanRetention(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE feed_sources SET lease_token='lease2',lease_expires_at=NOW()+INTERVAL '1 minute',last_success_at=NULL WHERE id=$1`, f.sourceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.CommitSourceRefresh(ctx, store.SourceLease{ID: f.sourceID, Token: "lease2"}, document); err != nil {
+	if _, err := f.store.CommitSourceRefresh(ctx, store.SourceLease{ID: f.sourceID, Token: "lease2"}, document); err != nil {
 		t.Fatalf("CommitSourceRefresh() error = %v", err)
 	}
 	if got := f.count(t, `SELECT COUNT(*) FROM articles WHERE guid='old-new'`); got != 1 {

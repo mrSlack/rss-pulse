@@ -110,7 +110,7 @@ func TestSourceLeasesFenceConcurrentAndStaleRefreshesAndHonorTTL(t *testing.T) {
 		t.Fatalf("expired lease reclaim = (%v, %v, %v), want a new token", newLease, claimed, err)
 	}
 	document := feeds.Document{Title: "Updated", SiteURL: "https://example.com", Items: []feeds.Item{{GUID: "first", Title: "First article", URL: "https://example.com/a"}}}
-	if err := store.New(pool).CommitSourceRefresh(ctx, staleLease, document); !errors.Is(err, store.ErrLeaseLost) {
+	if _, err := store.New(pool).CommitSourceRefresh(ctx, staleLease, document); !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("stale commit error = %v, want ErrLeaseLost", err)
 	}
 	if err := store.New(pool).ReleaseSourceLease(ctx, newLease, "temporary failure"); err != nil {
@@ -133,7 +133,7 @@ func TestSourceLeasesFenceConcurrentAndStaleRefreshesAndHonorTTL(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claim after the failure backoff = (%v, %v), want retry lease", newLease, err)
 	}
-	if err := store.New(pool).CommitSourceRefresh(ctx, newLease, document); err != nil {
+	if _, err := store.New(pool).CommitSourceRefresh(ctx, newLease, document); err != nil {
 		t.Fatalf("valid lease commit: %v", err)
 	}
 	if _, claimed, err := store.New(pool).ClaimSource(ctx, sourceID, nil); err != nil || claimed {
@@ -189,7 +189,7 @@ func TestSourceRefreshMergesOnlyURLDuplicatesWithinThirtyMinutes(t *testing.T) {
 		{GUID: "new-text-guid", Title: "Updated text title", URL: "https://example.com/new-text", Summary: oldArticles[2].summary, PublishedAt: oldPublishedAt.Add(10 * time.Minute), HasPublishedAt: true},
 		{GUID: "outside-new-guid", Title: "Outside window title", URL: oldArticles[3].url, Summary: "New outside window text", PublishedAt: oldPublishedAt.Add(31 * time.Minute), HasPublishedAt: true},
 	}}
-	if err := store.New(pool).CommitSourceRefresh(ctx, lease, document); err != nil {
+	if _, err := store.New(pool).CommitSourceRefresh(ctx, lease, document); err != nil {
 		t.Fatalf("CommitSourceRefresh() error = %v", err)
 	}
 
