@@ -37,6 +37,7 @@
   "profile.offlineTitle": "This device",
   "profile.rememberOffline": "Remember me on this device for offline use",
   "profile.rememberOfflineHint": "When off, Pulse does not remember your account, and articles stored during a visit are deleted when you sign out or next open Pulse.",
+  "profile.rememberSaveFailed": "Your choice could not be saved on this device. Check whether the browser allows this site to store data.",
   "profile.localStorageNote": "Your subscriptions are stored locally on this server.",
   "signin.kicker": "YOUR FEED, ALL IN ONE PLACE",
   "signin.title": "Welcome back",
@@ -442,6 +443,7 @@
   "apiErrors.opml.export_failed": "The subscriptions could not be exported.",
   "offline.reader": "You are offline. Articles loaded earlier remain readable.",
   "offline.signedOut": "You are offline.",
+  "offline.stale": "The server is not responding. Showing articles saved earlier.",
   "update.available": "A new version of Pulse is available.",
   "update.reload": "Reload"
 }

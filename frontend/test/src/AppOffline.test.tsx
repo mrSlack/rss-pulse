@@ -122,6 +122,35 @@ describe('offline data privacy', () => {
     expect(remembered()).toBeNull();
   });
 
+  it('forgets the remember choice when the session check reports no session', async () => {
+    chooseRemember(true);
+    remember(reader);
+    vi.stubGlobal('fetch', vi.fn(() => json({ code: 'auth.sign_in_required', error: 'Please sign in.' }, 401)));
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Welcome back' });
+    // The next person to sign in on this browser starts from the default.
+    await waitFor(() => expect(rememberChoice()).toBeNull());
+    expect((screen.getByRole('checkbox', { name: 'Remember me on this device for offline use' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('forgets the remember choice when a request reports the session expired', async () => {
+    chooseRemember(true);
+    const stored = stubCaches(['pulse-api-v1']);
+    vi.stubGlobal('fetch', vi.fn((input: string) => {
+      const path = new URL(input, 'http://localhost').pathname;
+      if (path === '/api/auth/me') return json(reader);
+      return json({ code: 'auth.sign_in_required', error: 'Please sign in.' }, 401);
+    }));
+    render(<App />);
+
+    expect(await screen.findByText('Your session has expired. Please sign in again.')).toBeTruthy();
+    await waitFor(() => expect(stored.size).toBe(0));
+    expect(remembered()).toBeNull();
+    expect(rememberChoice()).toBeNull();
+    expect((screen.getByRole('checkbox', { name: 'Remember me on this device for offline use' }) as HTMLInputElement).checked).toBe(false);
+  });
+
   it('drops stored data and the remember choice on sign-out', async () => {
     const user = userEvent.setup();
     chooseRemember(true);
@@ -286,5 +315,27 @@ describe('remembering this device for offline use', () => {
 
     await waitFor(() => expect(remembered()).toMatchObject({ id: 3, email: 'reader@example.com' }));
     expect(rememberChoice()).toBe('true');
+  });
+
+  it('shows the stored choice and an error when the profile cannot save it', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', signedInServer());
+    render(<App />);
+    await screen.findByRole('button', { name: 'Create folder' });
+
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === 'pulse.offlineRemember') throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      setItem.call(this, key, value);
+    });
+    await user.click(screen.getAllByRole('button', { name: 'Edit profile' })[0]);
+    const box = await screen.findByRole('checkbox', { name: 'Remember me on this device for offline use' }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    await user.click(box);
+
+    expect(await screen.findByText('Your choice could not be saved on this device. Check whether the browser allows this site to store data.')).toBeTruthy();
+    expect(box.checked).toBe(false);
+    expect(rememberChoice()).toBeNull();
+    expect(remembered()).toBeNull();
   });
 });

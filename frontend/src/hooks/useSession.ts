@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, isAbortError, setUnauthorizedHandler, type SessionUser } from '../api';
+import { api, ApiError, isAbortError, reportSessionExpired, setUnauthorizedHandler, type SessionUser } from '../api';
 import { clearOfflineData, forgetRememberChoice, prepareOfflineData, rememberedUser, rememberUser, setRemembersDevice } from '../offlineData';
+import { onServiceWorkerMessage, resetStaleData, SW_MESSAGE_SESSION_EXPIRED } from '../staleData';
+
+/**
+ * Forgets everything this device kept for the session that ended: the
+ * offline data and the "remember this device" choice, so the next person
+ * signing in on this browser starts from the default.
+ */
+function forgetSession(): Promise<void> {
+  forgetRememberChoice();
+  resetStaleData();
+  return clearOfflineData();
+}
 
 /**
  * The signed-in user. A 401 from any authenticated request ends the session
@@ -9,9 +21,10 @@ import { clearOfflineData, forgetRememberChoice, prepareOfflineData, rememberedU
  * Without a network connection the account last signed in on this device is
  * used (if the user chose to remember this device), so articles stored for
  * offline reading can be shown; the server checks the session again with the
- * first request that reaches it. Offline data is dropped whenever the session
- * ends or another account signs in, and at start when the device is not
- * remembered (see offlineData.ts).
+ * first request that reaches it. Offline data and the remember choice are
+ * dropped whenever the session ends (sign-out or 401); offline data also when
+ * another account signs in, and at start when the device is not remembered
+ * (see offlineData.ts).
  */
 export function useSession() {
   const [user, setUser] = useState<SessionUser | null>(null);
@@ -32,7 +45,7 @@ export function useSession() {
       .catch((reason: unknown) => {
         if (controller.signal.aborted || isAbortError(reason)) return;
         const offline = reason instanceof ApiError && reason.status === 0;
-        if (reason instanceof ApiError && reason.status === 401) void clearOfflineData();
+        if (reason instanceof ApiError && reason.status === 401) void forgetSession();
         setUser(offline ? rememberedUser() : null);
         setLoading(false);
       });
@@ -41,11 +54,16 @@ export function useSession() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      void clearOfflineData();
+      void forgetSession();
       setExpired(true);
       setUser(null);
     });
-    return () => setUnauthorizedHandler(null);
+    // A 401 the service worker received after it had answered from its cache.
+    const stop = onServiceWorkerMessage(SW_MESSAGE_SESSION_EXPIRED, reportSessionExpired);
+    return () => {
+      stop();
+      setUnauthorizedHandler(null);
+    };
   }, []);
 
   /** Signs in; `remember` is the "Remember me on this device for offline use" choice. */
@@ -68,15 +86,14 @@ export function useSession() {
     } finally {
       // Even if the server could not be reached, this device forgets the data,
       // and the next person signing in here starts from the default choice.
-      await clearOfflineData();
-      forgetRememberChoice();
+      await forgetSession();
     }
     setUser(null);
   }, []);
 
   /** Forgets a session that the server has already ended. */
   const clear = useCallback(() => {
-    void clearOfflineData();
+    void forgetSession();
     setUser(null);
   }, []);
 

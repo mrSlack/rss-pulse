@@ -146,6 +146,53 @@ test('stored articles are shown when the network hangs instead of failing', asyn
   await expect(page.getByText('Stored headline 1')).toBeVisible({ timeout: 15_000 });
   // The worker waited for the network first (API_NETWORK_TIMEOUT_MS, 4 s).
   expect(Date.now() - started).toBeGreaterThanOrEqual(3_500);
+  // Online, the stored copy is not passed off as fresh.
+  await expect(page.getByRole('status')).toHaveText('The server is not responding. Showing articles saved earlier.');
+});
+
+test('a slow server’s late answer replaces the stored copy', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+
+  // The next article list takes longer than the worker waits; the server has
+  // changed the list in the meantime. Later requests answer at once.
+  let delayed = false;
+  const fresh = { items: [{ ...articles[0], title: 'Fresh headline' }], hasMore: false, nextCursor: null, latestArticleId: 1 };
+  await context.route((url) => url.pathname === '/api/articles', async (route) => {
+    if (!delayed) {
+      delayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fresh) });
+  });
+  await page.reload();
+  await expect(page.getByText('Stored headline 1')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('status')).toHaveText('The server is not responding. Showing articles saved earlier.');
+
+  // When the late answer arrives, the page loads the fresh list.
+  await expect(page.getByText('Fresh headline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('Stored headline 1')).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveCount(0);
+});
+
+test('a late 401 behind a stored copy ends the session', async ({ page, context }) => {
+  await signInAndStoreArticles(page, context, true);
+
+  let delayed = false;
+  await context.route((url) => url.pathname === '/api/articles', async (route) => {
+    if (!delayed) {
+      delayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+    }
+    await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ code: 'auth.sign_in_required', error: 'Please sign in.' }) });
+  });
+  await page.reload();
+  await expect(page.getByText('Stored headline 1')).toBeVisible({ timeout: 15_000 });
+
+  await expect(page.getByText('Your session has expired. Please sign in again.')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  await expect.poll(() => apiCacheNames(page)).toEqual([]);
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineUser'))).toBeNull();
+  expect(await page.evaluate(() => localStorage.getItem('pulse.offlineRemember'))).toBeNull();
 });
 
 test('without remembering the device nothing is kept for the next visit', async ({ page, context }) => {
