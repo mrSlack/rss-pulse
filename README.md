@@ -112,6 +112,8 @@ Before updating production, back up the database. Then build and start the updat
 
 It requires a clean checkout on `master`, saves a database dump under `backups/production/`, fast-forwards from `origin/master`, validates Compose configuration, rebuilds the services, and waits for health checks. Do not run the local database Compose group against the production data directory.
 
+Article search uses the PostgreSQL extension `pg_trgm`, which migration `016_article_search.sql` creates. It ships with the official PostgreSQL images and is a trusted extension, so the database owner can create it without superuser rights; with another PostgreSQL installation, make sure the contrib extensions are installed. The migration rewrites every stored article once and builds a search index, which took about 3 minutes for 500,000 articles in testing. The API starts listening only afterwards, so on a large database the update script's 180-second health wait can time out; then follow `docker compose --env-file .env.production -f compose.production.yml logs -f api` until the API reports that it is listening.
+
 ## Data, accounts, and refresh behavior
 
 The first Administrator receives the existing library when the shared-feed migration runs. Administrators can create accounts with the `Administrator` or `Reader` role; public registration is disabled. Each user has their own folders, subscriptions, read states, and saved articles. A normalized feed URL and its articles are shared across users, while personal reading state stays private. Administrators cannot browse other users' libraries.

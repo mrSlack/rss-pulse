@@ -112,6 +112,8 @@ Erstellen Sie vor Produktionsupdates eine Datenbanksicherung. Danach bauen und s
 
 Es benötigt einen sauberen Checkout auf `master`, speichert einen Datenbankdump unter `backups/production/`, aktualisiert per Fast-Forward von `origin/master`, prüft die Compose-Konfiguration, baut die Dienste neu und wartet auf Health Checks. Verwenden Sie den lokalen Datenbank-Compose nicht mit dem Produktionsdatenverzeichnis.
 
+Die Artikelsuche verwendet die PostgreSQL-Erweiterung `pg_trgm`, die Migration `016_article_search.sql` anlegt. Sie ist in den offiziellen PostgreSQL-Images enthalten und eine vertrauenswürdige (trusted) Erweiterung, daher kann der Eigentümer der Datenbank sie ohne Superuser-Rechte anlegen; bei einer anderen PostgreSQL-Installation müssen die contrib-Erweiterungen installiert sein. Die Migration schreibt jeden gespeicherten Artikel einmal neu und baut einen Suchindex auf; im Test dauerte das für 500.000 Artikel etwa 3 Minuten. Die API nimmt erst danach Verbindungen an, daher kann die 180-Sekunden-Wartezeit des Update-Skripts bei einer großen Datenbank ablaufen; verfolgen Sie dann `docker compose --env-file .env.production -f compose.production.yml logs -f api`, bis die API meldet, dass sie lauscht.
+
 ## Daten, Konten und Aktualisierung
 
 Der erste Administrator erhält bei der Migration die bisherige gemeinsame Bibliothek. Administratoren können Konten mit den Rollen `Administrator` oder `Reader` anlegen; eine öffentliche Registrierung gibt es nicht. Jeder Benutzer hat eigene Ordner, Abonnements, Lesestatus und gespeicherte Artikel. Normalisierte Feed-URLs und ihre Artikel werden geteilt, persönliche Lesestatus bleiben privat. Administratoren können keine Bibliotheken anderer Benutzer öffnen.
