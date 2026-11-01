@@ -36,16 +36,43 @@ func NormalizeFeedURL(raw string) (string, error) {
 	return parsed.String(), nil
 }
 
+// unreadCountsCTE continues a WITH clause whose first CTE, subs(id,
+// feed_source_id, folder_id), selects user_feeds rows of the user given by the
+// SQL parameter userParam (such as "$1"). It defines
+// unread(feed_id, folder_id, n): a subscription's unread count is the number of
+// its source's articles minus the number the user has marked read, which equals
+// counting articles without a read state. Both counts use index-only scans of
+// articles_source_published_id_idx and user_article_states_read_idx instead of
+// joining every article with its state.
+// The user id is repeated as a parameter (not joined from subs) so the planner
+// can use the partial index for that user.
+func unreadCountsCTE(userParam string) string {
+	return `
+		read_counts AS (
+			SELECT a.feed_source_id, COUNT(*) AS n
+			FROM subs
+			JOIN articles a ON a.feed_source_id = subs.feed_source_id
+			JOIN user_article_states state ON state.user_id = ` + userParam + ` AND state.article_id = a.id
+			WHERE state.is_read
+			GROUP BY a.feed_source_id
+		),
+		unread AS (
+			SELECT subs.id AS feed_id, subs.folder_id,
+			       (SELECT COUNT(*) FROM articles a WHERE a.feed_source_id = subs.feed_source_id) - COALESCE(read_counts.n, 0) AS n
+			FROM subs LEFT JOIN read_counts ON read_counts.feed_source_id = subs.feed_source_id
+		)`
+}
+
 func (s *Store) ListFoldersForUser(ctx context.Context, userID int64) ([]Folder, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT d.id, d.name, d.color, COUNT(a.id) FILTER (WHERE COALESCE(state.is_read, FALSE) = FALSE)::int
+		WITH subs AS (
+			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf
+			WHERE uf.user_id = $1 AND uf.folder_id IS NOT NULL
+		),`+unreadCountsCTE("$1")+`
+		SELECT d.id, d.name, d.color, COALESCE(folder_unread.n, 0)::int
 		FROM folders d
-		LEFT JOIN user_feeds uf ON uf.folder_id = d.id AND uf.user_id = $1
-		LEFT JOIN feed_sources fs ON fs.id = uf.feed_source_id
-		LEFT JOIN articles a ON a.feed_source_id = fs.id
-		LEFT JOIN user_article_states state ON state.user_id = $1 AND state.article_id = a.id
+		LEFT JOIN (SELECT folder_id, SUM(n) AS n FROM unread GROUP BY folder_id) folder_unread ON folder_unread.folder_id = d.id
 		WHERE d.owner_user_id = $1
-		GROUP BY d.id
 		ORDER BY LOWER(d.name), d.id`, userID)
 	if err != nil {
 		return nil, err
@@ -78,15 +105,14 @@ func (s *Store) UpdateFolderForUser(ctx context.Context, userID, folderID int64,
 			UPDATE folders SET name=$3, color=$4
 			WHERE id=$1 AND owner_user_id=$2
 			RETURNING id, name, color
-		)
+		),
+		subs AS (
+			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf
+			WHERE uf.user_id = $2 AND uf.folder_id = $1
+		),`+unreadCountsCTE("$2")+`
 		SELECT updated_folder.id, updated_folder.name, updated_folder.color,
-		       COUNT(a.id) FILTER (WHERE COALESCE(state.is_read, FALSE) = FALSE)::int
-		FROM updated_folder
-		LEFT JOIN user_feeds uf ON uf.folder_id = updated_folder.id AND uf.user_id = $2
-		LEFT JOIN feed_sources fs ON fs.id = uf.feed_source_id
-		LEFT JOIN articles a ON a.feed_source_id = fs.id
-		LEFT JOIN user_article_states state ON state.user_id = $2 AND state.article_id = a.id
-		GROUP BY updated_folder.id, updated_folder.name, updated_folder.color`, folderID, userID, name, color).Scan(&folder.ID, &folder.Name, &folder.Color, &folder.UnreadCount)
+		       COALESCE((SELECT SUM(unread.n) FROM unread), 0)::int
+		FROM updated_folder`, folderID, userID, name, color).Scan(&folder.ID, &folder.Name, &folder.Color, &folder.UnreadCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Folder{}, ErrNotFound
 	}
@@ -153,16 +179,16 @@ func (s *Store) DeleteFolderForUser(ctx context.Context, userID, folderID int64,
 
 func (s *Store) ListFeedsForUser(ctx context.Context, userID int64) ([]Feed, error) {
 	rows, err := s.pool.Query(ctx, `
+		WITH subs AS (
+			SELECT uf.id, uf.feed_source_id, uf.folder_id FROM user_feeds uf WHERE uf.user_id = $1
+		),`+unreadCountsCTE("$1")+`
 		SELECT uf.id, COALESCE(uf.title_override, fs.title), fs.url, uf.folder_id, d.name,
-		       COUNT(a.id) FILTER (WHERE COALESCE(state.is_read, FALSE) = FALSE)::int,
-		       fs.last_checked_at, fs.last_error
+		       unread.n::int, fs.last_checked_at, fs.last_error
 		FROM user_feeds uf
+		JOIN unread ON unread.feed_id = uf.id
 		JOIN feed_sources fs ON fs.id = uf.feed_source_id
 		LEFT JOIN folders d ON d.id = uf.folder_id AND d.owner_user_id = uf.user_id
-		LEFT JOIN articles a ON a.feed_source_id = fs.id
-		LEFT JOIN user_article_states state ON state.user_id = uf.user_id AND state.article_id = a.id
 		WHERE uf.user_id = $1
-		GROUP BY uf.id, fs.id, d.name
 		ORDER BY uf.created_at DESC, uf.id DESC`, userID)
 	if err != nil {
 		return nil, err
