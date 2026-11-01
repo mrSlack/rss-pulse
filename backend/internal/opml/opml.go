@@ -40,13 +40,16 @@ type Feed struct {
 func Parse(reader io.Reader) ([]Feed, error) {
 	decoder := xml.NewDecoder(reader)
 	var (
-		stack     []openOutline
-		feeds     []Feed
-		outlines  int
-		sawRoot   bool
-		inBody    bool
-		bodyDepth int // element depth inside <body> excluding outlines
-		depth     int // element depth in the document
+		stack    []openOutline
+		feeds    []Feed
+		outlines int
+		sawRoot  bool
+		inBody   bool
+		// open records, for every element open inside <body>, whether it is
+		// an outline, so each end tag pops the outline stack only when it
+		// closes an outline, whatever wrapper elements surround it.
+		open  []bool
+		depth int // element depth in the document
 	)
 	for {
 		token, err := decoder.Token()
@@ -74,9 +77,10 @@ func Parse(reader io.Reader) ([]Feed, error) {
 				continue
 			}
 			if name != "outline" {
-				bodyDepth++
+				open = append(open, false)
 				continue
 			}
+			open = append(open, true)
 			outlines++
 			if outlines > MaxOutlines || len(stack) >= MaxDepth {
 				return nil, ErrInvalid
@@ -101,13 +105,14 @@ func Parse(reader io.Reader) ([]Feed, error) {
 			if !inBody {
 				continue
 			}
-			switch {
-			case depth == 1:
+			if depth == 1 {
 				inBody = false
-			case strings.EqualFold(element.Name.Local, "outline") && bodyDepth == 0:
+				continue
+			}
+			isOutline := open[len(open)-1]
+			open = open[:len(open)-1]
+			if isOutline {
 				stack = stack[:len(stack)-1]
-			default:
-				bodyDepth--
 			}
 		}
 	}
