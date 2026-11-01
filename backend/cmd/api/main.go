@@ -18,6 +18,7 @@ import (
 
 	"github.com/pulse-reader/app/internal/httpapi"
 	"github.com/pulse-reader/app/internal/maintenance"
+	"github.com/pulse-reader/app/internal/metrics"
 	"github.com/pulse-reader/app/internal/store"
 	"github.com/pulse-reader/app/internal/syncer"
 )
@@ -49,6 +50,10 @@ func main() {
 	if err != nil {
 		fatal("invalid database pool configuration", err)
 	}
+	metricsAddr, err := metricsAddrFromEnv(os.Getenv)
+	if err != nil {
+		fatal("invalid metrics configuration", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -71,13 +76,24 @@ func main() {
 	}
 	repository := store.New(pool)
 	repository.SetArticleRetentionDays(retention.ArticleRetentionDays)
+	refreshControl := syncer.NewControl()
+	// appMetrics stays nil (recording nothing) unless METRICS_ADDR enables the listener.
+	var appMetrics *metrics.Metrics
+	if metricsAddr != "" {
+		appMetrics = metrics.New()
+		appMetrics.RegisterPool(pool.Stat)
+		appMetrics.RegisterManualRefreshQueue(refreshControl.QueueLength)
+		appMetrics.RegisterOperationalStats(func(ctx context.Context) (metrics.OperationalStats, error) {
+			stats, err := repository.OperationalStats(ctx, metrics.OverdueTolerance)
+			return metrics.OperationalStats(stats), err
+		}, metrics.DefaultOperationalStatsTTL)
+	}
 	logger.Info("retention configured (0 = disabled)", slog.Int("article_days", retention.ArticleRetentionDays), slog.Int("quarantine_days", retention.QuarantineRetentionDays),
 		slog.Int("unsubscribed_source_days", retention.UnsubscribedSourceRetentionDays))
-	maintenanceDone := maintenance.Job{Repository: repository, Config: retention, InitialDelay: maintenance.DefaultInitialDelay, Interval: maintenance.DefaultInterval}.Start(ctx)
-	refreshControl := syncer.NewControl()
+	maintenanceDone := maintenance.Job{Repository: repository, Config: retention, InitialDelay: maintenance.DefaultInitialDelay, Interval: maintenance.DefaultInterval, Metrics: appMetrics}.Start(ctx)
 	refreshConcurrency := syncer.ConcurrencyFromEnv()
 	logger.Info("rss refresh configured", slog.Int("concurrency", refreshConcurrency))
-	syncerDone := syncer.New(repository, refreshControl, refreshConcurrency, syncer.WithLogger(logger)).Start(ctx)
+	syncerDone := syncer.New(repository, refreshControl, refreshConcurrency, syncer.WithLogger(logger), syncer.WithMetrics(appMetrics)).Start(ctx)
 
 	cookieSecure := false
 	if raw := os.Getenv("SESSION_COOKIE_SECURE"); raw != "" {
@@ -86,9 +102,9 @@ func main() {
 			fatal("SESSION_COOKIE_SECURE must be true or false", err)
 		}
 	}
-	handler := httpapi.New(repository, refreshControl, cookieSecure, httpapi.WithTrustedProxies(trustedProxies), httpapi.WithLogger(logger))
+	handler := httpapi.New(repository, refreshControl, cookieSecure, httpapi.WithTrustedProxies(trustedProxies), httpapi.WithLogger(logger), httpapi.WithMetrics(appMetrics))
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":" + strconv.Itoa(apiPort),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       20 * time.Second,
@@ -97,16 +113,28 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-	serverErrors := make(chan error, 1)
+	serverErrors := make(chan error, 2)
 	go func() {
 		logger.Info("Pulse API listening", slog.String("address", server.Addr))
 		serverErrors <- server.ListenAndServe()
 	}()
+	var metricsServer *http.Server
+	if appMetrics != nil {
+		metricsServer = newMetricsServer(metricsAddr, appMetrics, logger)
+		go func() {
+			logger.Info("Prometheus metrics listening", slog.String("address", metricsServer.Addr), slog.String("path", "/metrics"))
+			serverErrors <- metricsServer.ListenAndServe()
+		}()
+	}
 	// Long schema steps (backfill, concurrent index builds) run while the API serves, so
 	// they do not delay the start; search is correct, only slower, until they finish.
-	searchUpgrade := store.ArticleSearchUpgrade{Logger: logger, Pause: 10 * time.Millisecond}
+	searchUpgrade := store.ArticleSearchUpgrade{Logger: logger, Pause: 10 * time.Millisecond, Progress: appMetrics.AddSearchKeysBackfilled}
 	searchUpgradeDone := runBackgroundUpgrade(ctx, logger, "article search", backgroundUpgradeRetryDelay, func(ctx context.Context) error {
-		return searchUpgrade.Run(ctx, pool)
+		err := searchUpgrade.Run(ctx, pool)
+		if err == nil {
+			appMetrics.SetSearchUpgradeDone()
+		}
+		return err
 	})
 
 	select {
@@ -115,6 +143,11 @@ func main() {
 		defer cancel()
 		if err := server.Shutdown(shutdownContext); err != nil {
 			logger.Warn("server shutdown", slog.String("error", err.Error()))
+		}
+		if metricsServer != nil {
+			if err := metricsServer.Shutdown(shutdownContext); err != nil {
+				logger.Warn("metrics server shutdown", slog.String("error", err.Error()))
+			}
 		}
 		waitForWorker(shutdownContext, "feed refresh", syncerDone)
 		waitForWorker(shutdownContext, "maintenance", maintenanceDone)
