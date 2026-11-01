@@ -208,7 +208,7 @@ commands from `AGENTS.md`.
 
 | Stage | Name | Tasks | Depends on | Est. |
 | --- | --- | --- | --- | --- |
-| 1 | Quick fixes | 0.1–0.3, 2.1 (REL-1), 1.2 (SEC-2), 1.3 (SEC-4) | — | 1–1.5 |
+| 1 | Quick fixes — **done** (branch `stage-1/quick-fixes`) | 0.1–0.3, 2.1 (REL-1), 1.2 (SEC-2), 1.3 (SEC-4) | — | 1–1.5 |
 | 2 | Sign-in protection | 1.1 (SEC-1), 1.5 (SEC-5), 1.6 (SEC-6), 0.5 | 1 | 1.5–2 |
 | 3 | Reading correctness | 2.2 + 2.4 together (REL-2, REL-4), 2.3 (REL-3) | 1 | 2–2.5 |
 | 4 | Data growth | 4.1 (baseline), 4.2 (retention, session cleanup) | decision Q1 | 1.5 |

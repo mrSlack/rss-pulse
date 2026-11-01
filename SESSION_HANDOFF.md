@@ -1,3 +1,11 @@
+# Session handoff — 2026-11-01 (stage 1: quick fixes)
+
+- **Done (branch `stage-1/quick-fixes`, stacked on `docs/project-review-plan`):** untracked `backend/api` binary and ignored it (history not rewritten, per decision); dev API no longer runs `go mod tidy` at start and the dev image copies `go.sum`; `AGENTS.md` Go test command now sets `TEST_DATABASE_URL` and `REQUIRE_INTEGRATION=1` (skips become failures); REL-1 robust feed date parsing; SEC-2 dummy-hash Argon2id work for unknown sign-in e-mails; SEC-4 `netip`-based special-purpose range blocklist with NAT64/6to4 unwrapping.
+- **Verified:** against a temporary tmpfs PostgreSQL 18 container: `gofmt -l` clean, `go vet` ok, `go mod tidy -diff` clean, `REQUIRE_INTEGRATION=1 go test -count=1 ./...` all packages ok; `REQUIRE_INTEGRATION=1` without a DSN fails as intended; dev backend image builds; `compose.backend.yml config` ok. Frontend untouched; Playwright not run. Running app containers were not rebuilt.
+- **Next:** stage 2 (sign-in rate limiting, Nginx security headers/CSP, pending-request cap, ESLint) per `docs/2026-11-01-project-review-and-roadmap.md`.
+
+---
+
 # Session handoff — 2026-11-01 (project review and roadmap)
 
 - **Done:** Full project review and phased improvement plan in `docs/2026-11-01-project-review-and-roadmap.md` (findings with IDs, roadmap Phases 0–6, open questions). Branch `docs/project-review-plan`; no application code changed.
