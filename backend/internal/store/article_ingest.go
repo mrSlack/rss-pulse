@@ -13,17 +13,18 @@ import (
 const duplicateWindow = 30 * time.Minute
 
 type ingestArticle struct {
-	id        int64 // 0 while the row is only queued for insertion
-	guid      string
-	title     string
-	url       string
-	summary   string
-	published time.Time
+	id         int64 // 0 while the row is only queued for insertion
+	guid       string
+	title      string
+	url        string
+	summary    string
+	published  time.Time
+	searchText string
 }
 
 func (a ingestArticle) equal(b ingestArticle) bool {
 	return a.id == b.id && a.guid == b.guid && a.title == b.title && a.url == b.url && a.summary == b.summary &&
-		a.published.Equal(b.published)
+		a.published.Equal(b.published) && a.searchText == b.searchText
 }
 
 // upsertSourceItems stores a refresh's items in feed order. For each item:
@@ -60,7 +61,7 @@ func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []f
 		// pgx sends timestamptz values with microsecond precision, truncating the rest.
 		published := item.PublishedAt.Truncate(time.Microsecond)
 		next := ingestArticle{guid: item.GUID, title: item.Title, url: item.URL, summary: item.Summary,
-			published: published}
+			published: published, searchText: ArticleSearchText(item.Title, item.Summary)}
 
 		target := byGUID[item.GUID]
 		if target == nil {
@@ -70,8 +71,8 @@ func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []f
 			article := next
 			known = append(known, &article)
 			byGUID[article.guid] = &article
-			batch.Queue(`INSERT INTO articles (feed_source_id, guid, title, url, summary, published_at)
-				VALUES ($1, $2, $3, $4, $5, $6)`, sourceID, article.guid, article.title, article.url, article.summary, article.published)
+			batch.Queue(`INSERT INTO articles (feed_source_id, guid, title, url, summary, published_at, search_text)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)`, sourceID, article.guid, article.title, article.url, article.summary, article.published, article.searchText)
 			continue
 		}
 		if !item.HasPublishedAt {
@@ -83,11 +84,11 @@ func upsertSourceItems(ctx context.Context, tx pgx.Tx, sourceID int64, items []f
 		}
 		previousGUID := target.guid
 		if target.id != 0 {
-			batch.Queue(`UPDATE articles SET guid=$2, title=$3, url=$4, summary=$5, published_at=$6 WHERE id=$1`,
-				target.id, next.guid, next.title, next.url, next.summary, next.published)
+			batch.Queue(`UPDATE articles SET guid=$2, title=$3, url=$4, summary=$5, published_at=$6, search_text=$7 WHERE id=$1`,
+				target.id, next.guid, next.title, next.url, next.summary, next.published, next.searchText)
 		} else {
-			batch.Queue(`UPDATE articles SET guid=$3, title=$4, url=$5, summary=$6, published_at=$7 WHERE feed_source_id=$1 AND guid=$2`,
-				sourceID, previousGUID, next.guid, next.title, next.url, next.summary, next.published)
+			batch.Queue(`UPDATE articles SET guid=$3, title=$4, url=$5, summary=$6, published_at=$7, search_text=$8 WHERE feed_source_id=$1 AND guid=$2`,
+				sourceID, previousGUID, next.guid, next.title, next.url, next.summary, next.published, next.searchText)
 		}
 		*target = next
 		if previousGUID != next.guid {
@@ -119,7 +120,7 @@ func loadIngestCandidates(ctx context.Context, tx pgx.Tx, sourceID int64, items 
 	for i, item := range items {
 		guids[i], titles[i], urls[i], summaries[i], published[i] = item.GUID, item.Title, item.URL, item.Summary, item.PublishedAt
 	}
-	rows, err := tx.Query(ctx, `SELECT a.id, a.guid, a.title, a.url, a.summary, a.published_at
+	rows, err := tx.Query(ctx, `SELECT a.id, a.guid, a.title, a.url, a.summary, a.published_at, a.search_text
 		FROM articles a
 		WHERE a.feed_source_id = $1 AND a.id IN (
 			SELECT id FROM articles WHERE feed_source_id = $1 AND guid = ANY($2::text[])
@@ -140,7 +141,7 @@ func loadIngestCandidates(ctx context.Context, tx pgx.Tx, sourceID int64, items 
 	result := make([]*ingestArticle, 0)
 	for rows.Next() {
 		var article ingestArticle
-		if err := rows.Scan(&article.id, &article.guid, &article.title, &article.url, &article.summary, &article.published); err != nil {
+		if err := rows.Scan(&article.id, &article.guid, &article.title, &article.url, &article.summary, &article.published, &article.searchText); err != nil {
 			return nil, err
 		}
 		result = append(result, &article)

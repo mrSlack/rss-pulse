@@ -106,6 +106,13 @@ func TestSeedFillsEmptyDatabaseAndCanBeRepeated(t *testing.T) {
 	if withTerm > 20 {
 		t.Fatalf("articles containing the search term = %d, want a small share", withTerm)
 	}
+	var withSearchText, mismatched int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE search_text LIKE '%market%'), COUNT(*) FILTER (WHERE search_text = '') FROM articles`).Scan(&withSearchText, &mismatched); err != nil {
+		t.Fatal(err)
+	}
+	if withSearchText != withTerm || mismatched != 0 {
+		t.Fatalf("search_text: %d matches (want %d), %d empty", withSearchText, withTerm, mismatched)
+	}
 	var nextID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO feed_sources (normalized_url,title,url) VALUES ('https://next.seed.invalid/rss','Next','https://next.seed.invalid/rss') RETURNING id`).Scan(&nextID); err != nil {
 		t.Fatalf("sequence was not advanced past seeded ids: %v", err)

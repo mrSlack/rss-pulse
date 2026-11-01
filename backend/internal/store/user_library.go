@@ -379,8 +379,9 @@ func (s *Store) ListArticlesForUser(ctx context.Context, userID int64, filter st
 	if folderID != nil {
 		conditions = append(conditions, "uf.folder_id = "+add(*folderID))
 	}
-	if query != "" {
-		conditions = append(conditions, "STRPOS(LOWER(a.title || ' ' || a.summary), LOWER("+add(query)+")) > 0")
+	if pattern := searchPattern(query); pattern != "" {
+		// Served by the trigram index articles_search_text_trgm_idx.
+		conditions = append(conditions, "a.search_text LIKE "+add(pattern)+` ESCAPE '\'`)
 	}
 	if before != nil {
 		conditions = append(conditions, "(a.published_at, a.id) < ("+add(before.PublishedAt)+"::timestamptz, "+add(before.ID)+"::bigint)")
