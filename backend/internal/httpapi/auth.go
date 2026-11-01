@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -95,8 +96,15 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Check the limits before any Argon2id work so throttled requests are cheap.
-	attempt, wait, allowed := h.loginLimiter.begin(clientIP(r, h.trustedProxies), request.Email)
-	if !allowed {
+	attempt, wait, err := h.loginLimiter.begin(r.Context(), clientIP(r, h.trustedProxies), request.Email)
+	if err != nil {
+		// Fail closed: without the shared limiter state the attempt cannot be
+		// checked against the limits, so it must not reach password verification.
+		h.logger.Error("sign-in rate limit check failed", slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
+		return
+	}
+	if wait > 0 {
 		w.Header().Set("Retry-After", retryAfterSeconds(wait))
 		writeError(w, http.StatusTooManyRequests, "auth.rate_limited", "Too many sign-in attempts. Please wait and try again later.")
 		return
@@ -110,7 +118,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.loginLimiter.cancel(attempt)
+		h.loginLimiter.cancel(r.Context(), attempt)
 		writeError(w, http.StatusInternalServerError, "auth.account_check_failed", "The account could not be verified.")
 		return
 	}
@@ -118,7 +126,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "auth.invalid_credentials", "The email address or password is incorrect.")
 		return
 	}
-	h.loginLimiter.succeed(attempt)
+	h.loginLimiter.succeed(r.Context(), attempt)
 	// Only reveal the disabled state after a correct password, and never create a session.
 	if user.Disabled {
 		writeError(w, http.StatusForbidden, "auth.account_disabled", "This account has been disabled. Contact an administrator.")
