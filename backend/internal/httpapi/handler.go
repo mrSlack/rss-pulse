@@ -71,6 +71,7 @@ func New(repository *store.Store, control *syncer.Control, secureCookie bool, op
 	router.With(handler.authenticate, handler.requireAdministrator).Get("/api/admin/users", handler.listAdminUsers)
 	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/users", handler.createAdminUser)
 	router.With(handler.authenticate, handler.requireAdministrator).Patch("/api/admin/users/{id}", handler.updateAdminUser)
+	router.With(handler.authenticate, handler.requireAdministrator).Post("/api/admin/users/{id}/sign-out", handler.signOutAdminUser)
 	router.With(handler.authenticate, handler.requireAdministrator).Get("/api/admin/settings", handler.getAdminSettings)
 	router.With(handler.authenticate, handler.requireAdministrator).Put("/api/admin/settings", handler.updateAdminSettings)
 	router.With(handler.authenticate, handler.requireAdministrator).Get("/api/admin/feed-requests", handler.listFeedRequests)

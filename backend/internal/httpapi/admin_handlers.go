@@ -84,22 +84,45 @@ func (h *Handler) updateAdminUser(w http.ResponseWriter, r *http.Request) {
 			interval = &value
 		}
 	}
+	var disabled *bool
+	if rawDisabled, exists := request["disabled"]; exists {
+		var value bool
+		if err := json.Unmarshal(rawDisabled, &value); err != nil || string(rawDisabled) == "null" {
+			writeError(w, http.StatusBadRequest, "admin.disabled_invalid", "The disabled flag must be true or false.")
+			return
+		}
+		disabled = &value
+	}
 	for key := range request {
-		if key != "role" && key != "refreshIntervalMinutes" {
+		if key != "role" && key != "refreshIntervalMinutes" && key != "disabled" {
 			writeError(w, http.StatusBadRequest, "admin.user_field_unknown", "The user field is not recognized.")
 			return
 		}
 	}
-	if role == nil && !updateInterval {
-		writeError(w, http.StatusBadRequest, "admin.user_update_missing", "Specify a role or refresh interval.")
+	if role == nil && !updateInterval && disabled == nil {
+		writeError(w, http.StatusBadRequest, "admin.user_update_missing", "Specify a role, refresh interval, or account status.")
 		return
 	}
-	if err := h.store.UpdateUserAdmin(r.Context(), userID, role, updateInterval, interval); errors.Is(err, store.ErrNotFound) {
+	actor, _ := currentUser(r)
+	if actor.ID == userID {
+		// Administrators cannot lock themselves out: disabling or changing their own role
+		// would revoke the session they are using. Another Administrator must do it.
+		if disabled != nil && *disabled {
+			writeError(w, http.StatusConflict, "admin.cannot_disable_self", "You cannot disable your own account.")
+			return
+		}
+		if role != nil && *role != actor.Role {
+			writeError(w, http.StatusConflict, "admin.cannot_change_own_role", "You cannot change your own role.")
+			return
+		}
+	}
+	update := store.UserAdminUpdate{Role: role, UpdateInterval: updateInterval, Interval: interval, Disabled: disabled}
+	if err := h.store.UpdateUserAdmin(r.Context(), userID, update, actor.ID); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
 		return
 	} else if err != nil {
 		if errors.Is(err, store.ErrLastAdministrator) {
-			writeError(w, http.StatusConflict, "admin.last_administrator", "The last Administrator cannot be demoted. The system must always have at least one Administrator.")
+			writeError(w, http.StatusConflict, "admin.last_administrator", "The last active Administrator cannot be demoted or disabled. The system must always have at least one active Administrator.")
 		} else {
 			writeError(w, http.StatusInternalServerError, "admin.user_save_failed", "The user could not be saved.")
 		}
@@ -117,6 +140,27 @@ func (h *Handler) updateAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
+}
+
+// signOutAdminUser revokes every session of a user. Signing yourself out everywhere
+// also clears your own session cookie.
+func (h *Handler) signOutAdminUser(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || userID < 1 {
+		writeError(w, http.StatusBadRequest, "admin.user_id_invalid", "The user ID is invalid.")
+		return
+	}
+	if err := h.store.RevokeUserSessions(r.Context(), userID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "user.not_found", "The user was not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin.user_sign_out_failed", "The user could not be signed out.")
+		return
+	}
+	if actor, _ := currentUser(r); actor.ID == userID {
+		h.clearSessionCookie(w)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) getAdminSettings(w http.ResponseWriter, r *http.Request) {
