@@ -22,6 +22,10 @@ import (
 
 func main() {
 	connectionString := databaseURL()
+	trustedProxies, err := httpapi.ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		log.Fatalf("TRUSTED_PROXY_CIDRS must be a comma-separated list of CIDRs or \"none\": %v", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -55,7 +59,7 @@ func main() {
 			log.Fatalf("SESSION_COOKIE_SECURE must be true or false: %v", err)
 		}
 	}
-	handler := httpapi.New(repository, refreshControl, cookieSecure)
+	handler := httpapi.New(repository, refreshControl, cookieSecure, httpapi.WithTrustedProxies(trustedProxies))
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           handler,
