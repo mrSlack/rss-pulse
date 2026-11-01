@@ -235,7 +235,7 @@ export function AdminPanel() {
                 <div className="admin-setting-block">
                   <div className="admin-setting-heading">
                     <label className="admin-field-label" htmlFor="scheduler-interval">{t('admin.schedulerInterval')}</label>
-                    <span className="admin-setting-status pending">{t('admin.pending')}</span>
+                    <span className="admin-setting-status active">{t('admin.active')}</span>
                   </div>
                   <div className="admin-number-wrap"><input id="scheduler-interval" type="number" min="5" max="1440" step="1" value={refreshInterval} onChange={(event) => setRefreshInterval(event.target.value)} /><span>{t('common.minutesShort')}</span></div>
                   <p className="admin-field-note">{t('admin.defaultForUsers')}</p>

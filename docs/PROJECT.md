@@ -85,13 +85,21 @@ The legacy single-user library is migrated to the first bootstrapped Administrat
 
 ## Feed refresh and concurrency
 
-Refresh work uses a bounded Go worker pool. `RSS_REFRESH_CONCURRENCY` configures the number of concurrent unique sources; the default is 4, values are limited to 1–32, and invalid values fall back safely. Each feed refresh retains its own timeout and error persistence. A failure for one source does not prevent other queued sources from being processed. The refresh controller prevents overlapping global cycles and preserves its active/pending request behavior.
+Refresh work uses a bounded Go worker pool. `RSS_REFRESH_CONCURRENCY` configures the number of concurrent unique sources; the default is 4, values are limited to 1–32, and invalid values fall back safely. Scheduled cycles and manual requests share this budget, so at most that many sources are fetched at once in one API process. Each feed refresh retains its own timeout and error persistence. A failure for one source does not prevent other queued sources from being processed.
 
-A database-backed source lease prevents concurrent requests for the same canonical source, including across API processes. The lease has an expiry so a crashed worker can be retried, and a unique lease token fences stale workers from overwriting data after another worker takes ownership. Failed refreshes do not advance the successful-refresh TTL.
+A database-backed source lease prevents concurrent requests for the same canonical source, including across API processes. The lease has an expiry so a crashed worker can be retried, and a unique lease token fences stale workers from overwriting data after another worker takes ownership. Failed refreshes do not advance the successful-refresh time, but they do record the attempt (`last_checked_at`) for failure backoff.
 
-The shared source TTL defaults to 15 minutes and accepts values from 5 to 1,440 minutes. A successful fetch updates the canonical source once and makes unblocked articles visible to its subscribers. A subscription to a source refreshed within its TTL reuses the existing data rather than issuing another HTTP request. Manual refresh is scoped to the signed-in user's subscriptions and observes the same source lease and TTL.
+The shared source TTL defaults to 15 minutes and accepts values from 5 to 1,440 minutes. A successful fetch updates the canonical source once and makes unblocked articles visible to its subscribers. A subscription to a source refreshed within its TTL reuses the existing data rather than issuing another HTTP request.
 
-The background scheduler currently runs on its existing 15-minute cadence. Global scheduler and per-user refresh intervals are persisted and editable in the administration interface, but those values do not yet change due-source selection or scheduler timing. Connecting the saved intervals to scheduler behavior is a deferred implementation task. The shared-source TTL is active now.
+The background scheduler runs its first cycle about 10 seconds after start-up and then checks for due sources every minute. A shared source is refreshed at the shortest effective interval among its subscribers, where a subscriber's interval is their per-user override or else the global scheduler interval, and never more often than the shared-source TTL: `effective = max(TTL, min over subscribers of interval)`. A source is due when no attempt (successful or failed) happened within its effective interval, so a never-checked source is due immediately and a failing source is retried once per effective interval rather than on every tick. Sources without subscribers are not scheduled. Interval and TTL changes apply on the next tick. The full rule, SQL, and edge cases are in [the scheduler design note](2026-11-01-scheduler-design.md).
+
+Manual refresh (`POST /api/refresh`) is scoped to the signed-in user's subscriptions and always returns `202`. Requests are queued per user: a user who is already queued or being processed is not queued twice, and different users never block each other. `GET /api/refresh` returns `{"running": bool}` for the calling user only, true while that user's request is queued or being processed. Manual claims use only the shared-source TTL, measured from the last attempt, so "refresh now" can fetch sooner than the scheduler interval but does not hit a failing source again within the TTL. Source leases keep scheduled and manual work from fetching the same source concurrently.
+
+Refreshes use conditional HTTP requests. The `ETag` and `Last-Modified` validators of the last successful response are stored per source (migration `013_conditional_fetch.sql`) and sent as `If-None-Match` and `If-Modified-Since`. A `304 Not Modified` response counts as a successful refresh: it advances `last_checked_at` and `last_success_at`, clears `last_error`, and leaves articles untouched.
+
+Changing a subscription URL to an already approved source (`PATCH /api/feeds/{id}`) does not fetch inside the request: the subscription change is committed, a manual refresh is queued for the user, and the response returns the updated feed. The reader follows that refresh through `GET /api/refresh` and reloads the library when it finishes.
+
+On shutdown the API stops accepting requests, then waits, within the same shutdown deadline, for the refresh syncer and the maintenance job to stop. An in-flight fetch is cancelled and its lease is released with a bounded 5-second cleanup context without recording an attempt, so a restart does not put the source into failure backoff.
 
 Only public HTTP/HTTPS feed URLs are accepted. Loopback, private, link-local, multicast, carrier-grade NAT, documentation, benchmarking, reserved, and other IANA special-purpose IPv4/IPv6 ranges are blocked to prevent a feed request from reaching internal services; IPv4 addresses embedded in IPv4-mapped, NAT64 (`64:ff9b::/96`), and 6to4 (`2002::/16`) addresses are checked as IPv4. Every resolved address is checked again when the connection is dialed. The API stores article metadata and summaries; the full article remains on the source website. Publication dates are parsed from RFC 3339/ISO 8601 and RFC 822/1123 forms, including one-digit days, missing weekday or seconds, two-digit years, RFC 822 zone names, and zone-less timestamps (treated as UTC). Items without a recognizable date use the first-seen time.
 
@@ -107,7 +115,7 @@ The administration panel lists up to 100 quarantine records with pending items f
 
 Administrators can create users with an email address, initial password, and either supported role. The password is presented only during account creation and must be shared separately. Administrators can edit the global scheduler default, a nullable per-user interval override, and the shared-source TTL. A user with no explicit interval inherits the global value; an explicit override is unaffected by changes to the default.
 
-The scheduler and user interval controls are intentionally labeled as saved but inactive until scheduler integration is implemented. The shared TTL is labeled active because it currently gates source refreshes.
+The scheduler interval, the per-user intervals, and the shared TTL are all active and labeled as such; the panel explains the shortest-subscriber-interval rule described under [Feed refresh and concurrency](#feed-refresh-and-concurrency).
 
 ## Internationalization
 
@@ -124,7 +132,7 @@ The API is served under `/api/`. It includes a public health endpoint; authentic
 - `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`, `/api/auth/password`, and `/api/auth/profile` for sessions and profile management.
 - `/api/folders` and `/api/feeds` for the signed-in user's library, including `PATCH /api/feeds/{id}` for personal subscription edits and `DELETE /api/folders/{id}` for folder removal. The delete body uses `{"action":"delete_sources"}` to remove the user's subscriptions and their article state, or `{"action":"move_sources","targetFolderId":<id>}` to move subscriptions into another folder owned by the same user. The folder deletion and subscription changes occur in one transaction; shared source and article records are retained.
 - `/api/articles` and `/api/articles/{id}` for filtered article listing and per-user read/saved updates. `GET /api/articles` returns `{"items": [...], "hasMore": bool, "nextCursor": string|null}`. Pass `nextCursor` back as `before=<cursor>` to load the next page; the cursor is opaque and malformed values return `400 article.cursor_invalid`. The older `offset` parameter is still accepted for compatibility but cannot be combined with `before` (`400 article.pagination_conflict`).
-- `/api/refresh` for refresh control and status.
+- `/api/refresh` for the signed-in user's manual refresh (`POST`, always `202`) and its status (`GET`, `{"running": bool}` for that user).
 - `/api/admin/users`, `/api/admin/users/{id}`, `/api/admin/settings`, and `/api/admin/feed-requests` (optional `limit`, 1–200, default 100; including approve and reject actions) for administrator operations. `/api/admin/stop-words` supports listing and adding terms; `/api/admin/stop-words/{id}` removes a term. `GET /api/admin/blocked-articles` lists quarantine records with pending items first; `POST /api/admin/blocked-articles/{id}/allow` and `/reject` apply moderation decisions. All quarantine endpoints require the Administrator role.
 - `/api/health` for service health.
 
@@ -167,7 +175,6 @@ New schema changes are added as separately numbered SQL files. The folder color 
 
 ## Deferred work and explicit non-goals
 
-- Connect persisted global and per-user refresh intervals to due-source selection and scheduler timing.
 - Account deletion, self-registration, email invitations, verification, password-reset email, and social login.
 - Cross-user library sharing and administrator access to user article content.
 - Arbitrary HTML rendering of feed content.

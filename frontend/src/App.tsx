@@ -277,12 +277,15 @@ function App() {
         setFormNotice(t('feedModal.requestedApproval'));
         return;
       }
+      const urlChanged = updated.url !== editingFeed.url;
       setFeeds((current) => current.map((feed) => feed.id === updated.id ? updated : feed));
       setModal(null);
       setEditingFeed(null);
       setSelectedId(null);
       setRefreshVersion((current) => current + 1);
       await refreshStructure();
+      // The server fetches a changed URL in the background; follow that refresh.
+      if (urlChanged) void runRefresh(false);
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : t('errors.feedUpdate'));
     } finally {
@@ -449,10 +452,10 @@ function App() {
     setSelectedId(null);
   }
 
-  async function runRefresh() {
+  async function runRefresh(request = true) {
     setRefreshing(true);
     try {
-      await api.refresh();
+      if (request) await api.refresh();
       const startedAt = Date.now();
       let stillRunning = true;
       while (stillRunning && Date.now() - startedAt < 180000) {

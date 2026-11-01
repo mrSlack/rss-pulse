@@ -49,11 +49,12 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('AdminPanel', () => {
-  it('labels saved schedule values as inactive and shared TTL as active', async () => {
+  it('labels the scheduler interval and the shared TTL as active', async () => {
     render(<AdminPanel />);
     expect(await screen.findByRole('heading', { name: 'Administration' })).toBeTruthy();
-    expect(screen.getByText('Not active yet')).toBeTruthy();
-    expect(screen.getByText(/Applies to shared sources/i)).toBeTruthy();
+    expect(screen.queryByText('Not active yet')).toBeNull();
+    expect(screen.getAllByText('Active now')).toHaveLength(2);
+    expect(screen.getByText(/Minimum time between refreshes of a shared source/i)).toBeTruthy();
     expect(screen.getByLabelText('Scheduler interval, minutes')).toBeTruthy();
     expect(screen.getByLabelText('Shared source TTL, minutes')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Users' })).toBeNull();
